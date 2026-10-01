@@ -32,12 +32,12 @@ class ASRConfig:
     backend: str = "mlx"
 
     # Modello Whisper
-    # mlx:     "mlx-community/whisper-large-v3-turbo-8bit"  (~900 MB, consigliato)
-    #          "mlx-community/whisper-large-v3-turbo"        (~1.6 GB, fp16)
-    #          "mlx-community/whisper-large-v3-mlx"          (~3 GB, massima qualità)
-    #          "mlx-community/whisper-large-v3-turbo-4bit"   (~500 MB, più veloce)
+    # mlx:     "mlx-community/whisper-large-v3-turbo"       (~1.6 GB, fp16, consigliato)
+    #          "mlx-community/whisper-large-v3-turbo-4bit"  (~500 MB, più veloce, meno accurato)
+    #          "mlx-community/whisper-large-v3-turbo-fp16"  (~1.6 GB, alias del default)
+    #          "mlx-community/whisper-large-v3-mlx"         (~3 GB, massima qualità)
     # faster:  "large-v3-turbo"  /  "large-v3"  /  "small"
-    model_id: str = "mlx-community/whisper-large-v3-turbo-8bit"
+    model_id: str = "mlx-community/whisper-large-v3-turbo"
 
     # Lingua forzata (None = auto-detect)
     language: str = "it"
