@@ -28,16 +28,21 @@ VENV_PYTHON = Path.home() / "Desktop" / "Titoli Fabbri" / "whisperx_env" / "bin"
 
 @dataclass
 class ASRConfig:
-    # Backend: "mlx" (nativo Apple Silicon, più veloce) oppure "faster" (fallback)
-    backend: str = "mlx"
+    # Backend: "faster" (CTranslate2, CPU INT8, stabile) oppure "mlx" (GPU nativa M1)
+    # NOTA: mlx e PyTorch/faster-whisper non coesistono nello stesso processo su macOS
+    # (conflitto MPS → segfault). Usa "faster" per stabilità, "mlx" solo se usi
+    # un processo separato (futuro: modalità subprocess isolato).
+    backend: str = "faster"
 
     # Modello Whisper
-    # mlx:     "mlx-community/whisper-large-v3-turbo"       (~1.6 GB, fp16, consigliato)
-    #          "mlx-community/whisper-large-v3-turbo-4bit"  (~500 MB, più veloce, meno accurato)
-    #          "mlx-community/whisper-large-v3-turbo-fp16"  (~1.6 GB, alias del default)
-    #          "mlx-community/whisper-large-v3-mlx"         (~3 GB, massima qualità)
-    # faster:  "large-v3-turbo"  /  "large-v3"  /  "small"
-    model_id: str = "mlx-community/whisper-large-v3-turbo"
+    # faster:  "large-v3-turbo"  (~1.5 GB, consigliato — ottimo italiano, CPU INT8)
+    #          "large-v3"        (~3 GB, massima qualità)
+    #          "small"           (~244 MB, test rapido)
+    # mlx (solo processo isolato):
+    #          "mlx-community/whisper-large-v3-turbo"       (~1.6 GB, fp16)
+    #          "mlx-community/whisper-large-v3-turbo-4bit"  (~500 MB)
+    #          "mlx-community/whisper-large-v3-mlx"         (~3 GB)
+    model_id: str = "large-v3-turbo"
 
     # Lingua forzata (None = auto-detect)
     language: str = "it"
@@ -58,10 +63,11 @@ class ASRConfig:
     # hallucination loop su audio lungo
     condition_on_previous_text: bool = False
 
-    # Quantizzazione per faster-whisper (ignorato da mlx)
+    # Quantizzazione per faster-whisper
     compute_type: str = "int8"
 
-    # Device per faster-whisper: "cpu" | "cuda" | "mps"  (ignorato da mlx)
+    # Device per faster-whisper: "cpu" è stabile su M1 Pro con CTranslate2
+    # (MPS ha supporto parziale in CTranslate2 e può causare errori)
     device: str = "cpu"
 
 
