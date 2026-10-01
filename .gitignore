@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Ambienti virtuali
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Log e output
+logs/*.log
+logs/*.jsonl
+
+# File audio/video di input e output (non committiamo media)
+input/*
+output/*
+!input/.gitkeep
+!output/.gitkeep
+
+# Checkpoint di stato
+*.checkpoint.json
+
+# Modelli scaricati localmente (HuggingFace cache è altrove)
+models/
+
+# Secrets
+.env
+*.env
+huggingface_token.txt
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# launchd plist generato
+*.plist
