@@ -14,6 +14,11 @@ Modalità schedulata (chiamata da launchd di notte):
 
 from __future__ import annotations
 
+import os
+# Workaround: PyTorch e mlx caricano entrambi libomp.dylib su macOS.
+# KMP_DUPLICATE_LIB_OK sopprime l'abort — sicuro per inferenza single-process.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import argparse
 import logging
 import signal
