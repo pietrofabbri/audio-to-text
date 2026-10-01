@@ -209,32 +209,49 @@ def _write_txt(segments: list[dict], path: Path) -> None:
     """
     Formato testo semplice con etichette speaker e timestamp.
 
+    Quando lo speaker cambia, apre un nuovo blocco con intestazione.
+    Quando lo speaker continua, aggiunge il testo allo stesso blocco
+    e aggiorna il timestamp di fine nell'intestazione.
+
     [00:01:23 → 00:01:31] SPEAKER_00
     Buongiorno a tutti, oggi parliamo di...
+    Continuo dello stesso speaker...
 
     [00:01:31 → 00:01:45] SPEAKER_01
     Grazie per l'introduzione...
     """
-    lines = []
-    prev_speaker = None
+    # Struttura: lista di blocchi {"speaker", "start", "end", "lines": []}
+    blocks: list[dict] = []
+
     for seg in segments:
-        speaker = seg.get("speaker", "UNKNOWN")
-        start_ts = _fmt_timestamp(seg["start"])
-        end_ts   = _fmt_timestamp(seg["end"])
+        speaker  = seg.get("speaker", "UNKNOWN")
+        text     = seg["text"].strip()
+        if not text:
+            continue
 
-        # Stampa intestazione speaker solo quando cambia
-        if speaker != prev_speaker:
-            if lines:
-                lines.append("")
-            lines.append(f"[{start_ts} → {end_ts}] {speaker}")
-            prev_speaker = speaker
+        # Nuovo blocco se speaker cambia o è il primo
+        if not blocks or blocks[-1]["speaker"] != speaker:
+            blocks.append({
+                "speaker": speaker,
+                "start":   seg["start"],
+                "end":     seg["end"],
+                "lines":   [text],
+            })
         else:
-            # Stessa persona che continua — aggiorna solo il timestamp di fine
-            lines[-1] = f"[{start_ts} → {end_ts}] {speaker}"
+            # Stesso speaker — aggiunge testo e aggiorna timestamp fine
+            blocks[-1]["end"] = seg["end"]
+            blocks[-1]["lines"].append(text)
 
-        lines.append(seg["text"])
+    # Serializza
+    output_lines: list[str] = []
+    for block in blocks:
+        start_ts = _fmt_timestamp(block["start"])
+        end_ts   = _fmt_timestamp(block["end"])
+        output_lines.append(f"[{start_ts} → {end_ts}] {block['speaker']}")
+        output_lines.extend(block["lines"])
+        output_lines.append("")  # riga vuota tra blocchi
 
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _write_srt(segments: list[dict], path: Path) -> None:
