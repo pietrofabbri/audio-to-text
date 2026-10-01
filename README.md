@@ -75,7 +75,7 @@ Vai su queste due pagine e clicca **"Accept"** (richiede login HF):
 #### Passo 4 — Salva il token in locale
 
 ```bash
-~/Desktop/Titoli\ Fabbri/whisperx_env/bin/huggingface-cli login
+~/Desktop/Titoli\ Fabbri/whisperx_env/bin/hf auth login
 ```
 
 Incolla il token quando richiesto. Viene salvato in `~/.huggingface/token`

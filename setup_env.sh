@@ -148,7 +148,7 @@ else
     echo "       https://huggingface.co/pyannote/segmentation-3.0"
     echo ""
     echo -e "  ${BLUE}7.${NC} Poi esegui:"
-    echo "       $VENV_DIR/bin/huggingface-cli login"
+    echo "       $VENV_DIR/bin/hf auth login"
     echo "     oppure imposta la variabile d'ambiente:"
     echo "       export HF_TOKEN='hf_tuotoken'"
     echo ""
