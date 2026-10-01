@@ -124,14 +124,16 @@ class DiarizationConfig:
 
 
 def _read_hf_token_from_file() -> str:
-    """Legge il token HF dal path standard di huggingface-cli."""
+    """Legge il token HF dai percorsi standard di huggingface-hub / hf CLI."""
     candidates = [
-        Path.home() / ".huggingface" / "token",
-        Path.home() / ".cache" / "huggingface" / "token",
+        Path.home() / ".cache" / "huggingface" / "token",  # hf CLI (hub 2.x)
+        Path.home() / ".huggingface" / "token",             # vecchio huggingface-cli
     ]
     for p in candidates:
         if p.exists():
-            return p.read_text().strip()
+            t = p.read_text().strip()
+            if t:
+                return t
     return ""
 
 
