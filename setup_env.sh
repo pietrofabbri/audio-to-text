@@ -95,10 +95,9 @@ echo -e "${YELLOW}→ Verifico mlx-whisper...${NC}"
 if "$PYTHON" -c "import mlx_whisper" 2>/dev/null; then
     echo -e "${GREEN}  ✓ mlx-whisper già installato${NC}"
 else
-    echo "  Installo mlx e mlx-whisper (framework Apple Silicon)..."
-    # mlx richiede macOS 13.5+ e Apple Silicon
-    "$PIP" install mlx==0.22.0 --quiet
-    "$PIP" install mlx-whisper==0.4.1 --quiet
+    echo "  Installo mlx-whisper (porta mlx come dipendenza automaticamente)..."
+    # mlx-whisper gestisce da solo la versione compatibile di mlx
+    "$PIP" install mlx-whisper==0.4.3 --quiet
     echo -e "${GREEN}  ✓ mlx-whisper installato${NC}"
 fi
 
@@ -179,6 +178,7 @@ check "whisperx"       "whisperx"
 check "torch"          "torch"
 check "pyannote-audio" "pyannote.audio"
 check "mlx-whisper"    "mlx_whisper"
+check "mlx"            "mlx.core"
 check "parselmouth"    "parselmouth"
 check "librosa"        "librosa"
 check "soundfile"      "soundfile"
