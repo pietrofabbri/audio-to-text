@@ -75,7 +75,7 @@ class Diarizer:
 
         self._pipeline = Pipeline.from_pretrained(
             self.cfg.model_id,
-            use_auth_token=self.cfg.hf_token,
+            token=self.cfg.hf_token,  # pyannote 4.x (use_auth_token deprecato)
         )
 
         # Sposta su MPS (GPU Apple Silicon) se disponibile
