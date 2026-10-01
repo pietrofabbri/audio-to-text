@@ -224,15 +224,25 @@ class Diarizer:
 
     @staticmethod
     def _to_segments(diarization) -> list[dict[str, Any]]:
-        """Converte l'oggetto Annotation di pyannote in lista di dict."""
+        """
+        Converte il risultato di pyannote in lista di dict.
+        Gestisce sia il vecchio Annotation (pyannote < 4) che
+        il nuovo DiarizeOutput (pyannote 4.x).
+        """
+        # pyannote 4.x restituisce DiarizeOutput (dataclass)
+        # con campo speaker_diarization che è l'Annotation
+        if hasattr(diarization, "speaker_diarization"):
+            annotation = diarization.speaker_diarization
+        else:
+            annotation = diarization  # pyannote < 4: restituisce Annotation diretta
+
         segments = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             segments.append({
                 "speaker": speaker,
                 "start":   round(turn.start, 3),
                 "end":     round(turn.end,   3),
             })
-        # Ordina per start (pyannote li restituisce già ordinati, ma è sicuro)
         segments.sort(key=lambda s: s["start"])
         return segments
 
