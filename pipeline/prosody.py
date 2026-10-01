@@ -260,18 +260,38 @@ class ProsodyAnalyzer:
         ]
 
         num_workers = min(self.cfg.num_workers, len(segments), mp.cpu_count())
-        logger.info(
-            "Prosodia: %d segmenti | %d worker CPU paralleli",
-            len(segments), num_workers,
-        )
 
-        if num_workers <= 1:
-            results = [_analyze_segment_worker(a) for a in args_list]
-        else:
-            # spawn evita problemi con MPS/CUDA in processi figli su macOS
+        # Usa multiprocessing solo se vale la pena:
+        # - almeno 20 segmenti (overhead spawn > beneficio su file corti)
+        # - nessun segnale di shutdown pendente
+        use_mp = num_workers > 1 and len(segments) >= 20
+
+        if use_mp:
+            logger.info(
+                "Prosodia: %d segmenti | %d worker CPU paralleli (spawn)",
+                len(segments), num_workers,
+            )
             ctx = mp.get_context("spawn")
             with ctx.Pool(processes=num_workers) as pool:
-                results = pool.map(_analyze_segment_worker, args_list)
+                try:
+                    results = pool.map(_analyze_segment_worker, args_list)
+                except KeyboardInterrupt:
+                    logger.warning("Prosodia interrotta — termino worker pool")
+                    pool.terminate()
+                    pool.join()
+                    raise
+        else:
+            if len(segments) < 20:
+                logger.info(
+                    "Prosodia: %d segmenti | elaborazione sequenziale (file corto)",
+                    len(segments),
+                )
+            else:
+                logger.info(
+                    "Prosodia: %d segmenti | elaborazione sequenziale",
+                    len(segments),
+                )
+            results = [_analyze_segment_worker(a) for a in args_list]
 
         results.sort(key=lambda r: r.get("idx", 0))
 
