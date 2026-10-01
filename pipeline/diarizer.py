@@ -176,6 +176,11 @@ class Diarizer:
         logger.info("Diarizzazione: %s ...", wav_path.name)
         t0 = time.time()
 
+        # pyannote 4.x richiede torchcodec per leggere file audio direttamente.
+        # Poiché torchcodec non è disponibile su questo sistema, passiamo
+        # l'audio pre-caricato come dizionario {waveform, sample_rate}.
+        audio_input = self._load_audio_as_tensor(wav_path)
+
         # Parametri speaker
         kwargs: dict[str, Any] = {}
         if self.cfg.num_speakers is not None:
@@ -184,7 +189,7 @@ class Diarizer:
             kwargs["min_speakers"] = self.cfg.min_speakers
             kwargs["max_speakers"] = self.cfg.max_speakers
 
-        diarization = self._pipeline(str(wav_path), **kwargs)
+        diarization = self._pipeline(audio_input, **kwargs)
 
         elapsed = time.time() - t0
         segments = self._to_segments(diarization)
@@ -199,6 +204,23 @@ class Diarizer:
         )
 
         return segments
+
+    @staticmethod
+    def _load_audio_as_tensor(wav_path: Path) -> dict:
+        """
+        Carica WAV come tensore PyTorch nel formato atteso da pyannote 4.x:
+        {'waveform': (channel, time) torch.Tensor float32, 'sample_rate': int}
+        """
+        try:
+            import torch
+            import soundfile as sf
+        except ImportError as exc:
+            raise ImportError("torch e soundfile richiesti per diarizzazione") from exc
+
+        audio, sr = sf.read(str(wav_path), dtype="float32", always_2d=False)
+        # pyannote vuole shape (channels, time)
+        waveform = torch.from_numpy(audio).unsqueeze(0)  # (1, T)
+        return {"waveform": waveform, "sample_rate": sr}
 
     @staticmethod
     def _to_segments(diarization) -> list[dict[str, Any]]:
