@@ -73,10 +73,21 @@ class Diarizer:
         )
         t0 = time.time()
 
-        self._pipeline = Pipeline.from_pretrained(
-            self.cfg.model_id,
-            token=self.cfg.hf_token,  # pyannote 4.x (use_auth_token deprecato)
-        )
+        # pyannote-audio 4.x con speaker-diarization-3.1:
+        # from_pretrained risolve automaticamente le dipendenze del config.yaml.
+        # Se il caricamento fallisce per repo gated non necessari, ricade su
+        # un'istanza manuale con i modelli esplicitamente specificati.
+        try:
+            self._pipeline = Pipeline.from_pretrained(
+                self.cfg.model_id,
+                token=self.cfg.hf_token,
+            )
+        except Exception as first_err:
+            logger.warning(
+                "Caricamento diretto fallito (%s), provo caricamento esplicito...",
+                type(first_err).__name__,
+            )
+            self._pipeline = self._load_pipeline_explicit(torch)
 
         # Sposta su MPS (GPU Apple Silicon) se disponibile
         device = self._resolve_device()
@@ -86,6 +97,49 @@ class Diarizer:
             "Pipeline pyannote caricata in %.1fs [device=%s]",
             time.time() - t0, device,
         )
+
+    def _load_pipeline_explicit(self, torch):
+        """
+        Carica speaker-diarization-3.1 costruendo la pipeline manualmente
+        con i modelli esplicitamente specificati nel config.yaml,
+        evitando dipendenze da repo non autorizzati (es. community-1).
+        """
+        from pyannote.audio import Pipeline
+        from pyannote.audio.pipelines import SpeakerDiarization
+        from pyannote.audio.pipelines.utils.getter import get_model
+
+        token = self.cfg.hf_token
+
+        logger.info("Caricamento esplicito: segmentation + embedding separati")
+
+        pipeline = SpeakerDiarization(
+            segmentation="pyannote/segmentation-3.0",
+            embedding="pyannote/wespeaker-voxceleb-resnet34-LM",
+            clustering="AgglomerativeClustering",
+            segmentation_batch_size=32,
+            embedding_batch_size=32,
+            embedding_exclude_overlap=True,
+        )
+
+        # Carica i pesi dei sotto-modelli
+        pipeline._segmentation.model_ = get_model(
+            "pyannote/segmentation-3.0", token=token
+        )
+        pipeline._embedding = get_model(
+            "pyannote/wespeaker-voxceleb-resnet34-LM", token=token
+        )
+
+        # Imposta i parametri di clustering da 3.1
+        pipeline.instantiate({
+            "segmentation": {"min_duration_off": 0.0},
+            "clustering": {
+                "method": "centroid",
+                "min_cluster_size": 12,
+                "threshold": 0.7045654963945799,
+            },
+        })
+
+        return pipeline
 
     def _resolve_device(self) -> str:
         """Sceglie il device: mps → cpu come fallback."""
