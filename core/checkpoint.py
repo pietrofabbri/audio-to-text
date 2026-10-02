@@ -143,12 +143,33 @@ class Checkpoint:
     # Diarizzazione e prosodia (salvate come blob nel checkpoint)
     # ------------------------------------------------------------------
 
-    def save_diarization(self, segments: list[dict[str, Any]]) -> None:
+    def save_diarization(
+        self,
+        segments: list[dict[str, Any]],
+        embeddings: dict[str, list[float]] | None = None,
+        speaker_global_map: dict[str, str] | None = None,
+    ) -> None:
         self._data["diarization_segments"] = segments
-        self.complete_stage("diarization", segments_count=len(segments))
+        if embeddings is not None:
+            self._data["speaker_embeddings"] = embeddings
+        if speaker_global_map is not None:
+            self._data["speaker_global_map"] = speaker_global_map
+        self.complete_stage(
+            "diarization",
+            segments_count=len(segments),
+            embeddings_count=len(embeddings or {}),
+        )
 
     def get_diarization(self) -> list[dict[str, Any]]:
         return self._data.get("diarization_segments", [])
+
+    def get_embeddings(self) -> dict[str, list[float]]:
+        """Embedding vocali raccolti nella diarizzazione (se disponibili)."""
+        return self._data.get("speaker_embeddings", {})
+
+    def get_speaker_global_map(self) -> dict[str, str]:
+        """Mapping speaker locale -> ID globale, calcolato dal SpeakerDB."""
+        return self._data.get("speaker_global_map", {})
 
     def save_prosody(self, prosody_data: list[dict[str, Any]]) -> None:
         self._data["prosody_segments"] = prosody_data

@@ -191,6 +191,36 @@ class OutputConfig:
 
 
 # ---------------------------------------------------------------------------
+# Speaker ID — identità vocali persistenti cross-file
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpeakerIDConfig:
+    # Se False, i label restano locali alla sessione (SPEAKER_00, ...)
+    # e nessun DB viene scritto
+    enabled: bool = True
+
+    # DB degli embedding vocali. È un dato biometrico: non va nel repo.
+    db_path: Path = ROOT_DIR / "data" / "speakers_db.json"
+
+    # Soglia di similarità coseno per considerare due voci la stessa
+    # persona. Più alta = più conservativo (più voci nuove, meno
+    # rischi di fondere persone diverse). pyannote clusterizza a 0.7045
+    # dentro un singolo file; qui si confrontano sessioni diverse, dove
+    # variano voce, rumore e distanza dal microfono, quindi si sale.
+    match_threshold: float = 0.78
+
+    # Aggiorna il centroide di ogni voce con i nuovi contributi
+    # (media pesata per durata). False = il centroide resta quello della
+    # prima sessione in cui la voce è comparsa.
+    update_centroid: bool = True
+
+    # Scrivi speaker_profiles.json (profilo aggregato senza vettori)
+    # accanto agli output della sessione
+    write_profiles_json: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Pipeline globale
 # ---------------------------------------------------------------------------
 
@@ -201,6 +231,7 @@ class PipelineConfig:
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     prosody: ProsodyConfig = field(default_factory=ProsodyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    speaker_id: SpeakerIDConfig = field(default_factory=SpeakerIDConfig)
 
     # Estensioni audio/video accettate come input
     accepted_extensions: tuple[str, ...] = (

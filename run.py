@@ -20,6 +20,7 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import argparse
+import json
 import logging
 import signal
 import sys
@@ -60,6 +61,89 @@ def _handle_signal(signum, frame):  # noqa: ANN001
 
 signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT,  _handle_signal)
+
+
+# ---------------------------------------------------------------------------
+# Identità speaker cross-file
+# ---------------------------------------------------------------------------
+
+def _resolve_global_speakers(
+    cfg, session_stem: str, diar_result
+) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    Trasforma i label locali SPEAKER_xx in ID globali persistenti.
+
+    Ritorna (speaker_global_map, speaker_names): il primo serve
+    all'assembler per rietichettare i segmenti, il secondo per
+    stampare i nomi umani dove esistono.
+
+    Fallisce in silenzio (mapping vuoto) se il DB non è scrivibile o
+    gli embedding mancano: la diarizzazione locale resta valida e la
+    pipeline va avanti. Il matching non deve mai essere un blocco.
+    """
+    from core.speaker_db import SpeakerDB
+
+    if not cfg.speaker_id.enabled or not diar_result.embeddings:
+        return {}, {}
+
+    try:
+        db = SpeakerDB(
+            path=cfg.speaker_id.db_path,
+            threshold=cfg.speaker_id.match_threshold,
+            update_centroid=cfg.speaker_id.update_centroid,
+        )
+        local = {
+            sp: {
+                "embedding": emb,
+                "seconds": diar_result.speaker_seconds.get(sp, 0.0),
+            }
+            for sp, emb in diar_result.embeddings.items()
+        }
+        mapping = db.resolve(session_stem, local)
+        if mapping:
+            readable = {local: db.get_name(gid) for local, gid in mapping.items()}
+            logger.info("Identità vocali: %s", readable)
+        names = {gid: db.get_name(gid) for gid in set(mapping.values())}
+        return mapping, names
+    except OSError as exc:
+        logger.warning(
+            "SpeakerDB non scrivibile (%s): continuo con label locali", exc
+        )
+        return {}, {}
+
+
+def _speaker_names_for(cfg, global_ids: set[str]) -> dict[str, str]:
+    """Nomi umani già assegnati nel DB per gli ID indicati."""
+    from core.speaker_db import SpeakerDB
+
+    if not cfg.speaker_id.enabled or not global_ids:
+        return {}
+    try:
+        db = SpeakerDB(path=cfg.speaker_id.db_path)
+        return {gid: db.get_name(gid) for gid in global_ids}
+    except OSError:
+        return {}
+
+
+def _write_speaker_profiles(cfg, output_dir: Path) -> None:
+    """Scrive speaker_profiles.json accanto agli output della sessione."""
+    from core.speaker_db import SpeakerDB
+
+    if not cfg.speaker_id.enabled or not cfg.speaker_id.write_profiles_json:
+        return
+    try:
+        db = SpeakerDB(path=cfg.speaker_id.db_path)
+        profiles = db.profiles()
+        if not profiles:
+            return
+        p = output_dir / "speaker_profiles.json"
+        p.write_text(
+            json.dumps(profiles, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Scritto: %s (%d voci globali)", p, len(profiles))
+    except OSError as exc:
+        logger.warning("speaker_profiles.json non scritto: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +248,22 @@ def process_file(audio_path: Path, cfg, args) -> bool:
     if not args.no_diarization and not ck.stage_done("diarization"):
         logger.info("Stadio 3/5: Diarizzazione speaker [pyannote]")
         diarizer = Diarizer(cfg.diarization)
-        diar_segments = diarizer.diarize(wav_path)
+        diar_result = diarizer.diarize(
+            wav_path,
+            collect_embeddings=cfg.speaker_id.enabled,
+        )
+        diar_segments = diar_result.segments
 
         # Arricchisci ASR con speaker label
         asr_chunks = diarizer.assign_speakers_word_level(asr_chunks, diar_segments)
 
-        ck.save_diarization(diar_segments)
+        # Identità vocali persistenti: SPEAKER_00 di oci potrebbe essere
+        # la stessa persona di SPEAKER_01 di domani.
+        speaker_global_map, speaker_names = _resolve_global_speakers(
+            cfg, audio_path.stem, diar_result
+        )
+
+        ck.save_diarization(diar_segments, diar_result.embeddings, speaker_global_map)
         # Aggiorna i chunk con i speaker nel checkpoint
         ck._data["chunks"] = asr_chunks
         ck.save()
@@ -177,10 +271,14 @@ def process_file(audio_path: Path, cfg, args) -> bool:
         if args.no_diarization:
             logger.info("Stadio 3/5: Diarizzazione disabilitata (--no-diarization)")
             diar_segments = []
+            speaker_global_map = {}
+            speaker_names = {}
         else:
             logger.info("Stadio 3/5: Diarizzazione già completata, carico da checkpoint")
             diar_segments = ck.get_diarization()
             asr_chunks = ck.get_all_chunks()
+            speaker_global_map = ck.get_speaker_global_map()
+            speaker_names = _speaker_names_for(cfg, set(speaker_global_map.values()))
 
     if _shutdown_requested:
         logger.info("Shutdown dopo diarizzazione — checkpoint salvato.")
@@ -215,7 +313,10 @@ def process_file(audio_path: Path, cfg, args) -> bool:
             prosody_data=prosody_data,
             vad_stats=vad_stats,
             output_dir=output_dir,
+            speaker_global_map=speaker_global_map,
+            speaker_names=speaker_names,
         )
+        _write_speaker_profiles(cfg, output_dir)
         ck.complete_stage("assembly", files=list(str(p) for p in written.values()))
     else:
         logger.info("Stadio 5/5: Assemblaggio già completato")

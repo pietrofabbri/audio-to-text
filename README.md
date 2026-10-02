@@ -180,12 +180,57 @@ Per ogni file `input/registrazione.mp3` viene creata la cartella `output/registr
 
 ```
 output/registrazione/
-├── transcript.json     # struttura completa (testo + speaker + prosodia)
-├── transcript.txt      # testo leggibile con etichette speaker
-├── transcript.srt      # sottotitoli SRT
-├── prosody.csv         # metadati prosodici in formato tabulare
+├── transcript.json      # struttura completa (testo + speaker + prosodia)
+├── transcript.txt       # testo leggibile con etichette speaker
+├── transcript.srt       # sottotitoli SRT
+├── prosody.csv          # metadati prosodici in formato tabulare
+├── session.json         # metadata sessione, durate, statistiche per speaker
+├── segments.jsonl       # un segmento per riga (JSONL) — ingest LLM/analisi
+├── tokens.jsonl         # una parola per riga con timestamp — KWIC, n-grammi
+├── wordfreq.csv         # frequenze parole per speaker
+├── analysis_ready.md    # testo chunked pronto per un LLM
+├── speaker_profiles.json# profilo aggregato delle voci globali (senza vettori)
 └── registrazione.checkpoint.json  # stato avanzamento (ripresa automatica)
 ```
+
+### Identità vocali cross-file (speaker ID)
+
+`pyannote` etichetta gli speaker con ID locali (`SPEAKER_00`) che valgono
+solo per una sessione: la stessa persona può avere label diversi in due
+file diversi. La pipeline risolve il problema con gli **embedding vocali**
+che pyannote calcola già per il clustering (nessun costo aggiuntivo):
+ogni voce viene confrontata per similarità coseno con un database
+persistente e associata a un ID globale stabile (`GLOBAL_001`).
+
+```
+data/speakers_db.json   # database delle voci (dato biometrico, gitignored)
+```
+
+```python
+from core.speaker_db import SpeakerDB
+db = SpeakerDB()
+db.set_name("GLOBAL_001", "Pietro")   # etichetta manuale
+print(db.profiles())                  # ore parlate, sessioni, date
+```
+
+Nei file di output i segmenti riportano `speaker` (ID globale),
+`speaker_local` (ID della sessione) e `speaker_names` (nome umano se
+assegnato). La soglia di match è `match_threshold` in `core/config.py`
+(default 0.78): più alta = più conservativo. Sopra la soglia una voce
+è considerata nuova persona e nasce un ID nuovo.
+
+> `data/speakers_db.json` contiene embedding vocali, che sono
+> identificatori biometrici: resta in locale e non va nel repo. Se lo
+> perdi non si perde nulla — si ricostruisce riprocessando i file.
+
+### Test
+
+```bash
+python tests/test_speaker_db.py
+```
+
+Verifica il matching cross-file con embedding sintetici: nessun modello,
+nessun audio, pochi secondi.
 
 ### Esempio transcript.txt
 
@@ -242,15 +287,19 @@ audio-to-text/
 ├── setup_launchd.py        # scheduling notturno macOS
 ├── core/
 │   ├── config.py           # tutti i parametri
-│   └── checkpoint.py       # persistenza stato per ripresa
+│   ├── checkpoint.py       # persistenza stato per ripresa
+│   └── speaker_db.py       # identità vocali persistenti cross-file
 ├── pipeline/
 │   ├── vad.py              # Voice Activity Detection
 │   ├── transcriber.py      # ASR (mlx-whisper / faster-whisper)
 │   ├── diarizer.py         # diarizzazione speaker (pyannote)
 │   ├── prosody.py          # analisi prosodia (Parselmouth + librosa)
-│   └── assembler.py        # assemblaggio output (JSON/TXT/SRT/CSV)
+│   └── assembler.py        # assemblaggio output (JSON/TXT/SRT/CSV/JSONL/MD)
+├── tests/
+│   └── test_speaker_db.py  # test del matching cross-file (no modelli)
 ├── input/                  # metti qui i file audio/video
 ├── output/                 # risultati
+├── data/                   # database voci (biometrico, gitignored)
 └── logs/                   # log di esecuzione
 ```
 

@@ -65,6 +65,7 @@ class Assembler:
         vad_stats: dict[str, Any],
         output_dir: Path,
         speaker_global_map: dict[str, str] | None = None,
+        speaker_names: dict[str, str] | None = None,
     ) -> dict[str, Path]:
         """
         Assembla tutti i dati e scrive i file di output.
@@ -73,6 +74,9 @@ class Assembler:
             speaker_global_map: mapping speaker locale → ID globale cross-file,
                                  es. {"SPEAKER_00": "GLOBAL_001", ...}
                                  Se None, usa direttamente i label locali.
+            speaker_names: ID globale → nome umano, es. {"GLOBAL_001": "Pietro"}.
+                           Viene risolto in fase di output, così i formati
+                           sono leggibili anche senza aprire il DB.
 
         Returns:
             Dict con i percorsi dei file scritti, es:
@@ -101,6 +105,7 @@ class Assembler:
             diar_segments=diar_segments,
             vad_stats=vad_stats,
             speaker_global_map=speaker_global_map,
+            speaker_names=speaker_names,
         )
 
         written: dict[str, Path] = {}
@@ -225,6 +230,7 @@ class Assembler:
         diar_segments: list[dict[str, Any]],
         vad_stats: dict[str, Any],
         speaker_global_map: dict[str, str] | None = None,
+        speaker_names: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Costruisce il documento JSON completo."""
         speakers = sorted({s["speaker"] for s in final_segments})
@@ -256,6 +262,7 @@ class Assembler:
                 "segments_count":      len(final_segments),
                 "total_words":         total_words,
                 "speakers":            speakers,
+                "speaker_names":       speaker_names or {},
                 "speaker_stats":       speaker_stats,
                 "speaker_global_map":  speaker_global_map or {},
             },
@@ -406,15 +413,16 @@ def _write_session_json(meta: dict, path: Path, indent: int = 2) -> None:
       "stem": "registrazione",
       "processed_at": "2026-10-01T03:14:22",
       "session_start_wall": null,          ← popolato da sync_bio.py
-      "duration": {"total_sec": 72000, "speech_sec": 36000, "speech_ratio": 0.5},
-      "speakers": {
+      "duration": {"total_sec": 72000, "speech_sec": 36000, "speech_ratio": 0.5},        "speakers": {
         "GLOBAL_001": {"segments": 42, "duration_sec": 1800, "words": 3200, "fraction": 0.5},
         ...
       },
+      "speaker_names":       {"GLOBAL_001": "Pietro", ...},
       "speaker_global_map": {"SPEAKER_00": "GLOBAL_001", ...},
       "stats": {"total_words": 6400, "segments_count": 84}
     }
     """
+    speaker_names = meta.get("speaker_names", {})
     session = {
         "file":               meta["file"],
         "stem":               meta["stem"],
@@ -426,6 +434,7 @@ def _write_session_json(meta: dict, path: Path, indent: int = 2) -> None:
             "speech_ratio": meta["speech_ratio"],
         },
         "speakers":           meta["speaker_stats"],
+        "speaker_names":      speaker_names,
         "speaker_global_map": meta.get("speaker_global_map", {}),
         "stats": {
             "total_words":    meta["total_words"],

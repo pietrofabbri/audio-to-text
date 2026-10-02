@@ -24,10 +24,33 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DiarizationResult:
+    """Esito della diarizzazione: segmenti + embedding delle voci.
+
+    Gli embedding sono quelli che pyannote calcola già per il clustering
+    agglomerativo: non costa tempo extra chiederli. Servono al
+    SpeakerDB per riconoscere la stessa persona tra sessioni diverse.
+    """
+    segments: list[dict[str, Any]] = field(default_factory=list)
+    # {"SPEAKER_00": [0.31, -0.02, ...]} — serializzabile in JSON
+    embeddings: dict[str, list[float]] = field(default_factory=dict)
+
+    @property
+    def speaker_seconds(self) -> dict[str, float]:
+        """Secondi di parlato per speaker, per pesare i contributi."""
+        out: dict[str, float] = {}
+        for seg in self.segments:
+            sp = seg.get("speaker", "UNKNOWN")
+            out[sp] = out.get(sp, 0.0) + (seg["end"] - seg["start"])
+        return out
 
 
 class Diarizer:
@@ -159,16 +182,25 @@ class Diarizer:
     # Diarizzazione
     # ------------------------------------------------------------------
 
-    def diarize(self, wav_path: Path) -> list[dict[str, Any]]:
+    def diarize(
+        self,
+        wav_path: Path,
+        collect_embeddings: bool = True,
+    ) -> DiarizationResult:
         """
         Esegue la diarizzazione sull'intero file WAV.
 
         Args:
             wav_path: percorso al WAV 16kHz mono prodotto dal VAD
+            collect_embeddings: chiede a pyannote gli embedding vocali
+                (nessun costo computazionale aggiuntivo: li calcola
+                comunque per il clustering). Servono al SpeakerDB per
+                l'identità cross-file.
 
         Returns:
-            Lista di segmenti ordinata per start:
-            [{"speaker": "SPEAKER_00", "start": 0.5, "end": 4.2}, ...]
+            DiarizationResult con i segmenti ordinati per start
+            ([{"speaker": "SPEAKER_00", "start": 0.5, "end": 4.2}, ...])
+            e gli embedding per speaker.
         """
         self._load_pipeline()
         wav_path = Path(wav_path)
@@ -189,10 +221,19 @@ class Diarizer:
             kwargs["min_speakers"] = self.cfg.min_speakers
             kwargs["max_speakers"] = self.cfg.max_speakers
 
+        if collect_embeddings:
+            # pyannote 4.x: con questo flag DiarizeOutput espone
+            # anche speaker_embeddings. Se una versione futura lo
+            # rimuovesse, l'eccezione viene ignorata e si prosegue
+            # con la sola diarizzazione — il matching cross-file è
+            # un extra, non deve mai far fallire la pipeline.
+            kwargs["collect_embeddings"] = True
+
         diarization = self._pipeline(audio_input, **kwargs)
 
         elapsed = time.time() - t0
         segments = self._to_segments(diarization)
+        embeddings = self._to_embeddings(diarization)
 
         speakers = {s["speaker"] for s in segments}
         logger.info(
@@ -202,8 +243,19 @@ class Diarizer:
             len(speakers),
             sorted(speakers),
         )
+        if embeddings:
+            dims = {len(v) for v in embeddings.values()}
+            logger.info(
+                "Embedding vocali raccolti: %d (dim=%s)",
+                len(embeddings), sorted(dims),
+            )
+        elif collect_embeddings:
+            logger.warning(
+                "Nessun embedding ottenuto da pyannote: il matching "
+                "cross-file dei speaker non sarà disponibile per questa sessione"
+            )
 
-        return segments
+        return DiarizationResult(segments=segments, embeddings=embeddings)
 
     @staticmethod
     def _load_audio_as_tensor(wav_path: Path) -> dict:
@@ -245,6 +297,68 @@ class Diarizer:
             })
         segments.sort(key=lambda s: s["start"])
         return segments
+
+    @staticmethod
+    def _to_embeddings(diarization) -> dict[str, list[float]]:
+        """
+        Estrae gli embedding vocali dal risultato di pyannote.
+
+        In pyannote 4.x DiarizeOutput.speaker_embeddings è un array
+        (num_speakers, dimension) le cui righe sono allineate a
+        speaker_diarization.labels() — non è un dict, e zipparlo senza
+        i label assegnerebbe ogni voce alla persona sbagliata. Gestiamo
+        anche il dict (forme di pyannote 3.x) per robustezza.
+
+        Assenti in entrambi i casi: si ritorna con un dict vuoto, senza
+        eccezioni — la diarizzazione resta valida, solo senza identità
+        cross-file.
+        """
+        from core.speaker_db import to_vector
+
+        raw = getattr(diarization, "speaker_embeddings", None)
+        if raw is None:
+            return {}
+
+        # Non usare `if not raw`: su un array numpy l'operatori truth
+        # solleva ValueError ("truth value of an array...").
+        try:
+            size = len(raw)
+        except TypeError:
+            return {}
+        if size == 0:
+            return {}
+
+        def clean(vector) -> list[float]:
+            # 4 decimali: l'embedding serve solo a confronti coseno,
+            # la precisione ulteriore è spazio sprecato nel checkpoint
+            # e nel DB.
+            return [round(float(x), 4) for x in to_vector(vector)]
+
+        try:
+            if hasattr(raw, "items"):          # dict {label: vettore}
+                pairs = list(raw.items())
+            else:                                # array (n_speakers, dim)
+                annotation = getattr(diarization, "speaker_diarization", None)
+                labels = list(annotation.labels()) if annotation is not None else []
+                if len(labels) != size:
+                    logger.warning(
+                        "pyannote ha restituito %d embedding per %d label: "
+                        "niente identità cross-file per questa sessione",
+                        size, len(labels),
+                    )
+                    return {}
+                pairs = zip(labels, raw)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Formato embedding non riconosciuto (%s), ignorati", exc)
+            return {}
+
+        out: dict[str, list[float]] = {}
+        for speaker, vector in pairs:
+            try:
+                out[speaker] = clean(vector)
+            except (TypeError, ValueError) as exc:
+                logger.warning("Embedding non serializzabile per %s: %s", speaker, exc)
+        return out
 
     # ------------------------------------------------------------------
     # Assegnazione speaker ai chunk ASR

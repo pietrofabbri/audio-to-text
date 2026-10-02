@@ -36,6 +36,10 @@ output/*
 # Modelli scaricati localmente (HuggingFace cache è altrove)
 models/
 
+# Dati biometrici: gli embedding vocali sono identificatori biometrici.
+# speakers_db.json NON deve finire nel repo — è ricostruibile dai file audio.
+data/
+
 # Secrets
 .env
 *.env
