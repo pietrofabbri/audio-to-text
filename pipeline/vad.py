@@ -288,8 +288,20 @@ class VoiceActivityDetector:
                     sub_idx_offset += 1
                 continue
 
-            # Se aggiungere questo segmento supera il limite, chiudi il chunk
-            if current_dur + seg_dur > max_chunk_sec and current_segs:
+            # Il limite si controlla sul TEMPO TRASCORSO, non sulla somma
+            # delle durate di parlato.
+            #
+            # Sommando il solo parlato, venti segmenti da un secondo
+            # separati da silenzi entravano in un solo chunk: il chunk
+            # risultante copriva 188 secondi di clock con 29 di parole.
+            # Sembrava rispettare il limite di 29 secondi, ma non lo
+            # rispettava. E il conto torna male due volte: Whisper lavora
+            # su finestre di 30 secondi, e la prosodia (F0, jitter,
+            # shimmer) finiva calcolata su tre minuti in cui due minuti
+            # e mezzo erano silenzio — numeri senza significato, che
+            # nel corpus sembrerebbero dati misurati.
+            if (current_segs
+                    and seg.end - current_segs[0].start > max_chunk_sec):
                 chunks.append(_make_chunk(len(chunks), current_segs))
                 current_segs = []
                 current_dur = 0.0

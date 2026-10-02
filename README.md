@@ -215,28 +215,36 @@ su questa macchina, in nessuna configurazione misurata.** Il sistema e
 costruito per che la coda avanzi di qualche file a notte, in ordine,
 senza perdere nulla.
 
-### Capacità misurata (18 file da 1h che arrivano ogni giorno)
+### Capacità misurata sulle registrazioni vere
 
-Finestra notturna 02:00–06:00 (4h a pieno regime) più tre passate
-diurne brevi (09:30, 15:30, 21:30, da 40 min con 3 thread e priorità
-bassa).
+Finestra notturna 02:00–06:00 (4h) più tre passate diurne brevi
+(09:30, 15:30, 21:30, da 40 min con 3 thread e priorità bassa).
 
-La riga che conta è il **rapporto di parlato**: il VAD scarta il
-silenzio prima dell'ASR, quindi l'ASR paga solo le parole, non i minuti.
+Il costo **non** è una costante per secondo di audio: caricare i modelli
+e fare il campione per il confronto denoise si pagano una volta per
+file, mentre l'ASR paga solo sul parlato. Per questo il modello di costo
+sta in [`core/cost.py`](core/cost.py) e separa le due cose. È tarato
+sulle registrazioni vere e prevede il tempo entro l'1% della misura.
 
-| Parlato | Costo per file da 1h | File per notte | + diurno | Esito vs 18/giorno |
+Su quattro registrazioni reali del registratore (209 minuti, 3 parlanti,
+SNR 18–30 dB) il rapporto di parlato misurato è **65%**.
+
+| Parlato | Costo per file da 1h | Notte (4h) | + diurno | Totale/giorno vs 18 |
 |---|---|---|---|---|
-| 92% (campione) | 0,70 h | 4 | 1 | scopre 13 |
-| 70% | 0,53 h | 6 | 2 | scopre 10 |
-| 50% | 0,38 h | 9 | 3 | scopre 6 |
-| 36% (**misurato su registrazione vera**) | 0,27 h | 13 | 4 | scopre 1 |
+| 95% | 20,3 min | 11 | 5 | 16 — scopre 2 |
+| 80% | 18,1 min | 13 | 6 | 19 — in pari |
+| **65% (misurato)** | **16,0 min** | **15** | **7** | **22 — in pari** |
+| 50% | 13,8 min | 17 | 8 | 25 — in pari |
+| 35% | 11,7 min | 20 | 10 | 30 — in pari |
 
-**La coda cresce con qualsiasi rapporto di parlato realistico.** Il
-rapporto vero si misura da solo: `nightly.py` lo legge dalle sessioni
-gia elaborate e lo usa per la stima, quindi dopo la prima notte il piano
-smette di essere una supposizione.
+**Con il 65% di parlato la coda si chiude.** Non è una stima ottimistica:
+è il numero che esce dal modello tarato sulle tue registrazioni, e il
+rapporto di parlato si rilegge da solo dalle sessioni già elaborate, quindi
+si aggiusta da sé se le registrazioni cambiano.
 
-La leva che chiude il divario è il modello ASR, ed è una riga:
+Il margine si assottiglia sopra l'80% di parlato: se le registrazioni
+diventassero quasi tutto parlato, servirebbe una macchina più veloce
+oppure un modello ASR più leggero.
 
 ```bash
 export A2T_ASR_MODEL=medium    # ~2x piu veloce, un po' meno accurato
@@ -246,7 +254,47 @@ export A2T_ASR_MODEL=medium    # ~2x piu veloce, un po' meno accurato
 thread): cambiare modello non richiede toccare il codice, e il checkpoint
 riconosce cio che e gia fatto e non ricomincia.
 
+### Cosa dicono le tue registrazioni
+
+| | |
+|---|---|
+| Formato | MP3 32 kHz stereo, 128 kbps |
+| Loudness | −12,1 LUFS (la registrazione è forte) |
+| Picco vero | +3,2 dBFS: **il registratore satura** |
+| Campioni a fondo scala | 0,19–0,30% |
+| SNR stimato | 18–30 dB |
+| Parlato | 65% |
+| Parlanti per file | 2–3 |
+
+Il **clipping** è l'unico dato che non si sistema dopo: quando il
+campione è già stato saturato, l'informazione è persa e nessun filtro la
+recupera. Si può mitigare in elaborazione (il denoise lo prova da sé e
+sceglie), ma la soluzione vera è abbassare la sensibilità del
+registratore, se ha un'impostazione del genere.
+
 ## Flusso col registratore (import → elaborazione → archiviazione)
+
+## Chi parla: identità vocali fra file diversi
+
+La diarizzazione etichetta `SPEAKER_00` dentro ogni file, ma quel numero
+non significa niente fra un file e l'altro. Il confronto degli embedding
+vocali assegna un ID globale stabile (`GLOBAL_001`, `GLOBAL_002`…), e il
+giudizio finale — quando due voci sono la stessa persona — spetta a te:
+
+```bash
+python review_speakers.py                       # elenco + matrice
+python review_speakers.py name GLOBAL_001 Pietro
+python review_speakers.py merge GLOBAL_003 GLOBAL_004
+python review_speakers.py split GLOBAL_005
+```
+
+Su quattro registrazioni reali la separazione è netta: persone diverse
+stanno a 0,13–0,29 di coseno, e l'unica coppia unita automaticamente
+sta a 0,82. In mezzo, una fascia 0,53–0,67 dove la macchina non sa
+decidere — è lì che serve un nome. La soglia di 0,78 sta sopra quella
+fascia e sotto la coppia certa: si può cambiare con
+`review_speakers.py threshold 0.70`, ma conviene aspettare più materiale
+prima, perché i centroidi diventano più affidabili con le ore accumulate.
 
 Quando il registratore è collegato, tutto il ciclo è in un comando:
 
@@ -518,10 +566,12 @@ audio-to-text/
 ├── nightly.py              # ciclo notturno: importa, elabora, pubblica
 ├── sync_device.py          # import dal registratore + cancellazione sicura
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
+├── review_speakers.py      # chi è chi: nomi, merge, split delle voci
 ├── setup_env.sh            # installa dipendenze
 ├── setup_launchd.py        # scheduling notturno macOS
 ├── core/
 │   ├── config.py           # tutti i parametri
+│   ├── cost.py             # modello di costo della pipeline (tarato su misure)
 │   ├── checkpoint.py       # persistenza stato per ripresa
 │   ├── device.py           # rilevamento registratore e orario nei nomi file
 │   ├── speaker_db.py       # identità vocali persistenti cross-file

@@ -48,6 +48,7 @@ from core.device import (  # noqa: E402
     pick_recorder,
 )
 from core.corpus_db import CorpusDB  # noqa: E402
+from core.cost import estimate_seconds  # noqa: E402
 
 logger = logging.getLogger("sync_device")
 
@@ -652,7 +653,10 @@ class _Budget:
 
     # RTF complessivo della pipeline (elaborazione / audio), misurato
     # su questo Mac: 74s per 97,8s di audio = 0,76.
-    MEASURED_RTF = 0.76
+    # RTF di partenza, quando non c'è ancora nessun file elaborato da
+    # cui imparare. Corrisponde a un file da un'ora con il 65% di
+    # parlato, cioè la situazione misurata sulle registrazioni vere.
+    MEASURED_RTF = 0.27
 
     # Margine applicato alla stima per la decisione "inizio questo
     # file?". Sopravvalutare il tempo necessario è la direzione giusta
@@ -672,6 +676,11 @@ class _Budget:
         self._time_done = 0.0
         self._current_start: float | None = None
         self._current_est: float = 0.0
+
+    @property
+    def speech_ratio(self) -> float | None:
+        """Frazione di parlato delle sessioni già elaborate, se nota."""
+        return _measured_speech_ratio()
 
     def elapsed(self) -> float:
         """Tempo consumato.
@@ -695,9 +704,22 @@ class _Budget:
         return self._time_done / self._audio_done
 
     def estimate(self, f: Path) -> float:
-        """Secondi stimati per il file, dalla durata se disponibile."""
+        """Secondi stimati per il file.
+
+        Prima di avere misure reali si stima con il modello di costo, che
+        conosce sia i costi fissi sia la frazione di parlato: un file da
+        un'ora non costa come dieci file da sei minuti, e una stima a
+        costo costante sbaglia di un fattore due sul primo file della
+        notte.
+
+        Dopo il primo file la stima si impara dai dati: gli RTF
+        osservati sostituiscono il modello.
+        """
         dur = _probe_duration(f) or 3600.0
-        return dur * self.rtf()
+        if self._time_done > 0 and self._audio_done > 0:
+            return dur * self.rtf()
+        ratio = self.speech_ratio
+        return estimate_seconds(dur, dur * ratio if ratio else None) * self.SAFETY
 
     def started_file(self, est: float) -> None:
         self._current_start = time.time()
@@ -720,6 +742,31 @@ class _Budget:
 
     def finish_all(self) -> None:
         self.finished_file(self._current_est / max(self.rtf(), 0.01))
+
+
+def _measured_speech_ratio() -> float | None:
+    """Frazione di parlato media delle sessioni gia' elaborate.
+
+    Nessun dato -> None, e la stima resta sul 100% di parlato, che e'
+    la caso peggiore: meglio iniziare un file in meno che iniziarne uno
+    che non finisce dentro la finestra.
+    """
+    out_dir = OUTPUT_DIR / ""
+    if not out_dir.is_dir():
+        return None
+    ratios = []
+    for d in out_dir.iterdir():
+        p = d / "transcript.json"
+        if not d.is_dir() or not p.exists():
+            continue
+        try:
+            m = json.loads(p.read_text(encoding="utf-8")).get("meta", {})
+        except (json.JSONDecodeError, OSError):
+            continue
+        r = m.get("speech_ratio")
+        if isinstance(r, (int, float)) and 0 < r <= 1:
+            ratios.append(float(r))
+    return (sum(ratios) / len(ratios)) if ratios else None
 
 
 def _probe_duration(path: Path) -> float | None:

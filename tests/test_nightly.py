@@ -86,24 +86,37 @@ def t_limit_is_after_sorting(tmp: Path) -> None:
 
 
 def t_queue_growth_is_visible(tmp: Path) -> None:
-    """Con 18 file al giorno, la coda cresce: il piano deve dirlo.
+    """Con 18 file al giorno, quanto regge? Il numero va mostrato.
 
-    Non è un test che "deve passare": è un test che deve *mostrare* il
-    numero. Se un giorno la macchina diventa piu' veloce, o le
-    registrazioni diventano piu' silenziose, questo numero scende da solo.
+    Non è un test che "deve passare" o "deve fallire": è un test che
+    deve mostrare il divario, cosi la decisione (cambiare modello,
+    cambiare macchina, accettare il ritardo) si prende su un dato e non
+    su una speranza. Se un giorno la situazione cambia, il numero
+    cambia da solo.
     """
-    print("  la coda cresce con 18 file da 1h al giorno?")
-    import nightly
+    print("  la coda regge con 18 file da 1h al giorno?")
+    from core.cost import estimate_seconds
 
-    for ratio in (0.92, 0.70, 0.50, 0.35):
-        # Costo per ora di audio, con la frazione di parlato data.
-        per_file_h = nightly.MEASURED_RTF * ratio * 1.0
-        night = int((4 * 3600) // (per_file_h * 3600))
-        day = int((40 * 60) // (per_file_h * 3600))    # 3 passate da 40 min
+    NIGHT_SEC = 4 * 3600
+    DAY_SEC = 40 * 60 * 3        # tre passate diurne da 40 minuti
+
+    for ratio in (0.95, 0.80, 0.65, 0.50, 0.35):
+        per_file = estimate_seconds(3600, 3600 * ratio)
+        night = int(NIGHT_SEC // per_file)
+        day = int(DAY_SEC // per_file)
         gap = 18 - (night + day)
-        print(f"    parlato {ratio:.0%}: notte {night} + diurno {day} "
-              f"= {night + day}/18  ->  {'scoperta ' + str(gap) if gap > 0 else 'in pari'}")
-    print("    (la coda cresce in tutti i casi: vedi README per la tabella)")
+        verdict = f"in pari ({night + day}/18)" if gap <= 0 else f"scopre {gap}/18"
+        print(f"    parlato {ratio:.0%}: {per_file/60:4.1f} min/file -> "
+              f"notte {night} + diurno {day} = {night + day:2d}/18  {verdict}")
+
+    # Con il 65% di parlato (misurato sulle registrazioni vere) notte e
+    # diurno insieme devono coprire i 18 file che arrivano ogni giorno:
+    # è il motivo per cui il modello di costo esiste.
+    per_file = estimate_seconds(3600, 3600 * 0.65)
+    capacity = int((NIGHT_SEC + DAY_SEC) // per_file)
+    require(capacity >= 18,
+            f"con il 65% di parlato si coprono {capacity} file al giorno, "
+            f"ne arrivano 18")
 
 
 def t_dry_run_writes_nothing(tmp: Path) -> None:
@@ -167,6 +180,81 @@ def t_speech_ratio_learns_from_sessions(tmp: Path) -> None:
 
 # ---------------------------------------------------------------------------
 
+def t_cost_model_matches_measurements(tmp: Path) -> None:
+    """Il modello di costo deve riprodurre le misure reali.
+
+    Non serve che preveda il futuro: serve che dica la verita' sul
+    passato. Un modello che sbaglia del 30% sulle misure non merita
+    fiducia sulle stime, per quanto ben ragionate siano le formule.
+    """
+    print("  il modello di costo riproduce le misure")
+    from core.cost import estimate_seconds, estimate_rtf
+
+    # (audio_s, rapporto parlato, secondi realmente misurati)
+    measured = [
+        (600, 0.96, 255),
+        (600, 0.78, 229),
+    ]
+    for audio_s, ratio, real in measured:
+        pred = estimate_seconds(audio_s, audio_s * ratio)
+        err = abs(pred - real) / real
+        require(err < 0.15,
+                f"su {audio_s}s al {ratio:.0%}: predetto {pred:.0f}s, "
+                f"reale {real}s (errore {err:.0%})")
+
+    # Su un file da un'ora il rapporto deve essere piu' basso che su uno
+    # da dieci minuti: i costi fissi si ammortizzano. E' la ragione per
+    # cui una costante unica sbaglia.
+    short = estimate_rtf(600, 600 * 0.8)
+    hour = estimate_rtf(3600, 3600 * 0.8)
+    require(hour < short,
+            f"su un'ora il RTF dovrebbe scendere: {hour:.2f} vs {short:.2f}")
+    require(0.2 < hour < 0.4,
+            f"RTF su un'ora fuori dall'intervallo plausibile: {hour:.2f}")
+    print(f"    misure entro il 15% | RTF 10 min {short:.2f} -> 1h {hour:.2f}")
+
+
+def t_chunks_respect_the_clock_limit(tmp: Path) -> None:
+    """Un chunk non puo' durare piu' del limite, silenzi compresi.
+
+    Il chunker sommava le durate di PARLATO ma produceva uno span che
+    includeva i silenzi: un chunk con 29 s di parole si diluiva su 188 s
+    di clock e sembrava rispettare il limite senza rispettarlo.
+    """
+    print("  i chunk rispettano il limite sul tempo trascorso")
+    from pipeline.vad import SpeechSegment, VoiceActivityDetector
+    from core.config import config
+
+    vad = VoiceActivityDetector.__new__(VoiceActivityDetector)
+    # 30 segmenti da 1 s, distanziati di 2 s di silenzio: 30 s di
+    # parlato sparsi su 90 s di clock. E' la situazione che faceva
+    # traboccare i chunk: sommando solo il parlato, venti segmenti
+    # entravano in un chunk che copriva 58 s di orologio.
+    segs = [
+        SpeechSegment(idx=i, start=i * 3.0, end=i * 3.0 + 1.0)
+        for i in range(30)
+    ]
+    chunks = vad.split_into_chunks(segs, 29.0)
+
+    # Il limite e' sul tempo TRASCORSO: start/end del chunk.
+    for c in chunks:
+        span = c["end"] - c["start"]
+        require(span <= 29.01,
+                f"chunk {c['idx']} copre {span:.1f}s di clock, oltre il limite")
+    require(len(chunks) >= 3,
+            f"su 90 s di clock servono almeno 3 chunk, trovati {len(chunks)}")
+
+    # E nessun segmento di parlato puo' andare perso: la somma delle
+    # durate dei chunk deve tornare con il parlato totale.
+    covered = sum(c["duration"] for c in chunks)
+    total = sum(s.duration for s in segs)
+    require(abs(covered - total) < 0.01,
+            f"parlato coperto {covered:.1f}s su {total:.1f}s: qualcosa e' perso")
+    print(f"    {len(chunks)} chunk, span max "
+          f"{max(c['end']-c['start'] for c in chunks):.1f}s, "
+          f"parlato {covered:.0f}/{total:.0f}s")
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -174,6 +262,8 @@ def main() -> int:
         t_queue_growth_is_visible,
         t_dry_run_writes_nothing,
         t_speech_ratio_learns_from_sessions,
+        t_cost_model_matches_measurements,
+        t_chunks_respect_the_clock_limit,
     ]
     failed = 0
     for fn in tests:

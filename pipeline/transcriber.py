@@ -281,10 +281,39 @@ class Transcriber:
     def _transcribe_slice_faster(
         self, audio: np.ndarray, start: float, end: float, idx: int
     ) -> dict[str, Any]:
+        # I timestamp di parola sono ciò che rende il corpus utilizzabile
+        # (KWIC, allineamento con la prosodia, sync biometrico), ma sono
+        # anche la parte che va in crisi più spesso: su un chunk degenere
+        # l'allineamento internally di faster-whisper solleva
+        # IndexError e fino a ieri quella eccezione saliva fino a run.py e
+        # uccideva l'intero file — quindi, di notte, tutti i file dopo.
+        #
+        # Il compromesso è: si ritenta senza timestamp di parola e si
+        # tiene il testo. Perdere la granularità di un chunk è un danno
+        # piccolo e circoscritto; perdere un'ora di registrazione è un
+        # danno che nessuno si accorgerebbe di notte.
+        try:
+            return self._transcribe_slice_faster_impl(
+                audio, start, end, idx, word_timestamps=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Chunk %d: timestamp di parola falliti (%s: %s), "
+                "ritento senza",
+                idx, type(exc).__name__, exc,
+            )
+            return self._transcribe_slice_faster_impl(
+                audio, start, end, idx, word_timestamps=False,
+            )
+
+    def _transcribe_slice_faster_impl(
+        self, audio: np.ndarray, start: float, end: float, idx: int,
+        word_timestamps: bool = True,
+    ) -> dict[str, Any]:
         segments_iter, info = self._model.transcribe(
             audio,
             language=self.cfg.language,
-            word_timestamps=True,
+            word_timestamps=word_timestamps,
             condition_on_previous_text=self.cfg.condition_on_previous_text,
             no_speech_threshold=self.cfg.no_speech_threshold,
             no_repeat_ngram_size=getattr(self.cfg, "no_repeat_ngram_size", 0),

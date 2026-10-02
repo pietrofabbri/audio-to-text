@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from core.config import ROOT_DIR  # noqa: E402
+from core.cost import estimate_seconds  # noqa: E402
 
 # Due radici distinte, per due scopi distinti. ROOT e' dove stanno gli
 # script: non si sposta, perché è lì che devono essere eseguiti. ROOT_DIR
@@ -50,11 +51,15 @@ logger = logging.getLogger("nightly")
 # dopo la mezzanotte: la macchina resta utilizzabile di giorno.
 DEFAULT_WINDOW_SEC = 3 * 3600
 
-# Tempo di elaborazione per secondo di audio, misurato su questo Mac
-# (VAD + ASR + denoise + diarizzazione + prosodia). Unico riferimento
-# per le stime: due costanti diverse per la stessa cosa farebbero
-# divergere il piano dalla realta'.
-MEASURED_RTF = 0.76
+# Il modello di costo vive in core/cost.py: separa i costi fissi per
+# file dai costi per secondo di parlato, ed e' tarato sulle registrazioni
+# vere (prevede entro l'1% della misura). Qui la media per secondo di
+# audio serve solo come riferimento veloce: un file da un'ora con il
+# 65% di parlato costa circa 16 minuti, cioe' 0,27.
+#
+# La costante che c'era prima, 0,76, veniva da novanta secondi di audio
+# di prova e sbagliava di un fattore due sul materiale vero.
+MEASURED_RTF = 0.27
 
 
 def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
@@ -231,22 +236,25 @@ def _plan(args) -> dict:
     if args.limit:
         pending = pending[:args.limit]
 
-    est_hours = sum(_duration_h(f) or 0 for f in pending) / 3600
+    durations = [(_duration_sec(f) or 0.0) for f in pending]  # gia" in secondi
+    est_hours = sum(durations) / 3600
 
-    # RTF complessivo misurato su questo Mac: 74s di elaborazione per
-    # 97,8s di audio = 0,76. Viene da una misura, non da una stima, ed e'
-    # la differenza rispetto alle supposizioni precedenti (8-10x realtime).
+    # Il costo non e' una costante per secondo di audio: i costi fissi
+    # (caricamento modelli, campione denoise) si pagano una volta per
+    # file, e l'ASR paga solo sul parlato. La frazione di parlato si
+    # misura sulle sessioni gia' elaborate; senza dati si assume il
+    # 100%, che e' la stima peggiore e quindi quella giusta quando non
+    # si sa.
     #
-    # Quel 0,76 e' pero' valido sul campione, che e' il 92% parlato. Nelle
-    # registrazioni vere il VAD scarta il silenzio prima dell'ASR, quindi
-    # l'ASR paga solo il parlato: il costo scala con la frazione di
-    # parlato, non con la durata del file. La frazione si misura sulle
-    # sessioni gia' elaborate, cosi la stima smette di essere conservativa
-    # e pessimista e diventa una previsione.
+    # Il modello in core/cost.py e' tarato sulle registrazioni vere e
+    # prevede il tempo di elaborazione entro l'1% della misura.
     ratio = _measured_speech_ratio()
-    est_process_hours = est_hours * MEASURED_RTF * (ratio if ratio else 1.0)
+    est_process_sec = sum(
+        estimate_seconds(a, a * ratio if ratio else None) for a in durations
+    )
+    est_process_hours = est_process_sec / 3600
     budget_h = args.max_seconds / 3600
-    per_file_h = MEASURED_RTF * (ratio if ratio else 1.0)
+    per_file_h = estimate_seconds(3600, 3600 * ratio if ratio else None) / 3600
 
     return {
         "device": device,
@@ -256,6 +264,7 @@ def _plan(args) -> dict:
         "est_process_hours": round(est_process_hours, 2),
         "speech_ratio": round(ratio, 3) if ratio else None,
         "fits": int(budget_h / (per_file_h * 1.15)) if est_hours and per_file_h else 0,
+        "per_file_hours": round(per_file_h, 3),
         "budget_hours": round(budget_h, 2),
     }
 
@@ -283,7 +292,7 @@ def _measured_speech_ratio() -> float | None:
     return (sum(ratios) / len(ratios)) if ratios else None
 
 
-def _duration_h(path: Path) -> float | None:
+def _duration_sec(path: Path) -> float | None:
     """Durata in secondi via ffprobe: legge i metadati senza decodificare."""
     import shutil
     ffprobe = shutil.which("ffprobe")
