@@ -116,24 +116,54 @@ def already_processed_hashes() -> set[str]:
 # ---------------------------------------------------------------------------
 
 def cmd_detect(args) -> int:
+    # Prima di tutto, tutti i volumi montati e i motivi di eventuali
+    # esclusioni. Un "non trovato" senza questo contesto e' un vicolo
+    # cieco: non distingue "il device non e' collegato" da "e' collegato
+    # ma in sola lettura" da "e' un .app", e quelle tre cose si
+    # risolvono in modo completamente diverso.
+    print(f"Volumi montati in {args.mounts}:")
+    for entry in sorted(Path(args.mounts).iterdir()) if Path(args.mounts).is_dir() else []:
+        if entry.name.startswith("."):
+            continue
+        marker = " (symlink, ignorato)" if entry.is_symlink() else ""
+        try:
+            free = shutil.disk_usage(str(entry)).free / 1e9
+        except OSError:
+            free = 0.0
+        print(f"  {entry}{marker}  {free:.0f} GB liberi")
+    print()
+
     volumes = discover(args.mounts)
     if not volumes:
-        print("Nessun volume con file audio trovato in", args.mounts)
-        print("\nSe il device è collegato e ha una cartella 'record':")
-        print("  - verifica il cavo e che sia riconosciuto come memoria USB")
-        print("  - su un device Android via MTP macOS NON lo monta in /Volumes:")
-        print("    in quel caso serve un percorso alternativo (--source)")
+        print("Nessun volume con file audio.")
+        print("\nCosa controllare, in quest'ordine:")
+        print("  1. il registratore e' collegato? (in /Volumes non c'e)")
+        print("     diskutil list external | grep -i apple  <- deve comparire")
+        print("  2. e' collegato ma macOS non lo monta?")
+        print("     - Android via MTP: macOS NON lo monta, serve OpenMTP")
+        print("       oppure la cartella del device via rete/Finder")
+        print("     - alcuni registratori si caricano solo tramite app")
+        print("  3. e' montato ma i file hanno un'estensione non prevista?")
+        print("     ls <volume>  ->  le estensioni supportate sono")
+        print(f"       {', '.join(AUDIO_EXTENSIONS)}")
+        print("\nCon un percorso esplicito si bypassa il rilevamento:")
+        print("  python sync_device.py detect --source /percorso/del/device")
         return 1
 
-    print(f"Volumi con audio in {args.mounts}:\n")
+    print(f"Volumi con file audio:\n")
     for v in volumes:
         print(v.summary())
-        marker = "  <== REGISTRATORE" if v.looks_like_recorder else ""
-        print(f"    candidato: {'si' if v.looks_like_recorder else 'no'}{marker}\n")
+        if v.looks_like_recorder:
+            print("    candidato: SI  <== REGISTRATORE\n")
+        else:
+            print(f"    candidato: no — {v.rejection_reason() or 'non scelto'}\n")
 
     chosen = pick_recorder(volumes)
     if not chosen:
         print("Nessun registratore identificato con certezza.")
+        print("Se piu di un volume e' plausibile, indicane uno esplicitamente:")
+        for v in volumes:
+            print(f"  python sync_device.py detect --source '{v.path}'")
         return 1
 
     print(f"Registratore: {chosen.path}\n")
@@ -142,6 +172,8 @@ def cmd_detect(args) -> int:
     print(f"  file totali   : {info['total']}")
     print(f"  data ricavata : {info['parsed']} ({100*info['parsed']//max(1,info['total'])}%)")
     print(f"  pattern       : {info['patterns']}")
+    if info.get("est_hours"):
+        print(f"  durata totale : {info['est_hours']:.1f} ore")
     if info.get("earliest"):
         print(f"  primo file    : {info['earliest']}")
         print(f"  ultimo file   : {info['latest']}")
@@ -157,6 +189,128 @@ def cmd_detect(args) -> int:
 
     print(f"\nPer procedere:\n  python sync_device.py pull --source '{chosen.path}'")
     return 0
+
+
+def cmd_doctor(args) -> int:
+    """
+    Controllo dell'ambiente, una voce alla volta, con un verdetto per ognuna.
+
+    Serve a una cosa precisa: distinguere "l'ambiente non è pronto" da
+    "manca solo il device". Sono due problemi che si risolvono con
+    azioni opposte, e confonderli fa perdere un'ora a cercare il
+    problema nel posto sbagliato.
+    """
+    print("=" * 64)
+    print("  Controllo ambiente — audio-to-text")
+    print("=" * 64)
+
+    ok = True
+
+    def check(label: str, good: bool, detail: str = "", fix: str = "") -> None:
+        nonlocal ok
+        segno = "OK  " if good else "KO  "
+        print(f"[{segno}] {label}")
+        if detail:
+            print(f"        {detail}")
+        if not good and fix:
+            print(f"        → {fix}")
+        if not good:
+            ok = False
+
+    # --- strumenti di sistema -----------------------------------------
+    for tool in ("ffmpeg", "ffprobe"):
+        path = shutil.which(tool)
+        check(f"{tool} disponibile", bool(path), path or "non nel PATH",
+              "brew install ffmpeg")
+
+    # --- spazio disco ---------------------------------------------------
+    usage = shutil.disk_usage(str(ROOT))
+    free_gb = usage.free / 1e9
+    # 18 ore di registrazione: WAV 16kHz mono ~2 GB, più gli output
+    need_gb = 3.0
+    check("spazio disco", free_gb > need_gb,
+          f"{free_gb:.0f} GB liberi (servono ~{need_gb:.0f} GB per le cache WAV)",
+          "libera spazio: le cache WAV sono in input/.wav_cache/")
+
+    # --- modelli -------------------------------------------------------
+    # Si verifica il modello che la pipeline usera DAVVERO, non "un
+    # faster-whisper qualsiasi": nella cache c'è anche il small (usato
+    # da whisperx per default) e un controllo che dicesse "OK" per quello
+    # darebbe una risposta falsa sul modello da 1,5 GB.
+    hub = Path.home() / ".cache" / "huggingface" / "hub"
+    sys.path.insert(0, str(ROOT))
+    try:
+        from core.config import config as _cfg
+        wanted = _cfg.asr.model_id
+    except Exception:  # noqa: BLE001
+        wanted = "large-v3-turbo"
+
+    asr_models = sorted(
+        d.name.split("models--")[-1].replace("--", "/")
+        for d in hub.glob("models--*--faster-whisper-*")
+    ) if hub.is_dir() else []
+    asr_ok = any(wanted.split("/")[-1] in m for m in asr_models)
+    check(f"modello ASR in uso ({wanted})", asr_ok,
+          "in cache" if asr_ok else f"in cache: {asr_models or 'nessuno'}",
+          "si scarica alla prima esecuzione, serve rete")
+
+    for label, pat in (
+        ("modello pyannote", "models--pyannote--segmentation*"),
+        ("modello mlx (opzionale)", "models--mlx-community--whisper*"),
+    ):
+        found = list(hub.glob(pat)) if hub.is_dir() else []
+        check(label, bool(found),
+              found[0].name if found else "non in cache",
+              "si scarica alla prima esecuzione, serve rete")
+
+    # --- token HF ------------------------------------------------------
+    token = None
+    for p in (Path.home() / ".cache/huggingface/token",
+              Path.home() / ".huggingface/token"):
+        if p.exists() and p.read_text().strip():
+            token = p
+            break
+    check("token Hugging Face", bool(token),
+          str(token) if token else "assente",
+          "huggingface-cli login  (serve per la diarizzazione)")
+
+    # --- import python --------------------------------------------------
+    try:
+        import faster_whisper  # noqa: F401
+        check("faster-whisper", True, getattr(faster_whisper, "__version__", "installato"))
+    except ImportError as exc:
+        check("faster-whisper", False, str(exc), "pip install faster-whisper")
+    try:
+        import pyannote.audio  # noqa: F401
+        check("pyannote.audio", True, "installato")
+    except ImportError as exc:
+        check("pyannote.audio", False, str(exc), "pip install pyannote.audio")
+
+    # --- device ---------------------------------------------------------
+    print()
+    vol = pick_recorder(discover())
+    if vol:
+        check("registratore", True, f"{vol.path} — {vol.audio_count} file audio",
+              "")
+    else:
+        print("[KO  ] registratore non rilevato")
+        print("        È l'unica voce attesa in KO se l'ambiente è a posto.")
+        print("        Collegalo e riapeti: python sync_device.py detect")
+
+    # --- job launchd ----------------------------------------------------
+    print()
+    for label in ("it.pietrofabbri.audio-to-text",
+                  "it.pietrofabbri.audio-to-text-daytime"):
+        res = subprocess.run(["launchctl", "list", label], capture_output=True)
+        check(f"job launchd {label.split('.')[-1]}", res.returncode == 0,
+              "attivo" if res.returncode == 0 else "non caricato",
+              "python setup_launchd.py install")
+
+    print()
+    print("=" * 64)
+    print("  Ambiente pronto." if ok else "  Ci sono voci in KO: vedi le righe sopra.")
+    print("=" * 64)
+    return 0 if ok else 1
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +761,12 @@ def main() -> int:
     g.add_argument("--days", type=int, default=0, help=f"default {ARCHIVE_DAYS}")
     g.add_argument("--dry-run", action="store_true")
     g.set_defaults(func=cmd_purge)
+
+    doc = sub.add_parser(
+        "doctor",
+        help="controlla che l'ambiente sia pronto, voce per voce",
+    )
+    doc.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args()
 
