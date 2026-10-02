@@ -286,6 +286,78 @@ def test_analysis_is_one_row_per_day_and_kind(tmp: Path) -> None:
         assert dict(rows[0])["summary"] == "seconda", dict(rows[0])
 
 
+def test_budget_stops_between_files_not_mid_file(tmp: Path) -> None:
+    """La coda si deve fermare FRA un file e l'altro. Un file iniziato e
+    non finito costa il suo tempo senza produrre nulla, e la notte
+    dopo si rifarebbe da capo."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    f = tmp / "a.mp3"
+    f.write_bytes(b"x" * 5000)
+
+    b = sd._Budget(0)  # nessun limite
+    assert not b.exhausted(10_000), "senza limite non deve mai fermarsi"
+
+    b = sd._Budget(1000, simulate=True)
+    b.started_file(900)
+    b.finished_file(3600.0, simulated=True)
+    assert b.elapsed() == 900, b.elapsed()
+    assert b.remaining() == 100, b.remaining()
+    assert b.exhausted(900), "con 100s residui non si deve iniziare un file da 900s"
+    assert not b.exhausted(50)
+
+
+def test_budget_learns_from_files_already_done(tmp: Path) -> None:
+    """Dopo il primo file la stima non e' piu' un'ipotesi: si impara dal
+    RTF reale della run in corso."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+    f = tmp / "a.mp3"
+    f.write_bytes(b"x" * 5000)
+
+    b = sd._Budget(10_000, simulate=True)
+    assert abs(b.rtf() - b.DEFAULT_RTF) < 1e-9, "prima del primo file: RTF di default"
+
+    # un file da 3600s di audio elaborato "in" 3600s simulati
+    b.started_file(3600.0)
+    b.finished_file(3600.0, simulated=True)
+    assert abs(b.rtf() - 1.0) < 1e-9, b.rtf()
+
+    # il file successivo costa ora secondo l'RTF imparato (1.0), non
+    # secondo la stima di default (0,87): con un RTF reale di 1.0 la
+    # stima deve crescere, non restare quella ottimistica.
+    assert b.estimate(f) > 3600.0 * 0.9, b.estimate(f)
+
+
+def test_dry_run_advances_budget_by_estimate(tmp: Path) -> None:
+    """In simulazione il tempo non passa, ma consumarlo comunque e' quello
+    che rende il dry-run un piano invece di un'eco."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+    b = sd._Budget(100, simulate=True)
+    b.started_file(60)
+    b.finished_file(3600.0, simulated=True)
+    assert b.elapsed() == 60
+    assert b.remaining() == 40
+
+
+def test_fallback_stem_is_unique_per_file(tmp: Path) -> None:
+    """Senza hash nella riserva, due file senza data importati nello
+    stesso secondo finirebbero nella stessa cartella e il secondo
+    verrebbe scambiato per un output gia' presente."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+    a = sd._stem_for(tmp / "uno.mp3", None)
+    b = sd._stem_for(tmp / "due.mp3", None)
+    assert a != b, (a, b)
+    # con data, invece, la data è la chiave
+    from datetime import datetime
+    dt = datetime(2026, 10, 3, 22, 4, 15)
+    assert sd._stem_for(tmp / "x.mp3", dt) == "2026-10-03_22-04-15"
+    assert sd._stem_for(tmp / "y.mp3", dt) == "2026-10-03_22-04-15"
+
+
 # ---------------------------------------------------------------------------
 
 def main() -> int:

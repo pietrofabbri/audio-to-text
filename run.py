@@ -100,6 +100,26 @@ def _decide_denoise(
 
     logger.info("Stadio 2b/5: Denoise afftdn + confronto automatico")
 
+    # I segmenti VAD servono per costruire le finestre del confronto. Se
+    # il VAD è stato ripreso dal checkpoint non ci sono in memoria: senza
+    # questo, la variante ripulita veniva "trascritta" con i chunk
+    # dell'originale e il confronto non confrontava niente.
+    if speech_segments is None:
+        try:
+            vad = VoiceActivityDetector(cfg.vad, cfg.asr)
+            _, speech_segments, _ = vad.process(wav_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Segmenti VAD non disponibili (%s): niente confronto, si usa l'originale",
+                exc,
+            )
+            ck.complete_stage("denoise", winner="original", reason="segmenti VAD non disponibili")
+            return asr_chunks, "original"
+
+    all_chunks = VoiceActivityDetector.split_into_chunks(
+        speech_segments, max_chunk_sec=cfg.asr.chunk_max_sec
+    )
+
     try:
         denoised = denoise_afftdn(
             wav_path, denoised_path_for(wav_path),
@@ -120,31 +140,65 @@ def _decide_denoise(
     except Exception as exc:  # noqa: BLE001
         logger.warning("VAD sulla variante ripulita fallito: %s", exc)
 
-    original_score = score_variant("original", asr_chunks, ck._data.get("vad_stats", {}))
+    original_vad_stats = ck._data.get("vad_stats", {}) or {}
 
     if not cfg.denoise.compare:
         logger.info("Confronto disattivato: si usa la variante ripulita")
         decision = {
             "winner": "denoised",
             "reasons": ["confronto disattivato in configurazione"],
-            "original": original_score.as_dict(),
+            "original": None,
             "denoised": None,
         }
-        denoised_chunks = _transcribe_variant(
-            cfg, audio_path, denoised, speech_segments, asr_chunks
+        denoised_chunks = _transcribe_windows(
+            cfg, audio_path, denoised, all_chunks
         )
     else:
-        denoised_chunks = _transcribe_variant(
-            cfg, audio_path, denoised, speech_segments, asr_chunks
+        # Finestre di confronto: un campione, non tutto il file.
+        #
+        # Con 18 ore di registrazione a notte una seconda passata ASR
+        # completa costerebbe oltre un'ora, e il confronto da solo farebbe
+        # sballare il budget. Il campione costa ~un minuto e basta: la
+        # decisione prende in giro tutto il file, e su un file da un'ora
+        # la qualita dell'audio non cambia di minuto in minuto.
+        windows = _sample_windows(all_chunks, cfg.denoise.sample_sec)
+        sample_sec = sum(w["end"] - w["start"] for w in windows)
+        total_sec = sum(c["end"] - c["start"] for c in all_chunks)
+        logger.info(
+            "  denoise: confronto su %d finestre (%.0fs su %.0fs, campione %s)",
+            len(windows), sample_sec, total_sec,
+            "completo" if len(windows) == len(all_chunks) else "parziale",
         )
-        denoised_score = score_variant("denoised", denoised_chunks, denoised_vad_stats)
+
+        # L'originale è già trascritto: campionarlo è gratis.
+        idx = {w["idx"] for w in windows}
+        orig_sample = [c for c in asr_chunks if c.get("idx") in idx]
+        dn_sample = _transcribe_windows(cfg, audio_path, denoised, windows)
+
+        # Le statistiche VAD vanno ristrette al campione, altrimenti il
+        # rapporto di parlato verrebbe calcolato su un file intero
+        # confrontato con parole di una porzione: numeri senza senso.
+        orig_stats = _stats_for_window(
+            original_vad_stats, windows, all_chunks
+        )
+        dn_stats = _stats_for_window(denoised_vad_stats, windows, all_chunks)
+
+        original_score = score_variant("original", orig_sample, orig_stats)
+        denoised_score = score_variant("denoised", dn_sample, dn_stats)
         decision = compare(original_score, denoised_score)
+        decision["sample"] = {
+            "windows": len(windows),
+            "total_windows": len(all_chunks),
+            "sample_sec": round(sample_sec, 1),
+            "total_sec": round(total_sec, 1),
+        }
 
     for r in decision.get("reasons", []):
         logger.info("  denoise: %s", r)
     logger.info(
         "  denoise: originale conf=%.3f parole/s=%.2f | ripulita conf=%.3f parole/s=%.2f -> %s",
-        original_score.asr_confidence, original_score.words_per_sec,
+        (decision.get("original") or {}).get("asr_confidence", 0.0),
+        (decision.get("original") or {}).get("words_per_sec", 0.0),
         (decision.get("denoised") or {}).get("asr_confidence", 0.0),
         (decision.get("denoised") or {}).get("words_per_sec", 0.0),
         decision["winner"],
@@ -154,9 +208,22 @@ def _decide_denoise(
         write_decision(decision, OUTPUT_DIR / audio_path.stem / "denoise_decision.json")
 
     if decision["winner"] == "denoised":
+        # Il campione ha vinto: ora serve davvero tutto il file nella
+        # variante ripulita. È il percorso costoso, ma si attiva solo
+        # quando il confronto ha trovato una differenza reale.
+        denoised_chunks = _transcribe_windows(
+            cfg, audio_path, denoised, all_chunks
+        )
         ck._data["chunks"] = denoised_chunks
         ck._data["vad_stats"] = denoised_vad_stats or ck._data.get("vad_stats", {})
         ck.complete_stage("denoise", winner="denoised", reason="; ".join(decision["reasons"]))
+        # Il WAV ripulito è derivabile (lo si rifà con una riga di
+        # ffmpeg) e i chunk sono ormai nel checkpoint: tenerlo occuperebbe
+        # 115 MB per ogni ora registrata senza servire a nulla.
+        try:
+            denoised.unlink()
+        except OSError:
+            pass
         return denoised_chunks, "denoised"
 
     # L'originale ha vinto: la variante ripulita non serve più e occupa
@@ -169,15 +236,72 @@ def _decide_denoise(
     return asr_chunks, "original"
 
 
-def _transcribe_variant(
+def _sample_windows(chunks: list[dict], sample_sec: float) -> list[dict]:
+    """
+    Sceglie le finestre su cui fare il confronto.
+
+    Prende una fetta contigua di centro, non un campione sparso: la
+    contiguità mantiene le condizioni acustiche costanti dentro la
+    porzione, che è il punto di un confronto. Il centro e non l'inizio
+    perche i primi secondi di una registrazione sono spesso silenzio o
+    parole isolate, e un giudizio su quelli non dice niente sul resto.
+    """
+    if not chunks:
+        return []
+    total = sum(c["end"] - c["start"] for c in chunks)
+    if sample_sec <= 0 or total <= sample_sec:
+        return list(chunks)
+
+    # Parte dal centro e cammina all'indietro finché copre il campione
+    start_at = len(chunks) // 2
+    picked: list[dict] = []
+    acc = 0.0
+    i = start_at
+    while i >= 0 and acc < sample_sec / 2:
+        picked.insert(0, chunks[i])
+        acc += chunks[i]["end"] - chunks[i]["start"]
+        i -= 1
+    acc = 0.0
+    i = start_at
+    while i < len(chunks) and acc < sample_sec / 2:
+        if i >= start_at:
+            picked.append(chunks[i])
+        acc += chunks[i]["end"] - chunks[i]["start"]
+        i += 1
+    return picked
+
+
+def _stats_for_window(
+    vad_stats: dict, windows: list[dict], all_chunks: list[dict]
+) -> dict:
+    """
+    Ristringe le statistiche VAD alla porzione di confronto.
+
+    Le feature prosodiche e di parlato sono per-unità di tempo: mescolare
+    il rapporto di parlato di un'ora con il numero di parole di tre
+    minuti produce un metro al secondo che non esiste.
+    """
+    total = sum(c["end"] - c["start"] for c in all_chunks) or 1.0
+    win = sum(w["end"] - w["start"] for w in windows)
+    if not vad_stats:
+        return {}
+    frac = win / total
+    speech = float(vad_stats.get("speech_duration_sec", 0.0) or 0.0) * frac
+    return {
+        "speech_duration_sec": speech,
+        "total_duration_sec": win,
+        "speech_ratio": float(vad_stats.get("speech_ratio", 0.0) or 0.0),
+    }
+
+
+def _transcribe_windows(
     cfg,
     audio_path: Path,
     wav_path: Path,
-    speech_segments,
-    fallback_chunks: list[dict],
+    windows: list[dict],
 ) -> list[dict]:
     """
-    Trascrive una variante dell'audio con un checkpoint usa-e-getta.
+    Trascrive un insieme di finestre con un checkpoint usa-e-getta.
 
     Il checkpoint temporaneo serve a non inquinare i chunk canonici con i
     risultati della passata di confronto: se la variante ripulita perde,
@@ -186,20 +310,17 @@ def _transcribe_variant(
     import tempfile
 
     from core.checkpoint import Checkpoint
-    from pipeline.vad import VoiceActivityDetector
     from pipeline.transcriber import Transcriber
 
-    if speech_segments is None:
-        return fallback_chunks
-
-    chunks = VoiceActivityDetector.split_into_chunks(
-        speech_segments, max_chunk_sec=cfg.asr.chunk_max_sec
-    )
+    if not windows:
+        return []
 
     with tempfile.TemporaryDirectory(prefix="a2t_variant_") as tmp:
         throwaway = Checkpoint(audio_path, Path(tmp))
         transcriber = Transcriber(cfg.asr)
-        return transcriber.transcribe_chunks(chunks, wav_path, throwaway, save_every=25)
+        return transcriber.transcribe_chunks(
+            windows, wav_path, throwaway, save_every=25
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -163,12 +164,16 @@ def cmd_detect(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _stem_for(path: Path, recorded: datetime | None) -> str:
-    """Nome della sessione. Se il file ha già un orario nel nome lo si
-    riusa (è l'informazione più affidabile), altrimenti si usa la data
-    di importazione con l'ora corrente per non sovrascrivere."""
+    """Nome della sessione. Se il file ha gia' un orario nel nome lo si
+    riusa (e' l'informazione piu' affidabile). Altrimenti si usa la data
+    di importazione piu' un hash del nome: senza hash, due file senza
+    orario importati nello stesso secondo finirebbero nella stessa
+    cartella di output, e il secondo verrebbe scambiato per un output
+    gia' presente e non verrebbe mai trascritto."""
     if recorded:
         return recorded.strftime("%Y-%m-%d_%H-%M-%S")
-    return f"imported-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-{path.stem[:40]}"
+    tag = hashlib.sha1(path.name.encode("utf-8")).hexdigest()[:6]
+    return f"imported-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-{tag}-{path.stem[:32]}"
 
 
 def _verify_output(stem: str) -> tuple[bool, str]:
@@ -222,9 +227,16 @@ def cmd_pull(args) -> int:
             print(f"Non esiste: {src}", file=sys.stderr)
             return 1
         chosen = None
+        # Gli stessi filtri del rilevamento automatico: senza, un
+        # segnaposto da 0 byte verrebbe processato (e cancellato) anche
+        # passando per --source, e i due percorsi si comporterebbero in
+        # modo diverso.
+        from core.device import MIN_AUDIO_BYTES
         files = sorted(
             f for f in src.rglob("*")
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+            if f.is_file()
+            and f.suffix.lower() in AUDIO_EXTENSIONS
+            and f.stat().st_size >= MIN_AUDIO_BYTES
         )
         label = str(src)
     else:
@@ -247,13 +259,31 @@ def cmd_pull(args) -> int:
     logger.info("Device: %s (%s)", label, src)
     logger.info("File trovati: %d", len(files))
 
+    # Ordine cronologico: la coda si svuota dal piu vecchio, cosi il
+    # ritardo non si accumula sempre sugli stessi file.
+    files.sort(key=lambda f: (parse_recording_time(f.name)[0] or datetime.max, f.name))
+
     # --- 2. cosa è già stato fatto -----------------------------------
     done_hashes = already_processed_hashes()
 
     # --- 3. elaborazione ---------------------------------------------
     results = {"ok": 0, "failed": 0, "skipped": 0, "deleted": 0, "kept": 0}
+    budget = _Budget(args.max_seconds, simulate=args.dry_run)
 
     for i, f in enumerate(files, 1):
+        # La finestra si controlla PRIMA di iniziare un file, non
+        # durante: un file iniziato e non finito costerebbe il suo tempo
+        # senza produrre niente, e il giorno dopo lo si rifarebbe da capo.
+        est = budget.estimate(f)
+        if budget.exhausted(est):
+            logger.warning(
+                "Budget esaurito (%.0fs su %ds): la coda si ferma qui. "
+                "%d file aspettano la notte dopo, nessuno verra perso.",
+                budget.elapsed(), budget.limit, len(files) - i + 1,
+            )
+            results["deferred"] = len(files) - i + 1
+            break
+        budget.started_file(est)
         recorded, pattern = parse_recording_time(f.name)
         try:
             digest = file_sha256(f)
@@ -289,6 +319,10 @@ def cmd_pull(args) -> int:
         if args.dry_run:
             print(f"  [dry-run] elaborerei {f.name} -> {stem}")
             results["skipped"] += 1
+            # In dry-run il tempo non passa davvero, ma consumarlo
+            # comunque e' quello che rende il dry-run un piano: mostra
+            # quanti file entrano davvero nella finestra.
+            budget.finished_file(_probe_duration(f) or 0.0, simulated=True)
             continue
 
         # Argomminto fittizio: la pipeline legge args.no_diarization ecc.
@@ -344,6 +378,7 @@ def cmd_pull(args) -> int:
 
         results["ok"] += 1
         results["deleted" if deleted else "kept"] += 1
+        budget.finished_file(_probe_duration(f) or 0.0)
         append_manifest({
             "ts": _now_iso(), "device": label, "file": f.name, "sha256": digest,
             "stem": stem, "action": "deleted" if deleted else "kept",
@@ -384,6 +419,110 @@ def _stamp_session(stem: str, recorded, device: str, filename: str) -> None:
     if recorded:
         doc["meta"]["session_start_wall"] = recorded.isoformat()
     p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class _Budget:
+    """
+    Budget di tempo della notte, con stima del file successivo.
+
+    La stima non viene da una tabella: si impara dai file già fatti in
+    questa stessa run. Dopo il primo file da un'ora si sa quanto costa
+    un file da un'ora, e la decisione di iniziare o no smette di essere
+    un'ipotesi. Prima del primo file si usa un RTF medio, che è una
+    stima dichiarata come tale.
+    """
+
+    # RTF complessivo della pipeline (elaborazione / audio), misurato
+    # su questo Mac: 74s per 97,8s di audio = 0,76.
+    MEASURED_RTF = 0.76
+
+    # Margine applicato alla stima per la decisione "inizio questo
+    # file?". Sopravvalutare il tempo necessario è la direzione giusta
+    # in cui sbagliare: meglio iniziare un file in meno che iniziarne
+    # uno che non finisce dentro la finestra.
+    SAFETY = 1.15
+
+    @property
+    def DEFAULT_RTF(self) -> float:  # noqa: N802 - nome da costante
+        return self.MEASURED_RTF * self.SAFETY
+
+    def __init__(self, limit_sec: int, simulate: bool = False) -> None:
+        self.limit = max(0, int(limit_sec or 0))
+        self.t0 = time.time()
+        self.simulate = simulate
+        self._audio_done = 0.0
+        self._time_done = 0.0
+        self._current_start: float | None = None
+        self._current_est: float = 0.0
+
+    def elapsed(self) -> float:
+        """Tempo consumato.
+
+        In simulazione è la somma delle stime: usare l'orologio qui
+        farebbe restare il residuo costante e il budget non taglierebbe
+        mai, che è il contrario di quello che serve a un piano.
+        """
+        if self.simulate:
+            return self._time_done
+        return time.time() - self.t0
+
+    def remaining(self) -> float:
+        if self.limit <= 0:
+            return float("inf")
+        return self.limit - self.elapsed()
+
+    def rtf(self) -> float:
+        if self._time_done <= 0 or self._audio_done <= 0:
+            return self.DEFAULT_RTF
+        return self._time_done / self._audio_done
+
+    def estimate(self, f: Path) -> float:
+        """Secondi stimati per il file, dalla durata se disponibile."""
+        dur = _probe_duration(f) or 3600.0
+        return dur * self.rtf()
+
+    def started_file(self, est: float) -> None:
+        self._current_start = time.time()
+        self._current_est = est
+
+    def finished_file(self, audio_sec: float, simulated: bool = False) -> None:
+        if self._current_start is None:
+            return
+        if simulated:
+            self._time_done += self._current_est
+        else:
+            self._time_done += time.time() - self._current_start
+        self._audio_done += max(audio_sec, 1.0)
+        self._current_start = None
+
+    def exhausted(self, est: float) -> bool:
+        if self.limit <= 0:
+            return False
+        return self.remaining() < est
+
+    def finish_all(self) -> None:
+        self.finished_file(self._current_est / max(self.rtf(), 0.01))
+
+
+def _probe_duration(path: Path) -> float | None:
+    """Durata del file in secondi, letta dai metadati con ffprobe.
+
+    Non si decodifica l'audio: su 18 file da un'ora la lettura dei
+    metadati costa meno di un secondo, il decoding un'ora.
+    """
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+        value = float(out)
+        return value if value > 0 else None
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
 
 
 def _try_delete(f: Path, digest: str, reason: str, args) -> bool:
@@ -457,6 +596,11 @@ def main() -> int:
     p.add_argument("--no-prosody", action="store_true", help="salta la prosodia")
     p.add_argument("--no-delete", action="store_true", help="non cancellare dal device")
     p.add_argument("--dry-run", action="store_true", help="mostra cosa farebbe, non tocca nulla")
+    p.add_argument(
+        "--max-seconds", type=int, default=0,
+        help="budget di tempo: la coda si ferma fra un file e l'altro "
+             "quando lo esaurisce (0 = nessun limite)",
+    )
     p.set_defaults(func=cmd_pull)
 
     g = sub.add_parser("purge", help="svuota l'archivio locale oltre i giorni indicati")

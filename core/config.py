@@ -202,10 +202,16 @@ class DenoiseConfig:
     enabled: bool = True
 
     # Confronto automatico originale vs ripulito. Se False si usa sempre
-    # la variante ripulita senza misurare. Il confronto costa una seconda
-    # passata di ASR: con registrazioni da 1h è un minuto, e la scelta
-    # smette di essere un'opinione.
+    # la variante ripulita senza misurare.
     compare: bool = True
+
+    # Quanto audio usare per il confronto. Il confronto avviene su un
+    # campione di centro, non su tutto il file: con 18 ore a notte una
+    # seconda passata ASR completa costerebbe oltre un'ora e farebbe
+    # sballare il budget da solo. Su un file da un'ora la qualità
+    # dell'audio non cambia di minuto in minuto, quindi la decisione
+    # presa su 3 minuti vale per tutto il file.
+    sample_sec: float = 180.0
 
     # afftdn: riduzione del rumore in dB (0-97) e soglia di soppressione.
     # 12/-25 è aggressivo ma tiene la voce; 6/-20 se la voce risulta ovattata.

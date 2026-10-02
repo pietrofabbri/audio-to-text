@@ -174,16 +174,53 @@ python setup_launchd.py uninstall
 
 ---
 
+## Tempi reali misurati (le stime precedenti erano ottimistiche ~3x)
+
+Su questo Mac, misurati sul campione reale da 97,8 s (non stimati):
+
+| Stadio | RTF misurato | 18 file da 1h |
+|---|---|---|
+| **ASR (faster-whisper large-v3-turbo, CPU INT8)** | **3,3x realtime** | **~5,5 h** |
+| Diarizzazione (pyannote, MPS) | 14x realtime | ~77 min |
+| VAD + ffmpeg | 33x realtime | ~33 min |
+| Denoise (confronto su campione) | — | ~20 min |
+| Prosodia + output | 49x realtime | ~22 min |
+| **Totale** | | **~8 h** |
+
+Nella finestra notturna di 3 ore entrano quindi **3 file da un'ora**, e
+gli altri restano sul device: la coda avanza di 3 file a notte, dal più
+vecchio al più nuovo. Non è un limite aggirabile con l'attesa.
+
+Il parallelismo non aiuta: `num_workers` di faster-whisper agisce solo
+se si passano più segmenti in una singola chiamata, mentre la pipeline
+chiama `transcribe()` un chunk alla volta — il guadagno misurato è 12%.
+L'unica lever che cambia l'ordine di grandezza è **mlx-whisper sulla
+GPU**, in un processo separato (mlx e PyTorch non convivono).
+
 ## Flusso col registratore (import → elaborazione → archiviazione)
 
 Quando il registratore è collegato, tutto il ciclo è in un comando:
+
+```bash
+python nightly.py --dry-run           # piano della notte: quanti file entrano
+python nightly.py                     # ciclo completo: importa, elabora, pubblica
+```
+
+Sotto, i singoli passi:
 
 ```bash
 python sync_device.py detect          # che cosa è montato? non tocca nulla
 python sync_device.py pull --dry-run  # cosa verrebbe fatto?
 python sync_device.py pull            # importa, processa, archivia, cancella
 python sync_device.py purge           # svuota l'archivio oltre 7 giorni
+python publish_corpus.py push         # pubblica sulla repo privata
 ```
+
+Il ciclo notturno si ferma **fra un file e l'altro** quando il budget
+di tempo (`--max-seconds`, 3h di default) è esaurito: iniziare un file
+che non finisce dentro la finestra costerebbe il suo tempo senza
+produrre nulla. Quello che non entra resta sul device e riparte dalla
+stessa condizione la notte dopo.
 
 I file **non** vengono copiati prima di essere elaborati: vengono letti
 dove sono. Il registratore resta la fonte di verità finche il lavoro non
@@ -384,7 +421,8 @@ cfg.max_runtime_sec = 10800
 
 ```
 audio-to-text/
-├── run.py                  # entrypoint CLI
+├── run.py                  # entrypoint CLI della pipeline
+├── nightly.py              # ciclo notturno: importa, elabora, pubblica
 ├── sync_device.py          # import dal registratore + cancellazione sicura
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
 ├── setup_env.sh            # installa dipendenze

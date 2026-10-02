@@ -26,7 +26,10 @@ from pathlib import Path
 
 PROJECT_DIR  = Path(__file__).resolve().parent
 VENV_PYTHON  = Path.home() / "Desktop" / "Titoli Fabbri" / "whisperx_env" / "bin" / "python"
-RUN_SCRIPT   = PROJECT_DIR / "run.py"
+# nightly.py, non run.py: il ciclo notturno parte dal registratore
+# (import + elaborazione entro budget + pubblicazione). run.py da solo
+# legge input/ e non sa nulla del device.
+NIGHTLY_SCRIPT = PROJECT_DIR / "nightly.py"
 LOGS_DIR     = PROJECT_DIR / "logs"
 
 # Identificatore univoco del LaunchAgent (stile reverse-DNS)
@@ -36,8 +39,12 @@ LABEL = "it.pietrofabbri.audio-to-text"
 START_HOUR   = 3   # 03:00
 START_MINUTE = 0
 
-# Tempo massimo: 2.5 ore (poi si ferma ordinatamente)
-MAX_RUNTIME_HOURS = 2.5
+# Finestra notturna. Con ~3,3x realtime misurati sull'ASR, 18 file da
+# un'ora sono ~10 ore di elaborazione: in tre ore ne entrano circa 3.
+# La coda avanza di un pezzo alla volta e il resto resta sul device,
+# in ordine cronologico. Alzare questo numero non fa finire prima:
+# finisce quando finisce, e quello che non c'e torna la notte dopo.
+MAX_RUNTIME_HOURS = 3.0
 
 # Percorso plist LaunchAgent
 PLIST_DIR  = Path.home() / "Library" / "LaunchAgents"
@@ -55,10 +62,8 @@ def build_plist() -> dict:
         "Label": LABEL,
         "ProgramArguments": [
             str(VENV_PYTHON),
-            str(RUN_SCRIPT),
-            "--scheduled",
-            "--max-hours", str(MAX_RUNTIME_HOURS),
-            "--log-level", "INFO",
+            str(NIGHTLY_SCRIPT),
+            "--max-seconds", str(int(MAX_RUNTIME_HOURS * 3600)),
         ],
         # Esegui ogni notte alle START_HOUR:START_MINUTE
         "StartCalendarInterval": {
