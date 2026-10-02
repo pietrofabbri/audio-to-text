@@ -176,6 +176,13 @@ class OutputConfig:
     write_srt: bool = True    # sottotitoli SRT
     write_csv: bool = True    # metadati prosodici in formato tabulare
 
+    # Formati arricchiti (corpus analysis / ingest LLM)
+    write_session_json: bool = True     # session.json: metadata sessione + statistiche speaker
+    write_segments_jsonl: bool = True   # segments.jsonl: un segmento per riga
+    write_tokens_jsonl: bool = True     # tokens.jsonl: una parola per riga con timestamp
+    write_wordfreq_csv: bool = True     # wordfreq.csv: frequenze parole per speaker
+    write_analysis_md: bool = True      # analysis_ready.md: testo chunked per LLM
+
     # Indentazione JSON (None = compatto, 2 = leggibile)
     json_indent: int = 2
 
