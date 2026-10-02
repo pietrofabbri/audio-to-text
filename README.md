@@ -194,8 +194,27 @@ vecchio al più nuovo. Non è un limite aggirabile con l'attesa.
 Il parallelismo non aiuta: `num_workers` di faster-whisper agisce solo
 se si passano più segmenti in una singola chiamata, mentre la pipeline
 chiama `transcribe()` un chunk alla volta — il guadagno misurato è 12%.
-L'unica lever che cambia l'ordine di grandezza è **mlx-whisper sulla
-GPU**, in un processo separato (mlx e PyTorch non convivono).
+
+### La GPU non è la soluzione che sembra
+
+Misurato sugli stessi 11,4 minuti di audio reale, modello in cache:
+
+| Backend | RTF | 18 ore di audio |
+|---|---|---|
+| faster-whisper CPU INT8 | 3,15x | 5,7 ore |
+| mlx-whisper GPU (`mlx-community/whisper-large-v3-turbo`) | 4,77x | 3,8 ore |
+
+La GPU è **1,5x**, non 5-10x come suggerito da alcune stime. Con 18 ore
+a notte si passerebbe da 3 a ~6 file per notte, al costo di un
+sottoprocesso separato con IPC (mlx e PyTorch non convivono) e della
+sua manutenzione. Il modello è gia in cache, quindi il confronto e
+stato fatto davvero e non e' un calcolo teorico.
+
+La conclusione netta: **18 ore di audio non si elaborano in una notte
+di 3 ore su questa macchina, in nessuna configurazione misurata.** Il
+sistema e costruito per che la coda avanzi di qualche file a notte, in
+ordine, senza perdere nulla — e questo richiede che l'arrivo dei file
+non superi lo svuotamento.
 
 ## Flusso col registratore (import → elaborazione → archiviazione)
 
