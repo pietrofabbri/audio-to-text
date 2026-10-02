@@ -32,23 +32,30 @@ VENV_PYTHON  = Path.home() / "Desktop" / "Titoli Fabbri" / "whisperx_env" / "bin
 NIGHTLY_SCRIPT = PROJECT_DIR / "nightly.py"
 LOGS_DIR     = PROJECT_DIR / "logs"
 
-# Identificatore univoco del LaunchAgent (stile reverse-DNS)
-LABEL = "it.pietrofabbri.audio-to-text"
+# Identificatori univoci dei LaunchAgent (stile reverse-DNS)
+LABEL         = "it.pietrofabbri.audio-to-text"
+LABEL_DAYTIME = "it.pietrofabbri.audio-to-text-daytime"
 
-# Orario di esecuzione notturna
-START_HOUR   = 3   # 03:00
+# --- Finestra notturna: pieno regime -------------------------------------
+# La macchina è libera e serve: 02:00 → 06:00.
+START_HOUR   = 2
 START_MINUTE = 0
+MAX_RUNTIME_HOURS = 4.0
 
-# Finestra notturna. Con ~3,3x realtime misurati sull'ASR, 18 file da
-# un'ora sono ~10 ore di elaborazione: in tre ore ne entrano circa 3.
-# La coda avanza di un pezzo alla volta e il resto resta sul device,
-# in ordine cronologico. Alzare questo numero non fa finire prima:
-# finisce quando finisce, e quello che non c'e torna la notte dopo.
-MAX_RUNTIME_HOURS = 3.0
+# --- Passate diurne: processo leggero in background ----------------------
+# Di giorno la macchina è in uso. Il lavoro diurna esiste per non lasciare
+# la coda ferma otto ore, ma è volutamente piccolo: budget breve, pochi
+# thread, priorità bassa. Se non serve, non costa quasi niente; se la
+# macchina è occupata, rallenta e basta.
+DAYTIME_HOURS = (9, 15, 21)      # tre passate brevi
+DAYTIME_BUDGET_MIN = 40           # minuti per passata
+DAYTIME_THREADS = 3               # thread CPU: lascia il resto al sistema
+DAYTIME_NICE = 15                 # priorità sotto la normale
 
 # Percorso plist LaunchAgent
 PLIST_DIR  = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = PLIST_DIR / f"{LABEL}.plist"
+PLIST_PATH_DAYTIME = PLIST_DIR / f"{LABEL_DAYTIME}.plist"
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +63,6 @@ PLIST_PATH = PLIST_DIR / f"{LABEL}.plist"
 # ---------------------------------------------------------------------------
 
 def build_plist() -> dict:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
     return {
         "Label": LABEL,
         "ProgramArguments": [
@@ -73,23 +78,55 @@ def build_plist() -> dict:
         # Se il Mac era spento/in sleep all'orario previsto,
         # esegui appena si sveglia
         "RunAtLoad": False,
-        # Directory di lavoro = directory del progetto
+        ** _common_plist_fields(),
+        # Priorità CPU bassa: di notte la macchina non serve a nessuno,
+        # ma lascia comunque il sistema libero di gestire la priorità.
+        "ProcessType": "Background",
+        # Timeout esplicito (secondi) — margine oltre il budget interno
+        "TimeOut": int(MAX_RUNTIME_HOURS * 3600 + 1800),
+    }
+
+
+def build_plist_daytime() -> dict:
+    """Passate diurne: brevi, a bassa priorità, con pochi thread.
+
+    Non è un secondo ciclo completo: è lo stesso ciclo con un budget
+    piccolo, pensato per far avanzare la coda durante il giorno senza
+    rubare la macchina a chi la sta usando. Se la coda è vuota non costa
+    nulla; se la macchina è occupata, il thread limitato rallenta e basta.
+    """
+    return {
+        "Label": LABEL_DAYTIME,
+        "ProgramArguments": [
+            "nice",
+            "-n", str(DAYTIME_NICE),
+            str(VENV_PYTHON),
+            str(NIGHTLY_SCRIPT),
+            "--max-seconds", str(DAYTIME_BUDGET_MIN * 60),
+            "--threads", str(DAYTIME_THREADS),
+            "--no-publish",   # si pubblica di notte, quando la coda è intera
+        ],
+        "StartCalendarInterval": [
+            {"Hour": h, "Minute": 30} for h in DAYTIME_HOURS
+        ],
+        "RunAtLoad": False,
+        **_common_plist_fields(),
+        "ProcessType": "Background",
+        "TimeOut": int(DAYTIME_BUDGET_MIN * 60 + 900),
+    }
+
+
+def _common_plist_fields() -> dict:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    return {
         "WorkingDirectory": str(PROJECT_DIR),
-        # Log stdout e stderr in files separati
         "StandardOutPath": str(LOGS_DIR / "launchd_stdout.log"),
         "StandardErrorPath": str(LOGS_DIR / "launchd_stderr.log"),
-        # Variabili d'ambiente
         "EnvironmentVariables": {
             "PATH": f"{VENV_PYTHON.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             "HOME": str(Path.home()),
-            # HF_TOKEN verrà letto da ~/.huggingface/token se non impostato qui
         },
-        # Non riavviare automaticamente se fallisce
         "KeepAlive": False,
-        # Priorità CPU bassa per non disturbare l'uso diurno
-        "ProcessType": "Background",
-        # Timeout esplicito (secondi) — 3 ore di sicurezza
-        "TimeOut": int(MAX_RUNTIME_HOURS * 3600 + 1800),
     }
 
 
@@ -124,33 +161,53 @@ def install() -> None:
     print(f"  Esecuzione ogni notte alle {START_HOUR:02d}:{START_MINUTE:02d}")
     print(f"  Durata massima: {MAX_RUNTIME_HOURS} ore")
     print(f"  Log: {LOGS_DIR}/launchd_stdout.log")
-    print(f"\nPer rimuoverlo: python setup_launchd.py uninstall")
+
+    # Il passaggio diurno va installato con lo stesso comando: due job
+    # con due plist, non uno che fa due cose in momenti diversi.
+    install_daytime()
+    print(f"\nPer rimuoverli: python setup_launchd.py uninstall")
+
+
+def install_daytime() -> None:
+    """Job diurno: breve, a bassa priorita, con pochi thread.
+
+    Non e' un secondo ciclo completo: e' lo stesso ciclo con un budget
+    piccolo, pensato per non lasciare la coda ferma otto ore di giorno
+    senza pero' rubare la macchina a chi la sta usando. Se la coda e'
+    vuota non costa nulla.
+    """
+    plist = build_plist_daytime()
+    with open(PLIST_PATH_DAYTIME, "wb") as f:
+        plistlib.dump(plist, f)
+    result = subprocess.run(
+        ["launchctl", "load", "-w", str(PLIST_PATH_DAYTIME)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"ERRORE launchctl load (daytime): {result.stderr}")
+        return
+    print(f"✓ Job diurno installato: {LABEL_DAYTIME}")
+    print(f"  Passate alle {', '.join(f'{h:02d}:30' for h in DAYTIME_HOURS)}, "
+          f"{DAYTIME_BUDGET_MIN} min ciascuna, {DAYTIME_THREADS} thread, "
+          f"priorita -{DAYTIME_NICE}")
 
 
 def uninstall() -> None:
-    if not PLIST_PATH.exists():
-        print(f"Job non trovato: {PLIST_PATH}")
-        return
-
-    # Scarica il job
-    subprocess.run(
-        ["launchctl", "unload", "-w", str(PLIST_PATH)],
-        capture_output=True,
-    )
-    PLIST_PATH.unlink(missing_ok=True)
-    print(f"✓ Job rimosso: {LABEL}")
+    for path, label in ((PLIST_PATH, LABEL), (PLIST_PATH_DAYTIME, LABEL_DAYTIME)):
+        if not path.exists():
+            continue
+        subprocess.run(["launchctl", "unload", "-w", str(path)], capture_output=True)
+        path.unlink(missing_ok=True)
+        print(f"✓ Job rimosso: {label}")
 
 
 def status() -> None:
-    result = subprocess.run(
-        ["launchctl", "list", LABEL],
-        capture_output=True, text=True,
-    )
-    if result.returncode == 0:
-        print(f"Job attivo: {LABEL}")
-        print(result.stdout)
-    else:
-        print(f"Job non trovato o non attivo: {LABEL}")
+    for label in (LABEL, LABEL_DAYTIME):
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True, text=True,
+        )
+        print(f"{label}: {'attivo' if result.returncode == 0 else 'NON attivo'}")
 
     # Mostra le ultime righe del log
     log_file = LOGS_DIR / "launchd_stdout.log"
@@ -162,9 +219,9 @@ def status() -> None:
 
 
 def run_now() -> None:
-    """Esegue il job subito (utile per test)."""
-    print(f"Esecuzione manuale: {VENV_PYTHON} {RUN_SCRIPT} --scheduled")
-    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(RUN_SCRIPT), "--scheduled"])
+    """Esegue il ciclo subito (utile per test)."""
+    print(f"Esecuzione manuale: {VENV_PYTHON} {NIGHTLY_SCRIPT}")
+    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(NIGHTLY_SCRIPT)])
 
 
 # ---------------------------------------------------------------------------
@@ -182,10 +239,12 @@ def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print("Uso: python setup_launchd.py [install|uninstall|status|run-now]")
         print()
-        print("  install    Installa il job notturno (03:00 ogni notte)")
-        print("  uninstall  Rimuove il job")
-        print("  status     Mostra stato e ultime righe di log")
-        print("  run-now    Esegue subito (test)")
+        print(f"  install    Installa i job: notturno ({START_HOUR:02d}:00, "
+              f"{MAX_RUNTIME_HOURS}h) e daytime ({DAYTIME_BUDGET_MIN}min x "
+              f"{len(DAYTIME_HOURS)})")
+        print("  uninstall  Rimuove entrambi i job")
+        print("  status     Mostra stato dei job e ultime righe di log")
+        print("  run-now    Esegue il ciclo subito (test)")
         sys.exit(1)
 
     COMMANDS[sys.argv[1]]()

@@ -42,7 +42,9 @@ class ASRConfig:
     #          "mlx-community/whisper-large-v3-turbo"       (~1.6 GB, fp16)
     #          "mlx-community/whisper-large-v3-turbo-4bit"  (~500 MB)
     #          "mlx-community/whisper-large-v3-mlx"         (~3 GB)
-    model_id: str = "large-v3-turbo"
+    model_id: str = field(
+        default_factory=lambda: os.environ.get("A2T_ASR_MODEL", "large-v3-turbo")
+    )
 
     # Lingua forzata (None = auto-detect)
     language: str = "it"
@@ -62,6 +64,15 @@ class ASRConfig:
     # Disabilita la condizionatura sul testo precedente per evitare
     # hallucination loop su audio lungo
     condition_on_previous_text: bool = False
+
+    # Priorita' CPU per faster-whisper (None = scelta della libreria).
+    # Le passate diurne la abbassano per non saturare la macchina.
+    cpu_threads: int | None = field(
+        default_factory=lambda: (
+            int(os.environ["A2T_ASR_THREADS"])
+            if os.environ.get("A2T_ASR_THREADS") else None
+        )
+    )
 
     # Quantizzazione per faster-whisper
     compute_type: str = "int8"

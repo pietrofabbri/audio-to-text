@@ -211,10 +211,40 @@ sua manutenzione. Il modello è gia in cache, quindi il confronto e
 stato fatto davvero e non e' un calcolo teorico.
 
 La conclusione netta: **18 ore di audio non si elaborano in una notte
-di 3 ore su questa macchina, in nessuna configurazione misurata.** Il
-sistema e costruito per che la coda avanzi di qualche file a notte, in
-ordine, senza perdere nulla — e questo richiede che l'arrivo dei file
-non superi lo svuotamento.
+su questa macchina, in nessuna configurazione misurata.** Il sistema e
+costruito per che la coda avanzi di qualche file a notte, in ordine,
+senza perdere nulla.
+
+### Capacità misurata (18 file da 1h che arrivano ogni giorno)
+
+Finestra notturna 02:00–06:00 (4h a pieno regime) più tre passate
+diurne brevi (09:30, 15:30, 21:30, da 40 min con 3 thread e priorità
+bassa).
+
+La riga che conta è il **rapporto di parlato**: il VAD scarta il
+silenzio prima dell'ASR, quindi l'ASR paga solo le parole, non i minuti.
+
+| Parlato | Costo per file da 1h | File per notte | + diurno | Esito vs 18/giorno |
+|---|---|---|---|---|
+| 92% (campione) | 0,70 h | 4 | 1 | scopre 13 |
+| 70% | 0,53 h | 6 | 2 | scopre 10 |
+| 50% | 0,38 h | 9 | 3 | scopre 6 |
+| 35% | 0,27 h | 13 | 4 | scopre 1 |
+
+**La coda cresce con qualsiasi rapporto di parlato realistico.** Il
+rapporto vero si misura da solo: `nightly.py` lo legge dalle sessioni
+gia elaborate e lo usa per la stima, quindi dopo la prima notte il piano
+smette di essere una supposizione.
+
+La leva che chiude il divario è il modello ASR, ed è una riga:
+
+```bash
+export A2T_ASR_MODEL=medium    # ~2x piu veloce, un po' meno accurato
+```
+
+`core/config.py` legge `A2T_ASR_MODEL` (e `A2T_ASR_THREADS` per i
+thread): cambiare modello non richiede toccare il codice, e il checkpoint
+riconosce cio che e gia fatto e non ricomincia.
 
 ## Flusso col registratore (import → elaborazione → archiviazione)
 

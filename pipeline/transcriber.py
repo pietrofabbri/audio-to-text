@@ -120,6 +120,7 @@ class Transcriber:
             self.cfg.model_id,
             device=self.cfg.device,
             compute_type=self.cfg.compute_type,
+            cpu_threads=getattr(self.cfg, "cpu_threads", None),
         )
         self._backend = "faster"
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -64,6 +65,11 @@ def main() -> int:
     ap.add_argument("--source", help="percorso del device (default: rilevamento)")
     ap.add_argument("--limit", type=int, help="massimo file da prendere")
     ap.add_argument(
+        "--threads", type=int, default=0,
+        help="thread CPU per l'elaborazione (0 = automatico). Le passate "
+             "diurne ne usano pochi per non saturare la macchina",
+    )
+    ap.add_argument(
         "--no-publish", action="store_true",
         help="non pubblicare il corpus (utile per un test a secco)",
     )
@@ -72,6 +78,14 @@ def main() -> int:
         help="mostra il piano senza elaborare né cancellare",
     )
     args = ap.parse_args()
+
+    if args.threads and args.threads > 0:
+        # Vale per faster-whisper (CTranslate2) e per i worker della
+        # prosodia: limitarli qui evita che una passata diurna si
+        # appropri dei core mentre la macchina serve qualcun altro.
+        os.environ["OMP_NUM_THREADS"] = str(args.threads)
+        os.environ["CT2_NUM_THREADS"] = str(args.threads)
+        logger.info("Thread CPU limitati a %d (passata diurna)", args.threads)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -95,14 +109,20 @@ def main() -> int:
     logger.info("File in attesa: %d", plan.get("pending", 0))
     if plan.get("est_hours"):
         logger.info(
-            "Stima: %.1f ore di audio, ~%.1f ore di elaborazione "
-            "(misurati ~3,3x realtime su ASR)",
+            "Stima: %.1f ore di audio grezza, ~%.1f ore di elaborazione",
             plan["est_hours"], plan["est_process_hours"],
+        )
+    if plan.get("speech_ratio") is not None:
+        logger.info(
+            "Parlato effettivo stimato: %.0f%% delle registrazioni già "
+            "elaborate (l'ASR lavora sul parlato, non sui silenzi: è questa "
+            "frazione che decide se la coda cresce)",
+            100 * plan["speech_ratio"],
         )
     if plan.get("fits"):
         logger.info(
-            "Nella finestra entrano ~%d file; gli altri aspettano la notte dopo",
-            plan["fits"],
+            "Nella finestra entrano ~%d file; gli altri aspettano la "
+            "prossima passata", plan["fits"],
         )
 
     # ------------------------------------------------------------------
@@ -203,12 +223,21 @@ def _plan(args) -> dict:
         pending = pending[:args.limit]
 
     est_hours = sum(_duration_h(f) or 0 for f in pending) / 3600
+
     # RTF complessivo misurato su questo Mac: 74s di elaborazione per
-    # 97,8s di audio = 0,76. E' il numero che viene da una misura, non
-    # da una stima, e la differenza rispetto alle supposizioni precedenti
-    # (8-10x realtime) e' il fattore 3 di cui sopra.
-    est_process_hours = est_hours * MEASURED_RTF
+    # 97,8s di audio = 0,76. Viene da una misura, non da una stima, ed e'
+    # la differenza rispetto alle supposizioni precedenti (8-10x realtime).
+    #
+    # Quel 0,76 e' pero' valido sul campione, che e' il 92% parlato. Nelle
+    # registrazioni vere il VAD scarta il silenzio prima dell'ASR, quindi
+    # l'ASR paga solo il parlato: il costo scala con la frazione di
+    # parlato, non con la durata del file. La frazione si misura sulle
+    # sessioni gia' elaborate, cosi la stima smette di essere conservativa
+    # e pessimista e diventa una previsione.
+    ratio = _measured_speech_ratio()
+    est_process_hours = est_hours * MEASURED_RTF * (ratio if ratio else 1.0)
     budget_h = args.max_seconds / 3600
+    per_file_h = MEASURED_RTF * (ratio if ratio else 1.0)
 
     return {
         "device": device,
@@ -216,9 +245,33 @@ def _plan(args) -> dict:
         "files": [f.name for f in pending],
         "est_hours": round(est_hours, 2),
         "est_process_hours": round(est_process_hours, 2),
-        "fits": int(budget_h / (MEASURED_RTF * 1.15)) if est_hours else 0,
+        "speech_ratio": round(ratio, 3) if ratio else None,
+        "fits": int(budget_h / (per_file_h * 1.15)) if est_hours and per_file_h else 0,
         "budget_hours": round(budget_h, 2),
     }
+
+
+def _measured_speech_ratio() -> float | None:
+    """Frazione di parlato media delle sessioni gia' elaborate.
+
+    Nessun dato -> None, e la stima resta quella conservativa sul
+    campione peggiore invece di indovinare una frazione ottimistica.
+    """
+    out_dir = ROOT / "output"
+    if not out_dir.is_dir():
+        return None
+    ratios = []
+    for d in out_dir.iterdir():
+        p = d / "transcript.json"
+        if not p.is_dir() and p.exists():
+            try:
+                m = json.loads(p.read_text(encoding="utf-8")).get("meta", {})
+            except (json.JSONDecodeError, OSError):
+                continue
+            r = m.get("speech_ratio")
+            if isinstance(r, (int, float)) and 0 < r <= 1:
+                ratios.append(float(r))
+    return (sum(ratios) / len(ratios)) if ratios else None
 
 
 def _duration_h(path: Path) -> float | None:
@@ -273,6 +326,7 @@ def _write_report(started: str, elapsed: float, plan: dict,
         "pending_at_start": plan.get("pending", 0),
         "est_hours": plan.get("est_hours"),
         "est_process_hours": plan.get("est_process_hours"),
+        "speech_ratio": plan.get("speech_ratio"),
         "left_on_device": leftover,
         "pull_exit": pull_code,
     }
