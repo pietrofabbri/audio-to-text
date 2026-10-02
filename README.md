@@ -9,17 +9,22 @@ Pipeline locale per trascrizione, diarizzazione speaker e analisi prosodia di fi
 ## Cosa fa
 
 1. **VAD** — rileva i segmenti con voce (Silero VAD), scarta silenzi e rumori → dimezza il carico ASR
-2. **ASR** — trascrive con word-level timestamps (mlx-whisper `large-v3-turbo` su GPU M1)
-3. **Diarizzazione** — assegna ogni parola a uno speaker (`SPEAKER_00`, `SPEAKER_01`, ...)
-4. **Prosodia** — estrae F0, intensità, jitter, shimmer, velocità del parlato per ogni segmento
-5. **Output** — `transcript.json`, `transcript.txt`, `transcript.srt`, `prosody.csv`
+2. **Denoise** — pulisce il fruscio e sceglie da solo, su misure, fra originale e ripulita
+3. **ASR** — trascrive con word-level timestamps (faster-whisper `large-v3-turbo`, CPU INT8)
+4. **Diarizzazione** — assegna ogni parola a uno speaker (`SPEAKER_00`, `SPEAKER_01`, ...) e lo collega a un'identità vocale stabile fra file diversi
+5. **Prosodia** — estrae F0, intensità, jitter, shimmer, velocità del parlato per ogni segmento
+6. **Corpus** — SQLite locale + repo privata, interrogabili per parola, per parlante, per giorno
 
-**Tempi stimati su M1 Pro (16 GB, 20 ore di audio con 50% silenzio):**
-- VAD: ~10 minuti
-- ASR: ~30 minuti
-- Diarizzazione: ~40 minuti (in parallelo con prosodia)
-- Prosodia: ~15 minuti (4 worker CPU)
-- **Totale: ~60–90 minuti**
+**Tempi misurati su M1 Pro (16 GB), registrazioni vere:**
+- Un file da 1h con 65% di parlato costa **~16 minuti**
+- L'ASR gira a **4,2× realtime** sul parlato, la diarizzazione a **15,8×**
+- Con 18 file da 1h al giorno: notte da 4h ne prende 15, le passate diurne 7 → **la coda si chiude**
+
+I numeri non vengono da stime ma da misure sul tuo registratore, e il
+modello che le usa è in [`core/cost.py`](core/cost.py).
+
+**Cosa non va ancora:** la lista dei punti aperti, con pro, contro e
+responsabilità, è in [`APERTI.md`](APERTI.md).
 
 ---
 
