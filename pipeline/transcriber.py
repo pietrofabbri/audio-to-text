@@ -116,11 +116,21 @@ class Transcriber:
                 "faster-whisper non disponibile: attiva il venv whisperx_env"
             ) from exc
 
+        # cpu_threads va passato solo se è un intero: faster-whisper lo
+        # inoltra a ctranslate2 come intra_threads, che accetta un int e
+        # non un None. Passare None (il default di ASRConfig, cioè
+        # "decidi tu") fa fallire la costruzione del modello con un
+        # TypeError, e la notte muore sul primo file.
+        kwargs = {}
+        threads = getattr(self.cfg, "cpu_threads", None)
+        if isinstance(threads, int) and threads > 0:
+            kwargs["cpu_threads"] = threads
+
         self._model = WhisperModel(
             self.cfg.model_id,
             device=self.cfg.device,
             compute_type=self.cfg.compute_type,
-            cpu_threads=getattr(self.cfg, "cpu_threads", None),
+            **kwargs,
         )
         self._backend = "faster"
 
@@ -277,6 +287,7 @@ class Transcriber:
             word_timestamps=True,
             condition_on_previous_text=self.cfg.condition_on_previous_text,
             no_speech_threshold=self.cfg.no_speech_threshold,
+            no_repeat_ngram_size=getattr(self.cfg, "no_repeat_ngram_size", 0),
             temperature=0.0,
             vad_filter=False,  # VAD già fatto a monte
         )

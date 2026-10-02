@@ -35,6 +35,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+from core.config import ROOT_DIR  # noqa: E402
+
+# Due radici distinte, per due scopi distinti. ROOT e' dove stanno gli
+# script: non si sposta, perché è lì che devono essere eseguiti. ROOT_DIR
+# è dove finiscono output, log e bilanci, e segue A2T_ROOT_DIR: è ciò che
+# permette di provare il ciclo notturno completo senza scrivere sopra la
+# produzione.
+DATA_ROOT = ROOT_DIR
+
 logger = logging.getLogger("nightly")
 
 # Finestra notturna. launchd avvia il job alle 03:00 e lo ferma poco
@@ -206,9 +215,9 @@ def _plan(args) -> dict:
 
     # I file già elaborati non si contano: il ciclo notturno è
     # incrementale, non ripete la coda da capo ogni sera.
-    done = {d.name for d in (ROOT / "output").iterdir()
+    done = {d.name for d in (DATA_ROOT / "output").iterdir()
             if d.is_dir() and (d / "transcript.json").exists()} \
-        if (ROOT / "output").is_dir() else set()
+        if (DATA_ROOT / "output").is_dir() else set()
 
     pending = []
     for f in files:
@@ -257,7 +266,7 @@ def _measured_speech_ratio() -> float | None:
     Nessun dato -> None, e la stima resta quella conservativa sul
     campione peggiore invece di indovinare una frazione ottimistica.
     """
-    out_dir = ROOT / "output"
+    out_dir = DATA_ROOT / "output"
     if not out_dir.is_dir():
         return None
     ratios = []
@@ -300,9 +309,9 @@ def _leftover() -> int | None:
     vol = pick_recorder(discover())
     if not vol:
         return None
-    done = {d.name for d in (ROOT / "output").iterdir()
+    done = {d.name for d in (DATA_ROOT / "output").iterdir()
             if d.is_dir() and (d / "transcript.json").exists()} \
-        if (ROOT / "output").is_dir() else set()
+        if (DATA_ROOT / "output").is_dir() else set()
     n = 0
     for f in vol.audio_files:
         dt, _ = parse_recording_time(f.name)
@@ -317,7 +326,7 @@ def _write_report(started: str, elapsed: float, plan: dict,
                   leftover: int | None, pull_code: int) -> None:
     """Bilancio su disco: una riga per notte, confrontabile nel tempo.
     È il primo segnale di se la coda tiene il passo con la produzione."""
-    path = ROOT / "logs" / "nightly_runs.jsonl"
+    path = DATA_ROOT / "logs" / "nightly_runs.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "started_at": started,

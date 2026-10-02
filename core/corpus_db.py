@@ -32,13 +32,20 @@ import json
 import logging
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.config import ROOT_DIR  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "corpus.db"
+# Sotto ROOT_DIR come tutto il resto: un test end-to-end gira in una radice
+# temporanea e non deve scrivere nel database di produzione.
+DEFAULT_DB_PATH = ROOT_DIR / "data" / "corpus.db"
 
 SCHEMA_VERSION = 1
 

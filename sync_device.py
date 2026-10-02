@@ -230,7 +230,7 @@ def cmd_doctor(args) -> int:
     need_gb = 3.0
     check("spazio disco", free_gb > need_gb,
           f"{free_gb:.0f} GB liberi (servono ~{need_gb:.0f} GB per le cache WAV)",
-          "libera spazio: le cache WAV sono in input/.wav_cache/")
+          "libera spazio: le cache WAV sono in data/wav_cache/")
 
     # --- modelli -------------------------------------------------------
     # Si verifica il modello che la pipeline usera DAVVERO, non "un
@@ -407,21 +407,28 @@ def cmd_pull(args) -> int:
         print(f"Nessun file audio in {src}")
         return 1
 
+    logger.info("Device: %s (%s)", label, src)
+
+    # Ordine cronologico: la coda si svuota dal piu vecchio, cosi il
+    # ritardo non si accumula sempre sugli stessi file. I file senza
+    # orario leggibile vanno in coda, non davanti.
+    files.sort(key=lambda f: (parse_recording_time(f.name)[0] or datetime.max, f.name))
+
+    # Il limite si applica DOPO l'ordinamento. Applicato prima, prende i
+    # primi N per nome: "00000001_000000.MP3" verrebbe prima di
+    # "REC_20261003_210000.mp3", e --limit 1 (la prova che fa l'utente
+    # per fidarsi del sistema) processerebbe spazzatura invece della
+    # registrazione piu' vecchia.
     if args.limit:
         files = files[:args.limit]
 
-    logger.info("Device: %s (%s)", label, src)
     logger.info("File trovati: %d", len(files))
-
-    # Ordine cronologico: la coda si svuota dal piu vecchio, cosi il
-    # ritardo non si accumula sempre sugli stessi file.
-    files.sort(key=lambda f: (parse_recording_time(f.name)[0] or datetime.max, f.name))
 
     # --- 2. cosa è già stato fatto -----------------------------------
     done_hashes = already_processed_hashes()
 
     # --- 3. elaborazione ---------------------------------------------
-    results = {"ok": 0, "failed": 0, "skipped": 0, "deleted": 0, "kept": 0}
+    results = {"ok": 0, "failed": 0, "skipped": 0, "deleted": 0, "kept": 0, "junk": 0}
     budget = _Budget(args.max_seconds, simulate=args.dry_run)
 
     for i, f in enumerate(files, 1):
@@ -452,19 +459,58 @@ def cmd_pull(args) -> int:
             _try_delete(f, digest, "già elaborato in una run precedente", args)
             continue
 
-        stem = _stem_for(f, recorded)
-        # stem derivato dal nome: due file diversi non devono mai
-        # condividere la cartella di output
-        out_dir = OUTPUT_DIR / stem
-        if (out_dir / REQUIRED_OUTPUT).exists():
-            logger.info("[%d/%d] %s: output già presente, salto", i, len(files), f.name)
-            results["skipped"] += 1
+        # Spazzatura del registratore: si nota e si lascia stare. Non si
+        # cancella, non si processa, non si conta come fallimento.
+        if _is_not_audio(f):
+            logger.info("[%d/%d] %s: non è audio (spazzatura), lascio sul device",
+                        i, len(files), f.name)
+            results["junk"] += 1
             append_manifest({
                 "ts": _now_iso(), "device": label, "file": f.name,
-                "sha256": digest, "stem": stem, "action": "skipped",
-                "reason": "output già presente",
+                "sha256": digest, "stem": None, "action": "junk",
+                "reason": "ffprobe: nessun audio decodificabile",
             })
             continue
+
+        stem = _stem_for(f, recorded)
+        # Due file diversi non devono mai condividere la cartella di
+        # output. Lo stem viene dall'orario nel nome, e l'orario non
+        # distingue due registrazioni fatte nella stessa notte con lo
+        # stesso minuto — o, peggio, due notti diverse se l'orologio del
+        # registratore non è mai stato impostato.
+        #
+        # Saltare il secondo file sarebbe silenziosamente irreversibile:
+        # resterebbe sul device per sempre, ogni notte, senza mai essere
+        # trascritto e senza mai poter essere cancellato. Meglio una
+        # cartella in più che una coda bloccata.
+        #
+        # Il suffisso viene dal NOME, non dal contenuto: due copie
+        # identiche hanno la stessa impronta, e con quella finivano nella
+        # stessa cartella — la seconda si trovava il checkpoint gia'
+        # completo, la pipeline lo dichiarava non completata e la run
+        # finiva con errore.
+        if (OUTPUT_DIR / stem / REQUIRED_OUTPUT).exists():
+            suffix = hashlib.sha1(f.name.encode("utf-8")).hexdigest()[:6]
+            stem = f"{stem}-{suffix}"
+            logger.warning(
+                "[%d/%d] %s: l'orario %s è gia' stato elaborato da un altro "
+                "file; lo scrivo in %s per non confonderli",
+                i, len(files), f.name,
+                recorded.isoformat() if recorded else "ignoto", stem,
+            )
+            # Se anche questa cartella esiste, è lo stesso file di una
+            # run precedente: non è una terza registrazione.
+            if (OUTPUT_DIR / stem / REQUIRED_OUTPUT).exists():
+                logger.info("[%d/%d] %s: identico a una sessione gia' scritta",
+                            i, len(files), f.name)
+                results["skipped"] += 1
+                done_hashes.add(digest)
+                _try_delete(f, digest, "gia' elaborato come questa sessione", args)
+                continue
+
+        # La cartella definitiva: da qui in avanti tutto — verifica,
+        # cancellazione, archivio, database — punta qui.
+        out_dir = OUTPUT_DIR / stem
 
         logger.info("[%d/%d] %s (%.1f MB) — orario %s [%s]",
                     i, len(files), f.name, f.stat().st_size / 1e6,
@@ -485,7 +531,7 @@ def cmd_pull(args) -> int:
         )
         t0 = time.time()
         try:
-            ok = process_file(f, config, ns)
+            ok = process_file(f, config, ns, stem=stem)
         except Exception as exc:  # noqa: BLE001
             logger.error("  elaborazione fallita: %s: %s", type(exc).__name__, exc)
             ok = False
@@ -529,6 +575,10 @@ def cmd_pull(args) -> int:
         # --- 6. archivio, poi cancellazione --------------------------
         archived = _archive(f, stem)
         deleted = _try_delete(f, digest, f"elaborato: {why}", args)
+        # Il file appena elaborato entra nell'indice dei hash gia' fatti:
+        # senza questo, una copia identica presente piu' avanti nella
+        # stessa coda verrebbe trascritta una seconda volta.
+        done_hashes.add(digest)
 
         results["ok"] += 1
         results["deleted" if deleted else "kept"] += 1
@@ -542,9 +592,9 @@ def cmd_pull(args) -> int:
         logger.info("  fatto in %.0fs — %s", elapsed, why)
 
     logger.info(
-        "Riepilogo: %d completati, %d falliti, %d saltati | cancellati %d, "
-        "rimasti sul device %d",
-        results["ok"], results["failed"], results["skipped"],
+        "Riepilogo: %d completati, %d falliti, %d saltati, %d spazzatura | "
+        "cancellati %d, rimasti sul device %d",
+        results["ok"], results["failed"], results["skipped"], results["junk"],
         results["deleted"], results["kept"],
     )
     return 0 if results["failed"] == 0 else 1
@@ -570,9 +620,23 @@ def _stamp_session(stem: str, recorded, device: str, filename: str) -> None:
         "filename": filename,
         "recorded_at": recorded.isoformat() if recorded else None,
     }
+    # session_start_wall sta al primo livello di session.json, non sotto
+    # "meta": l'assembler lo scrive li' e non esiste un dizionario "meta".
+    # Scriverlo nel posto sbagliato non era un dettaglio: sollevava un
+    # KeyError che faceva fallire l'intero pull DOPO che la trascrizione
+    # era finita, quindi il file restava sul device per sempre.
     if recorded:
-        doc["meta"]["session_start_wall"] = recorded.isoformat()
-    p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        doc["session_start_wall"] = recorded.isoformat()
+    try:
+        p.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+    except (OSError, TypeError) as exc:
+        # L'orario è un arricchimento, non la trascrizione. Se non si
+        # scrive, la notte continua: perderla sarebbe un danno, ma
+        # fermare il pull — e quindi non cancellare più nulla dal
+        # registratore — sarebbe un danno maggiore.
+        logger.warning("Annotazione di sessione non scrivibile per %s: %s",
+                       stem, exc)
 
 
 class _Budget:
@@ -677,6 +741,65 @@ def _probe_duration(path: Path) -> float | None:
         return value if value > 0 else None
     except (ValueError, OSError, subprocess.SubprocessError):
         return None
+
+
+def _is_not_audio(f: Path) -> bool:
+    """True solo se ffprobe afferma che nel file non c'e' audio decodificabile.
+
+    Un registratore economico lascia spazzatura: `00000001_000000.MP3` con
+    l'orologio mai inizializzato, `untitled.mp3`, file da 0 byte. Questi
+    hanno estensione e dimensione sufficienti per superare i filtri, ma
+    non sono registrazioni.
+
+    Senza questo controllo ogni notte si brucia un tentativo di pipeline
+    su un file che fallira' identico, per sempre: il file non puo' essere
+    elaborato, quindi non viene cancellato, quindi la coda non si svuota
+    e il tempo speso è perso. Peggio: se arriva per primo in ordine di
+    nome, blocca la coda.
+
+    Il dubbio resta dubbio: se ffprobe non sa rispondere, la risposta è
+    False e decide la pipeline, che ha piu' informazioni. Solo quando
+    ffprobe e' sicuro che non c'e' audio la risposta e' True. Non si
+    cancella mai nulla qui: lo scarto e' solo una decisione di non
+    elaborare, il file resta dove e'.
+    """
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return False
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries",
+             "stream=codec_type:format=duration", "-of", "json", str(f)],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if out.returncode != 0:
+        # ffprobe non riuscito può voler dire due cose very diverse:
+        # il file non è media ("Invalid data found"), oppure non sono
+        # riuscito a leggerlo per un motivo esterno (file aperto, permessi).
+        # Solo il primo è una sentenza sul contenuto; nel secondo caso
+        # lascia decidere la pipeline, che ha piu' strumenti.
+        err = (out.stderr or "").lower()
+        if "invalid data" in err or "could not find codec" in err:
+            return True
+        logger.debug("ffprobe non ha analizzato %s: %s", f.name, out.stderr.strip()[:200])
+        return False
+    try:
+        doc = json.loads(out.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+
+    streams = doc.get("streams") or []
+    # Nessuno stream, o nessuno di tipo audio: non c'e' niente da
+    # trascrivere, e affermarlo e' un fatto, non una supposizione.
+    if not streams or not any(s.get("codec_type") == "audio" for s in streams):
+        return True
+    try:
+        dur = float((doc.get("format") or {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return dur <= 0.0
 
 
 def _try_delete(f: Path, digest: str, reason: str, args) -> bool:

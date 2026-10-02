@@ -13,7 +13,12 @@ from pathlib import Path
 # Percorsi base
 # ---------------------------------------------------------------------------
 
-ROOT_DIR   = Path(__file__).resolve().parent.parent
+# Tutto ciò che la pipeline scrive (input, output, log, database, archivio)
+# sta sotto questa radice. A2T_ROOT_DIR la sposta altrove: è ciò che
+# permette a un test end-to-end di girare sulla catena vera senza
+# mescolare le sue sessioni finte a quelle vere. Il default è la directory
+# del progetto, quindi il comportamento normale non cambia.
+ROOT_DIR   = Path(os.environ.get("A2T_ROOT_DIR") or Path(__file__).resolve().parent.parent)
 INPUT_DIR  = ROOT_DIR / "input"
 OUTPUT_DIR = ROOT_DIR / "output"
 LOGS_DIR   = ROOT_DIR / "logs"
@@ -64,6 +69,18 @@ class ASRConfig:
     # Disabilita la condizionatura sul testo precedente per evitare
     # hallucination loop su audio lungo
     condition_on_previous_text: bool = False
+
+    # Vietta la ripetizione esatta di 6 parole consecutive. Su una
+    # registrazione reale (misurato: 40% delle parole erano un loop
+    # "ma tu non vado a fare il bambino" ripetuto 22 volte) porta i
+    # segmenti in loop da 40% a 0%.
+    #
+    # La finestra di 6 parole e' volutamente larga: l'italiano ripete
+    # volentieri ("va va", "no no", "sì sì") e una finestra stretta
+    # taglierebbe la voce vera insieme alla spazzatura. Con 6 si
+    # prende il loop e si lascia parlare.
+    # 0 = disattivato.
+    no_repeat_ngram_size: int = 6
 
     # Priorita' CPU per faster-whisper (None = scelta della libreria).
     # Le passate diurne la abbassano per non saturare la macchina.

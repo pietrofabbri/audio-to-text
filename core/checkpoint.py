@@ -60,9 +60,14 @@ class Checkpoint:
     # vecchia risulterebbe incompleta e verrebbe rielaborata.
     OPTIONAL_STAGES = ("denoise",)
 
-    def __init__(self, audio_path: Path, output_dir: Path) -> None:
+    def __init__(self, audio_path: Path, output_dir: Path,
+                 stem: str | None = None) -> None:
         self.audio_path = Path(audio_path)
-        self.stem = self.audio_path.stem
+        # Lo stem è il nome della cartella di output. Di default viene dal
+        # nome del file; sync_device lo passa esplicito con l'orario
+        # ricavato dal nome del registratore, così output, checkpoint e
+        # verifica puntano alla stessa cartella.
+        self.stem = stem or self.audio_path.stem
         self.job_dir = output_dir / self.stem
         self.job_dir.mkdir(parents=True, exist_ok=True)
         self._path = self.job_dir / f"{self.stem}.checkpoint.json"

@@ -205,7 +205,7 @@ def _decide_denoise(
     )
 
     if cfg.denoise.write_decision_json:
-        write_decision(decision, OUTPUT_DIR / audio_path.stem / "denoise_decision.json")
+        write_decision(decision, OUTPUT_DIR / ck.stem / "denoise_decision.json")
 
     if decision["winner"] == "denoised":
         # Il campione ha vinto: ora serve davvero tutto il file nella
@@ -410,10 +410,18 @@ def _write_speaker_profiles(cfg, output_dir: Path) -> None:
 # Pipeline per singolo file
 # ---------------------------------------------------------------------------
 
-def process_file(audio_path: Path, cfg, args) -> bool:
+def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
     """
     Esegue la pipeline completa su un singolo file audio.
     Restituisce True se completato, False se saltato o fallito.
+
+    `stem` è il nome della cartella di output. Di default è il nome del
+    file audio, che è quanto basta per `python run.py qualcosa.mp3`.
+    sync_device lo passa esplicito perché ricava l'orario dal nome del
+    file e vuole una cartella `2026-10-03_22-00-00`: senza questo, la
+    pipeline scriverebbe in `REC_20261003_220000` mentre il chiamante
+    cerca `2026-10-03_22-00-00`, la verifica non troverebbe nulla e il
+    file non verrebbe mai cancellato dal registratore.
     """
     from core.checkpoint import Checkpoint
     from core.config import OUTPUT_DIR, LOGS_DIR
@@ -423,8 +431,9 @@ def process_file(audio_path: Path, cfg, args) -> bool:
     from pipeline.prosody import ProsodyAnalyzer
     from pipeline.assembler import Assembler
 
-    output_dir = OUTPUT_DIR / audio_path.stem
-    ck = Checkpoint(audio_path, OUTPUT_DIR)
+    stem = stem or audio_path.stem
+    output_dir = OUTPUT_DIR / stem
+    ck = Checkpoint(audio_path, OUTPUT_DIR, stem=stem)
 
     # Salta se già completato. Gli stadi opzionali disattivati non
     # contano: altrimenti attivare una funzione dopo mesi farebbe
@@ -548,7 +557,7 @@ def process_file(audio_path: Path, cfg, args) -> bool:
         # Identità vocali persistenti: SPEAKER_00 di oci potrebbe essere
         # la stessa persona di SPEAKER_01 di domani.
         speaker_global_map, speaker_names = _resolve_global_speakers(
-            cfg, audio_path.stem, diar_result
+            cfg, stem, diar_result
         )
 
         ck.save_diarization(diar_segments, diar_result.embeddings, speaker_global_map)

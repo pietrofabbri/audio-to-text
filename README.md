@@ -229,7 +229,7 @@ silenzio prima dell'ASR, quindi l'ASR paga solo le parole, non i minuti.
 | 92% (campione) | 0,70 h | 4 | 1 | scopre 13 |
 | 70% | 0,53 h | 6 | 2 | scopre 10 |
 | 50% | 0,38 h | 9 | 3 | scopre 6 |
-| 35% | 0,27 h | 13 | 4 | scopre 1 |
+| 36% (**misurato su registrazione vera**) | 0,27 h | 13 | 4 | scopre 1 |
 
 **La coda cresce con qualsiasi rapporto di parlato realistico.** Il
 rapporto vero si misura da solo: `nightly.py` lo legge dalle sessioni
@@ -466,6 +466,50 @@ cfg.max_runtime_sec = 10800
 
 ---
 
+## Test: come provarlo senza il registratore
+
+Un solo comando:
+
+```bash
+python tests/run_all.py            # test veloci, ~10 secondi
+python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
+```
+
+`--full` è quello che conta quando qualcosa è cambiato: costruisce un
+**registratore finto** e ci fa girare la catena vera. L'audio non è un
+beep — è voce italiana vera, sintetizzata con `say` e poi sporcata di
+rumore, perché un beep non attraversa VAD, diarizzazione e prosodia
+come una voce e un test fatto di beep passerebbe senza provare niente.
+
+Cosa viene provato, in sette passi: il device viene riconosciuto, i nomi
+sporchi respinti (`untitled.mp3`, `00000001_000000.MP3`, `99999932`),
+il piano a secco non tocca nulla, un file attraversa tutta la catena e
+viene cancellato **solo dopo** la verifica, l'orario di registrazione
+finisce in `session.json`, la spazzatura viene lasciata stare, due file
+con lo stesso orario vengono entrambi trascritti, e rilanciare non
+rifà il lavoro già fatto.
+
+Tutto avviene in una directory temporanea: `A2T_ROOT_DIR` sposta output,
+database e log, quindi i test non toccano la produzione.
+
+Per guardare dentro senza eseguire:
+
+```bash
+python tests/make_fake_device.py --out /tmp/rec --count 5 --minutes 1 --edge
+python sync_device.py detect --mounts /tmp
+python sync_device.py pull --source /tmp/rec --dry-run
+```
+
+I file veri del registratore si provano con un estratto breve, così si
+vede la qualità della trascrizione senza aspettare un'ora di elaborazione:
+
+```bash
+ffmpeg -i input/2026-10-02_22-44-20.MP3 -t 180 /tmp/rec/record/2026-10-02_19-42-33.MP3
+python sync_device.py pull --source /tmp/rec
+```
+
+---
+
 ## Struttura del codice
 
 ```
@@ -489,7 +533,11 @@ audio-to-text/
 │   ├── denoise.py          # pulizia frusci + scelta automatica variante
 │   ├── prosody.py          # analisi prosodia (Parselmouth + librosa)
 │   └── assembler.py        # assemblaggio output (JSON/TXT/SRT/CSV/JSONL/MD)
-├── tests/                  # test senza modelli e senza audio
+├── tests/                  # test + generatore di registratore finto
+│   ├── run_all.py          # un comando per eseguire tutto
+│   ├── make_fake_device.py # crea un registratore finto, con voce vera
+│   ├── test_e2e.py         # ciclo completo su device finto
+│   └── test_nightly.py     # piano, budget, coda
 ├── input/                  # metti qui i file audio/video
 ├── output/                 # risultati
 ├── archive/                # originali in attesa di purga (7 giorni)

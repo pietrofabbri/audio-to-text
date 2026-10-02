@@ -28,14 +28,21 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.config import ROOT_DIR  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "speakers_db.json"
+# Sotto ROOT_DIR come tutto il resto: gli embedding vocali di un test
+# non devono entrare nel DB di produzione e falsarne i match.
+DEFAULT_DB_PATH = ROOT_DIR / "data" / "speakers_db.json"
 
 # Soglia di similarità coseno per considerare due voci la stessa persona.
 # pyannote usa 0.7045 per il proprio clustering agglomerativo: partiamo

@@ -222,18 +222,30 @@ class Diarizer:
             kwargs["max_speakers"] = self.cfg.max_speakers
 
         if collect_embeddings:
-            # pyannote 4.x: con questo flag DiarizeOutput espone
-            # anche speaker_embeddings. Se una versione futura lo
-            # rimuovesse, l'eccezione viene ignorata e si prosegue
-            # con la sola diarizzazione — il matching cross-file è
-            # un extra, non deve mai far fallire la pipeline.
-            kwargs["collect_embeddings"] = True
+            # Il flag NON viene passato. Nella versione di pyannote
+            # installata (4.0.7) `collect_embeddings` non e' un parametro
+            # di Pipeline.__call__: viene ignorato con un avviso a ogni
+            # esecuzione. Gli embedding arrivano comunque, perche' la
+            # diarizzazione li calcola gia' per il proprio clustering.
+            #
+            # Passarlo era pero' una promessa non mantenuta: se domani
+            # cambiasse versione e senza flag gli embedding sparissero,
+            # l'identita' vocale cross-file si sarebbe spegnuta in
+            # silenzio. Meglio accorgersene con un avviso esplicito qui
+            # sotto, che con un parametro che finge di funzionare.
+            pass
 
         diarization = self._pipeline(audio_input, **kwargs)
 
         elapsed = time.time() - t0
         segments = self._to_segments(diarization)
         embeddings = self._to_embeddings(diarization)
+        if collect_embeddings and not embeddings:
+            logger.warning(
+                "Nessun embedding vocale da pyannote: l'identita' cross-file "
+                "non funzionera' per questa sessione (la diarizzazione e' "
+                "comunque valida)"
+            )
 
         speakers = {s["speaker"] for s in segments}
         logger.info(

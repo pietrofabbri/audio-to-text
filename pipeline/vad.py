@@ -16,12 +16,18 @@ riduce il carico ASR a ~10 ore effettive, dimezzando i tempi.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.config import ROOT_DIR  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +113,20 @@ class VoiceActivityDetector:
         Converte qualsiasi formato audio/video in WAV 16kHz mono.
         Se il file è già WAV 16kHz mono, salta la conversione.
         """
-        # Determina il percorso di output nella stessa dir del file
-        wav_dir = audio_path.parent / ".wav_cache"
-        wav_dir.mkdir(exist_ok=True)
-        wav_path = wav_dir / (audio_path.stem + "_16k.wav")
+        # La cache sta sotto la radice della pipeline, MAI accanto al
+        # file sorgente. Con il registratore collegato, "accanto al
+        # sorgente" significava scrivere i WAV derivati sulla memoria del
+        # registratore: si riempiva il device di file che lui non sa
+        # che sono temporanei, e la pull successiva li trovava come
+        # registrazioni nuove, li elaborava e li cancellava dal device.
+        # Su un volume exFAT da 18 ore è anche lentissimo.
+        wav_dir = ROOT_DIR / "data" / "wav_cache"
+        wav_dir.mkdir(parents=True, exist_ok=True)
+        # L'hash del percorso distingue due file omonimi che stanno in
+        # cartelle diverse: senza, la cache del secondo riuserebbe quella
+        # del primo e la trascrizione sarebbe dell'audio sbagliato.
+        tag = hashlib.sha1(str(audio_path.resolve()).encode()).hexdigest()[:8]
+        wav_path = wav_dir / f"{audio_path.stem}_{tag}_16k.wav"
 
         if wav_path.exists():
             logger.debug("WAV già esistente, riuso: %s", wav_path)
