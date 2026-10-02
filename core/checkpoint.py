@@ -53,7 +53,12 @@ class Checkpoint:
             ck.add_chunk_result(chunk.idx, result)
     """
 
-    STAGES = ("ffmpeg", "vad", "transcription", "diarization", "prosody", "assembly")
+    STAGES = ("ffmpeg", "vad", "transcription", "denoise", "diarization", "prosody", "assembly")
+
+    # Stadi introdotti dopo le prime sessioni già elaborate: se sono
+    # disattivati in config non contano, altrimenti ogni sessione
+    # vecchia risulterebbe incompleta e verrebbe rielaborata.
+    OPTIONAL_STAGES = ("denoise",)
 
     def __init__(self, audio_path: Path, output_dir: Path) -> None:
         self.audio_path = Path(audio_path)
@@ -112,11 +117,26 @@ class Checkpoint:
         """Restituisce i metadati salvati per uno stadio."""
         return self._data["stages"].get(stage, {})
 
-    def all_done(self) -> bool:
-        """True se tutti gli stadi sono completati."""
+    def reset_stage(self, stage: str) -> None:
+        """Rimette uno stadio da fare, conservando i dati parziali già
+        salvati (chunk, segmenti). Serve quando un risultato a monte
+        cambia e tutto ciò che segue deve essere ricalcolato."""
+        if stage not in self._data["stages"]:
+            return
+        self._data["stages"][stage] = {"done": False}
+        logger.info("Stadio %s azzerato (l'input a monte è cambiato)", stage)
+
+    def all_done(self, required: tuple[str, ...] | None = None) -> bool:
+        """True se tutti gli stadi obbligatori sono completati.
+
+        `required` permette di escludere gli stadi opzionali disattivati:
+        senza questo, attivare il denoise mesi dopo farebbe riscrivere
+        tutte le sessioni già elaborate.
+        """
+        stages = required if required is not None else self.STAGES
         return all(
             self._data["stages"].get(s, {}).get("done", False)
-            for s in self.STAGES
+            for s in stages
         )
 
     # ------------------------------------------------------------------

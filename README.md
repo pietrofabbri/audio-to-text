@@ -174,6 +174,109 @@ python setup_launchd.py uninstall
 
 ---
 
+## Flusso col registratore (import → elaborazione → archiviazione)
+
+Quando il registratore è collegato, tutto il ciclo è in un comando:
+
+```bash
+python sync_device.py detect          # che cosa è montato? non tocca nulla
+python sync_device.py pull --dry-run  # cosa verrebbe fatto?
+python sync_device.py pull            # importa, processa, archivia, cancella
+python sync_device.py purge           # svuota l'archivio oltre 7 giorni
+```
+
+I file **non** vengono copiati prima di essere elaborati: vengono letti
+dove sono. Il registratore resta la fonte di verità finche il lavoro non
+è finito, e la cancellazione è l'ultimo atto:
+
+```
+elboro → verifico l'output → archivio in locale → cancello dal device
+```
+
+Se una passaggio fallisce, **il file resta sul device**. Non esiste un
+percorso in cui un file viene cancellato senza che la trascrizione esista
+e sia stata verificata (`transcript.json` presente, con segmenti e almeno
+poche parole). Ogni file toccato finisce in `logs/device_manifest.jsonl`
+con hash ed esito.
+
+`detect` riconosce i formati di nome più comuni dei registratori
+(`REC_20261003_220415.mp3`, `2026-10-03 22-04-15.m4a`, e così via) e
+ricava l'ora di registrazione, che finisce in `session.json` come
+`session_start_wall`: è il dato che rende poi possibile agganciare la
+trascrizione ai dati biometrici. I nomi di cui non si riconosce la data
+vengono importati ma senza orario, e il tool te lo dice.
+
+L'archivio locale (`archive/`) tiene l'originale per 7 giorni, poi `purge`
+lo cancella: abbastanza per rifare un ASR migliore, non abbastanza per
+far crescere il disco per sempre. Con `A2T_KEEP_LOCAL=0` si disattiva.
+
+### Riduzione dei fruscii: decide il software
+
+Non c'è nessuno sveglio la notte ad ascoltare, quindi la scelta è
+automatica e **misurata** (`core/config.py → DenoiseConfig`).
+
+Il confronto usa le **stesse finestre temporali** per originale e
+variante ripulita, altrimenti ogni differenza sarebbe inseparabile da
+dove sono stati tagliati i chunk. Su entrambe si calcolano:
+
+| Segnale | Cosa cattura |
+|---|---|
+| confidenza ASR media | quanto l'ASR è sicuro di quello che sente |
+| rapporto di parlato (VAD) | quanto parlato è sopravvissuto alla pulizia |
+| parole/secondo | allineamento rotto, dettatura assurda |
+| quota di segmenti ripetuti | l'ASR che "si arrende" e ripete un nucleo |
+
+Regola: si cambia variante solo se una delle due è sana e l'altra no, o
+se il guadagno supera un margine. A parità si tiene l'originale, che è
+il minormale. La scelta e i numeri che l'hanno prodotta finiscono in
+`denoise_decision.json`: le soglie si possono ritoccare vedendo i dati
+reali invece di indovinarli.
+
+`afftdn` è già in ffmpeg, quindi nessuna dipendenza nuova. Se il fruscio
+diventa cattivo (ventola, traffico) il passo successivo è DeepFilterNet,
+non un modello dentro ffmpeg.
+
+## Il corpus: dove finisce il materiale testuale
+
+Due destinazioni, con due ruoli diversi.
+
+**`publish_corpus.py`** pubblica su una repo GitHub **privata** il
+materiale che un LLM deve poter leggere: transcript, segmenti, token,
+frequenze, markdown di analisi, con `INDEX.md` come punto d'ingresso.
+
+```bash
+python publish_corpus.py init     # clona la repo privata in locale
+python publish_corpus.py push     # pubblica le sessioni nuove
+python publish_corpus.py status   # cosa c'è e cosa manca
+```
+
+Sulla repo **non** finiscono mai: audio, embedding vocali, il mapping
+`GLOBAL_00x → nome reale`, i database locali, i checkpoint. Non è una
+scelta di comodità: testo, prosodia e statistiche parlarie insieme
+ricostruiscono un profilo che nessun file rivela da solo. Tenendo i
+nomi fuori, un accesso alla repo non dà l'identità.
+
+**`core/corpus_db.py`** tiene un SQLite **locale** che fa ciò che git
+non sa fare: aggregare mesi di dati in una query. Lo schema è pensato
+per le analisi che farai dopo, non per quelle di oggi.
+
+```python
+from core.corpus_db import CorpusDB
+with CorpusDB() as db:
+    db.query("SELECT word, SUM(freq) c FROM wordfreq GROUP BY word ORDER BY c DESC LIMIT 20")
+    db.query("SELECT date, kind, summary FROM analyses ORDER BY date DESC")
+```
+
+Tabelle: `sessions`, `segments` (con le feature prosodiche come colonne
+proprie, non dentro un JSON), `tokens` (forma originale **e** normalizzata:
+in italiano la maiuscola dopo il punto è informazione), `wordfreq`,
+`bigrams`, `corpora` (testi di riferimento), `analyses` (una riga per
+data e tipo di analisi, con la sintesi in una riga: è il punto in cui
+le analisi future diventano confrontabili nel tempo).
+
+L'ingestione è idempotente: rielaborare una sessione sostituisce i dati
+invece di duplicarli.
+
 ## Struttura output
 
 Per ogni file `input/registrazione.mp3` viene creata la cartella `output/registrazione/`:
@@ -221,16 +324,15 @@ assegnato). La soglia di match è `match_threshold` in `core/config.py`
 
 > `data/speakers_db.json` contiene embedding vocali, che sono
 > identificatori biometrici: resta in locale e non va nel repo. Se lo
-> perdi non si perde nulla — si ricostruisce riprocessando i file.
-
-### Test
+> perdi non si perde nulla — si ricostruisce riprocessando i file.### Test
 
 ```bash
-python tests/test_speaker_db.py
+python tests/test_speaker_db.py        # matching cross-file delle voci
+python tests/test_device_pipeline.py   # device, denoise, corpus, archivio
 ```
 
-Verifica il matching cross-file con embedding sintetici: nessun modello,
-nessun audio, pochi secondi.
+Entrambi girano con embedding e file sintetici: nessun modello, nessun
+audio, nessuna rete, pochi secondi.
 
 ### Esempio transcript.txt
 
@@ -283,24 +385,29 @@ cfg.max_runtime_sec = 10800
 ```
 audio-to-text/
 ├── run.py                  # entrypoint CLI
+├── sync_device.py          # import dal registratore + cancellazione sicura
+├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
 ├── setup_env.sh            # installa dipendenze
 ├── setup_launchd.py        # scheduling notturno macOS
 ├── core/
 │   ├── config.py           # tutti i parametri
 │   ├── checkpoint.py       # persistenza stato per ripresa
-│   └── speaker_db.py       # identità vocali persistenti cross-file
+│   ├── device.py           # rilevamento registratore e orario nei nomi file
+│   ├── speaker_db.py       # identità vocali persistenti cross-file
+│   └── corpus_db.py        # indice SQLite locale per le analisi
 ├── pipeline/
 │   ├── vad.py              # Voice Activity Detection
 │   ├── transcriber.py      # ASR (mlx-whisper / faster-whisper)
 │   ├── diarizer.py         # diarizzazione speaker (pyannote)
+│   ├── denoise.py          # pulizia frusci + scelta automatica variante
 │   ├── prosody.py          # analisi prosodia (Parselmouth + librosa)
 │   └── assembler.py        # assemblaggio output (JSON/TXT/SRT/CSV/JSONL/MD)
-├── tests/
-│   └── test_speaker_db.py  # test del matching cross-file (no modelli)
+├── tests/                  # test senza modelli e senza audio
 ├── input/                  # metti qui i file audio/video
 ├── output/                 # risultati
-├── data/                   # database voci (biometrico, gitignored)
-└── logs/                   # log di esecuzione
+├── archive/                # originali in attesa di purga (7 giorni)
+├── data/                   # database voci e corpus (biometrico, gitignored)
+└── logs/                   # log di esecuzione e manifest del device
 ```
 
 ---

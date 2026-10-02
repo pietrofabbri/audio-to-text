@@ -193,6 +193,32 @@ class OutputConfig:
 # ---------------------------------------------------------------------------
 # Speaker ID — identità vocali persistenti cross-file
 # ---------------------------------------------------------------------------
+# Denoise — pulizia del fruscio e scelta automatica della variante
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DenoiseConfig:
+    # Se False, si trascrive l'audio originale e basta
+    enabled: bool = True
+
+    # Confronto automatico originale vs ripulito. Se False si usa sempre
+    # la variante ripulita senza misurare. Il confronto costa una seconda
+    # passata di ASR: con registrazioni da 1h è un minuto, e la scelta
+    # smette di essere un'opinione.
+    compare: bool = True
+
+    # afftdn: riduzione del rumore in dB (0-97) e soglia di soppressione.
+    # 12/-25 è aggressivo ma tiene la voce; 6/-20 se la voce risulta ovattata.
+    nr: int = 12
+    nf: int = -25
+
+    # Scrive denoise_decision.json con i numeri che hanno prodotto la scelta,
+    # così la decisione è verificabile e le soglie si possono ritoccare
+    # vedendo i dati reali invece di indovinarli
+    write_decision_json: bool = True
+
+
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SpeakerIDConfig:
@@ -231,6 +257,7 @@ class PipelineConfig:
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     prosody: ProsodyConfig = field(default_factory=ProsodyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    denoise: DenoiseConfig = field(default_factory=DenoiseConfig)
     speaker_id: SpeakerIDConfig = field(default_factory=SpeakerIDConfig)
 
     # Estensioni audio/video accettate come input

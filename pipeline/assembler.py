@@ -66,6 +66,7 @@ class Assembler:
         output_dir: Path,
         speaker_global_map: dict[str, str] | None = None,
         speaker_names: dict[str, str] | None = None,
+        denoise_winner: str | None = None,
     ) -> dict[str, Path]:
         """
         Assembla tutti i dati e scrive i file di output.
@@ -106,6 +107,7 @@ class Assembler:
             vad_stats=vad_stats,
             speaker_global_map=speaker_global_map,
             speaker_names=speaker_names,
+            denoise_winner=denoise_winner,
         )
 
         written: dict[str, Path] = {}
@@ -231,6 +233,7 @@ class Assembler:
         vad_stats: dict[str, Any],
         speaker_global_map: dict[str, str] | None = None,
         speaker_names: dict[str, str] | None = None,
+        denoise_winner: str | None = None,
     ) -> dict[str, Any]:
         """Costruisce il documento JSON completo."""
         speakers = sorted({s["speaker"] for s in final_segments})
@@ -265,6 +268,7 @@ class Assembler:
                 "speaker_names":       speaker_names or {},
                 "speaker_stats":       speaker_stats,
                 "speaker_global_map":  speaker_global_map or {},
+                "denoise_winner":      denoise_winner,
             },
             "segments": final_segments,
         }

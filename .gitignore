@@ -40,6 +40,10 @@ models/
 # speakers_db.json NON deve finire nel repo — è ricostruibile dai file audio.
 data/
 
+# Clone locale della repo del corpus e archivio delle registrazioni
+corpus_repo/
+archive/
+
 # Secrets
 .env
 *.env

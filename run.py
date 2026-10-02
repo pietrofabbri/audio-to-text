@@ -64,6 +64,145 @@ signal.signal(signal.SIGINT,  _handle_signal)
 
 
 # ---------------------------------------------------------------------------
+# Denoise: la variante migliore la sceglie il software
+# ---------------------------------------------------------------------------
+
+def _decide_denoise(
+    cfg,
+    ck,
+    audio_path: Path,
+    wav_path: Path,
+    asr_chunks: list[dict],
+    speech_segments,
+) -> tuple[list[dict], str]:
+    """
+    Confronta audio originale e audio ripulito, e restituisce i chunk
+    della variante migliore più il nome del vincitore.
+
+    Il confronto usa le STESSE finestre temporali per entrambe le varianti
+    (quelle prodotte dal VAD sull'originale). È la condizione che rende il
+    confronto valido: con segmentazioni diverse ogni differenza fra le due
+    trascrizioni sarebbe inseparabile da dove sono stati tagliati i chunk.
+
+    Il VAD viene invece rilanciato sulla variante ripulita, ma solo per
+    misurare quanto parlato è sopravvissuto al denoise: è l'unico controllo
+    che intercetta il guasto tipico, cioè una pulizia che si mangia le
+    consonanti e lascia il VAD con le tasche vuote.
+    """
+    import tempfile
+
+    from core.config import OUTPUT_DIR
+    from pipeline.denoise import (
+        compare, denoise_afftdn, denoised_path_for, score_variant, write_decision,
+    )
+    from pipeline.vad import VoiceActivityDetector
+    from pipeline.transcriber import Transcriber
+
+    logger.info("Stadio 2b/5: Denoise afftdn + confronto automatico")
+
+    try:
+        denoised = denoise_afftdn(
+            wav_path, denoised_path_for(wav_path),
+            nr=cfg.denoise.nr, nf=cfg.denoise.nf,
+        )
+    except (RuntimeError, OSError) as exc:
+        # Nessuna variante ripulita: si prosegue con l'originale. Un
+        # denoise fallito non è motivo per perdere una notte di registrazioni.
+        logger.warning("Denoise non riuscito (%s): si usa l'originale", exc)
+        ck.complete_stage("denoise", winner="original", reason="denoise fallito")
+        return asr_chunks, "original"
+
+    # --- VAD sulla variante ripulita: quanto parlato è sopravvissuto? ---
+    denoised_vad_stats: dict = {}
+    try:
+        vad = VoiceActivityDetector(cfg.vad, cfg.asr)
+        _, _, denoised_vad_stats = vad.process(denoised)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("VAD sulla variante ripulita fallito: %s", exc)
+
+    original_score = score_variant("original", asr_chunks, ck._data.get("vad_stats", {}))
+
+    if not cfg.denoise.compare:
+        logger.info("Confronto disattivato: si usa la variante ripulita")
+        decision = {
+            "winner": "denoised",
+            "reasons": ["confronto disattivato in configurazione"],
+            "original": original_score.as_dict(),
+            "denoised": None,
+        }
+        denoised_chunks = _transcribe_variant(
+            cfg, audio_path, denoised, speech_segments, asr_chunks
+        )
+    else:
+        denoised_chunks = _transcribe_variant(
+            cfg, audio_path, denoised, speech_segments, asr_chunks
+        )
+        denoised_score = score_variant("denoised", denoised_chunks, denoised_vad_stats)
+        decision = compare(original_score, denoised_score)
+
+    for r in decision.get("reasons", []):
+        logger.info("  denoise: %s", r)
+    logger.info(
+        "  denoise: originale conf=%.3f parole/s=%.2f | ripulita conf=%.3f parole/s=%.2f -> %s",
+        original_score.asr_confidence, original_score.words_per_sec,
+        (decision.get("denoised") or {}).get("asr_confidence", 0.0),
+        (decision.get("denoised") or {}).get("words_per_sec", 0.0),
+        decision["winner"],
+    )
+
+    if cfg.denoise.write_decision_json:
+        write_decision(decision, OUTPUT_DIR / audio_path.stem / "denoise_decision.json")
+
+    if decision["winner"] == "denoised":
+        ck._data["chunks"] = denoised_chunks
+        ck._data["vad_stats"] = denoised_vad_stats or ck._data.get("vad_stats", {})
+        ck.complete_stage("denoise", winner="denoised", reason="; ".join(decision["reasons"]))
+        return denoised_chunks, "denoised"
+
+    # L'originale ha vinto: la variante ripulita non serve più e occupa
+    # disco (~115 MB per ora di audio a 16 kHz mono).
+    try:
+        denoised.unlink()
+    except OSError:
+        pass
+    ck.complete_stage("denoise", winner="original", reason="; ".join(decision["reasons"]))
+    return asr_chunks, "original"
+
+
+def _transcribe_variant(
+    cfg,
+    audio_path: Path,
+    wav_path: Path,
+    speech_segments,
+    fallback_chunks: list[dict],
+) -> list[dict]:
+    """
+    Trascrive una variante dell'audio con un checkpoint usa-e-getta.
+
+    Il checkpoint temporaneo serve a non inquinare i chunk canonici con i
+    risultati della passata di confronto: se la variante ripulita perde,
+    i suoi chunk non devono restare da qualche parte e finire nell'output.
+    """
+    import tempfile
+
+    from core.checkpoint import Checkpoint
+    from pipeline.vad import VoiceActivityDetector
+    from pipeline.transcriber import Transcriber
+
+    if speech_segments is None:
+        return fallback_chunks
+
+    chunks = VoiceActivityDetector.split_into_chunks(
+        speech_segments, max_chunk_sec=cfg.asr.chunk_max_sec
+    )
+
+    with tempfile.TemporaryDirectory(prefix="a2t_variant_") as tmp:
+        throwaway = Checkpoint(audio_path, Path(tmp))
+        transcriber = Transcriber(cfg.asr)
+        return transcriber.transcribe_chunks(chunks, wav_path, throwaway, save_every=25)
+
+
+# ---------------------------------------------------------------------------
 # Identità speaker cross-file
 # ---------------------------------------------------------------------------
 
@@ -166,8 +305,14 @@ def process_file(audio_path: Path, cfg, args) -> bool:
     output_dir = OUTPUT_DIR / audio_path.stem
     ck = Checkpoint(audio_path, OUTPUT_DIR)
 
-    # Salta se già completato
-    if cfg.skip_completed and ck.all_done():
+    # Salta se già completato. Gli stadi opzionali disattivati non
+    # contano: altrimenti attivare una funzione dopo mesi farebbe
+    # rielaborare da capo tutte le sessioni già finite.
+    required_stages = tuple(
+        s for s in ck.STAGES
+        if s not in ck.OPTIONAL_STAGES or getattr(cfg, s, None) and getattr(getattr(cfg, s), "enabled", False)
+    )
+    if cfg.skip_completed and ck.all_done(required_stages):
         logger.info("Già completato, saltato: %s", audio_path.name)
         return False
 
@@ -243,6 +388,28 @@ def process_file(audio_path: Path, cfg, args) -> bool:
         asr_chunks = ck.get_all_chunks()
 
     # ------------------------------------------------------------------
+    # Stadio 2b: pulizia del fruscio e scelta automatica della variante
+    # ------------------------------------------------------------------
+    if cfg.denoise.enabled and not ck.stage_done("denoise"):
+        asr_chunks, denoise_winner = _decide_denoise(
+            cfg, ck, audio_path, wav_path, asr_chunks,
+            speech_segments if speech_segments is not None else None,
+        )
+        if denoise_winner == "denoised":
+            # I chunk sono cambiati: tutto ciò che viene dopo va
+            # ricalcolato, altrimenti output e diarizzazione
+            # descriverebbero un audio che non è quello pubblicato.
+            logger.info(
+                "La variante ripulita vince: ricalcolo diarizzazione, "
+                "prosodia e output su quella"
+            )
+            for stage in ("diarization", "prosody", "assembly"):
+                ck.reset_stage(stage)
+            ck.save()
+    else:
+        denoise_winner = ck.get_stage_data("denoise").get("winner")
+
+    # ------------------------------------------------------------------
     # Stadio 3: Diarizzazione speaker
     # ------------------------------------------------------------------
     if not args.no_diarization and not ck.stage_done("diarization"):
@@ -315,6 +482,7 @@ def process_file(audio_path: Path, cfg, args) -> bool:
             output_dir=output_dir,
             speaker_global_map=speaker_global_map,
             speaker_names=speaker_names,
+            denoise_winner=denoise_winner,
         )
         _write_speaker_profiles(cfg, output_dir)
         ck.complete_stage("assembly", files=list(str(p) for p in written.values()))
