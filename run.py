@@ -694,10 +694,62 @@ def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
     # metà, senza che nessuno lo venga a sapere. La pulizia è fatta qui,
     # dopo l'ultimo uso, e non prima: cancellarla prima romperebbe la
     # ripresa via checkpoint, che è l'unica difesa contro un'interruzione.
+    _ingest_local(output_dir)
     _purge_wav_cache()
 
     return True
 
+
+def _ingest_local(output_dir: Path) -> None:
+    """Porta la sessione appena scritta nel database locale.
+
+    Il database e' la cosa che rende il corpus interrogabile, e senza
+    questa riga restava vuoto: lo riempieva solo `sync_device`, quindi
+    ogni sessione elaborata a mano — cioe' le prove, e i file che si
+    esaminano prima di metterli sul registratore — finiva nell'output
+    e da li' nel nulla. Quattro ore di registrazione elaborate e
+    sediciottomila parole che il database non sapeva esistere.
+
+    Non solleva mai. Un database che non si aggiorna e' undatabase
+    indietro di una sessione; una sessione che si perde e' una notte
+    di lavoro. Quindi si registra il problema e si va avanti.
+    """
+    try:
+        from core.corpus_db import CorpusDB
+
+        with CorpusDB() as cdb:
+            if not cdb.ingest_session_dir(output_dir):
+                logger.warning(
+                    "Database locale non aggiornato per %s", output_dir.name,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Database locale non aggiornato per %s: %s: %s",
+            output_dir.name, type(exc).__name__, exc,
+        )
+
+
+def _purge_wav_cache() -> None:
+    """Svuota la cache WAV di cio' che non serve piu'.
+
+    Non solleva mai: la pulizia è economia di disco, non un risultato.
+    Se il VAD non e' importabile (venv sbagliato) la notte deve andare
+    avanti lo stesso, e 4 GB in piu' sono un problema di domani.
+    """
+    try:
+        from pipeline.vad import purge_wav_cache
+    except ImportError as exc:  # pragma: no cover - difensivo
+        logger.debug("purge_wav_cache non disponibile: %s", exc)
+        return
+    try:
+        purge_wav_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Pulizia cache WAV saltata: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Raccolta file da processare
+# ---------------------------------------------------------------------------
 
 def _collect_files(args, cfg) -> list[Path]:
     from core.config import INPUT_DIR, OUTPUT_DIR

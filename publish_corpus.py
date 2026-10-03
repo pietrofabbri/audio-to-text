@@ -393,6 +393,55 @@ def cmd_push(args) -> int:
     return 0
 
 
+def cmd_reindex(args) -> int:
+    """Ricostruisce il database locale a partire da output/.
+
+    Il database e' la copia interrogabile del corpus: la repo privata
+    serve a leggerlo da un altro posto, il database serve a
+    chiedergli qualcosa. Le due cose possono divergere, e quando
+    divergono il database e' quella che non si vede: una sessione
+    elaborata e pubblicata che il database non conosce e' una sessione
+    che non si trova con nessuna ricerca.
+
+    Non serve per il caso normale (la pipeline aggiorna il database
+    appena finisce una sessione). Serve dopo un rilascio che cambia
+    come si scrive l'output, dopo un restore, e per riparare un
+    database indietro senza rielaborare niente.
+    """
+    from core.corpus_db import CorpusDB
+
+    if not OUTPUT_DIR.is_dir():
+        print(f"Nessuna cartella di output ({OUTPUT_DIR}).")
+        return 1
+
+    db_arg = getattr(args, "db", None)
+    # CorpusDB(path=None) non e' un "usa il default": None non e' un
+    # percorso e lo costruttore lo rifiuta. Il default si ottiene non
+    # passando niente.
+    db = CorpusDB(path=Path(db_arg)) if db_arg else CorpusDB()
+    with db as cdb:
+        n_ok = 0
+        n_skipped = 0
+        for d in sorted(OUTPUT_DIR.iterdir()):
+            if not d.is_dir() or not (d / "transcript.json").exists():
+                continue
+            if cdb.ingest_session_dir(d):
+                n_ok += 1
+                print(f"  {d.name}")
+            else:
+                n_skipped += 1
+                print(f"  {d.name}: non leggibile, saltata")
+
+        st = cdb.stats()
+
+    print(f"\nDatabase ricostruito: {n_ok} sessioni ingestate"
+          f"{f', {n_skipped} saltate' if n_skipped else ''}.")
+    print(f"  sessioni={st['sessions']} segmenti={st['segments']} "
+          f"parole_distinte={st['distinct_words']} "
+          f"parlato={st['total_speech_hours']:.1f} h")
+    return 0
+
+
 def cmd_status(args) -> int:
     if not LOCAL_CLONE.exists():
         print(f"Repo non clonata ({LOCAL_CLONE}).")
@@ -432,6 +481,15 @@ def main() -> int:
              "vengono sostituiti dagli pseudonimi)",
     )
     p.set_defaults(func=cmd_push)
+    r = sub.add_parser(
+        "reindex",
+        help="ricostruisce il database locale a partire da output/",
+    )
+    r.add_argument(
+        "--db", default=None,
+        help="percorso del database (default: data/corpus.db)",
+    )
+    r.set_defaults(func=cmd_reindex)
     sub.add_parser("status", help="cosa c'è sulla repo e cosa manca").set_defaults(func=cmd_status)
 
     args = ap.parse_args()

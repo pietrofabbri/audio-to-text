@@ -321,6 +321,41 @@ def t_names_to_hide_reads_the_speaker_db(tmp: Path) -> None:
     print("    solo le voci nominate entrano nel controllo")
 
 
+def t_reindex_popola_il_database(tmp: Path) -> None:
+    """Il database locale si ricostruisce dalle sessioni gia' elaborate.
+
+    Il caso reale: quattro ore di registrazione elaborate e pubblicate,
+    e un database che non ne sapeva niente. Da quando la pipeline
+    aggiorna il database da sola non capita piu', ma il comando serve a
+    riparare un database indietro senza rielaborare nulla.
+    """
+    print("  reindex popola il database indicato")
+    out, _clone = _fake_env(tmp)
+    db = tmp / "corpus.sqlite"
+    pc.OUTPUT_DIR = out
+
+    require(not db.exists(), "il database di prova non deve gia' esistere")
+    rc = _quiet(pc.cmd_reindex, argparse.Namespace(db=str(db)))
+    require(rc == 0, "reindex non riuscito")
+
+    from core.corpus_db import CorpusDB
+
+    with CorpusDB(path=db) as cdb:
+        st = cdb.stats()
+    require(st["sessions"] == 1,
+            f"sessioni nel database: {st['sessions']}, attesa 1")
+    require(st["segments"] == 2,
+            f"segmenti nel database: {st['segments']}, attesi 2")
+
+    # Rilanciarlo non deve duplicare niente: il comando si usa anche per
+    # rimettere a posto un database solo in parte.
+    _quiet(pc.cmd_reindex, argparse.Namespace(db=str(db)))
+    with CorpusDB(path=db) as cdb:
+        st2 = cdb.stats()
+    require(st2 == st,
+            f"rilanciare il comando ha cambiato il database: {st} -> {st2}")
+
+
 def main() -> int:
     tests = [
         t_nothing_forbidden_lands_on_the_repo,
@@ -329,6 +364,7 @@ def main() -> int:
         t_guard_passes_when_there_is_nothing,
         t_with_names_publishes_them,
         t_names_to_hide_reads_the_speaker_db,
+        t_reindex_popola_il_database,
     ]
     failed = 0
     for fn in tests:

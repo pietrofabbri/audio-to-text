@@ -280,6 +280,61 @@ class CorpusDB:
     # Ingestione
     # ------------------------------------------------------------------
 
+    def ingest_session_dir(self, output_dir: Path) -> bool:
+        """Ingesta la sessione scritta in `output_dir`, se e' completa.
+
+        Ritorna True se il database e' stato aggiornato. Non solleva mai:
+        chi chiama decide cosa fare di un database indietro, e di solito
+        la risposta giusta e' continuare a elaborare.
+
+        Serve perche' `ingest_session` da sola richiedeva a chi chiama di
+        leggere tre file e passargli i campi giusti, e ogni percorso ne
+        leggeva un insieme diverso: il device passava i dati del VAD,
+        gli altri percorsi non passavano niente e il database restava
+        vuoto.
+        """
+        output_dir = Path(output_dir)
+        transcript_path = output_dir / "transcript.json"
+        if not transcript_path.exists():
+            return False
+        try:
+            transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        stem = transcript.get("meta", {}).get("stem") or output_dir.name
+
+        recorded_at = None
+        session_json = output_dir / "session.json"
+        if session_json.exists():
+            try:
+                recorded_at = json.loads(
+                    session_json.read_text(encoding="utf-8")
+                ).get("session_start_wall")
+            except (json.JSONDecodeError, OSError):
+                recorded_at = None
+
+        vad_stats: dict[str, Any] = {}
+        ck_file = output_dir / f"{stem}.checkpoint.json"
+        if ck_file.exists():
+            try:
+                vad_stats = json.loads(
+                    ck_file.read_text(encoding="utf-8")
+                ).get("vad_stats") or {}
+            except (json.JSONDecodeError, OSError):
+                vad_stats = {}
+
+        try:
+            self.ingest_session(
+                stem=stem,
+                transcript=transcript,
+                vad_stats=vad_stats,
+                recorded_at=recorded_at,
+            )
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
     def ingest_session(
         self,
         stem: str,
