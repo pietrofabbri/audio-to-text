@@ -603,6 +603,18 @@ def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
             logger.info("Stadio 3/5: Diarizzazione già completata, carico da checkpoint")
             diar_segments = ck.get_diarization()
             asr_chunks = ck.get_all_chunks()
+
+            # I turni di voce vanno riapplicati ai chunk, sempre, anche se
+            # la diarizzazione e' gia' stata fatta in precedenza. Il
+            # collegamento tra testo e voce sta dentro i chunk, e i chunk
+            # possono essere stati rifatti nel frattempo: rifare la
+            # trascrizione svuota i chunk, e senza questa riapplicazione
+            # tornerebbero senza speaker. Il sintomo e' subdolo: il file
+            # si completa senza errori e tutti i segmenti risultano
+            # "UNKNOWN", cioe' una sessione intera senza interlocutori.
+            asr_chunks = Diarizer.assign_speakers_word_level(
+                asr_chunks, diar_segments,
+            )
             speaker_global_map = ck.get_speaker_global_map()
             speaker_names = _speaker_names_for(cfg, set(speaker_global_map.values()))
 

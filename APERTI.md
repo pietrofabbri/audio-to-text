@@ -16,6 +16,9 @@ parlanti), 5 (punteggiatura come segnale debole), 6 (flag di qualità),
 **Chiuso anche:** il carico termico, che è stato il punto 3b ed è
 diventato una scoperta (4 thread sono più veloci di 8).
 **Aperti:** 1 (la prima notte vera), 8 (biometria), 10–14 (da valutare).
+**Chiusi stanotte:** 15 (la prosodia in parallelo, che non terminava
+mai) e 16 (rifare la trascrizione perdeva gli interlocutori). Entrambi
+scoperti elaborando i quattro file veri: vedi la sezione in fondo.
 
 ---
 
@@ -398,6 +401,41 @@ frequenza se dovesse leggerla. Manca il pezzo vero — watt e
 frequenza — che si misura con `sudo powermetrics`. La stima su quattro
 thread è pienamente supportata dai dati; il comportamento termico
 proprio no, e non va dato per misurato.
+
+---
+
+## Scoperti elaborando i file veri, il 3 ottobre
+
+### 15. ~~La prosodia in parallelo non terminava mai~~ — chiuso
+
+**Stato.** Chiuso. Con il percorso parallelo l'intero WAV finiva
+dentro ogni compito della coda di worker. Con lo start method "spawn"
+ogni compito viene serializzato e spedito attraverso una pipe: un file
+da un'ora voleva dire circa 29 GB di trasferimento per una sola
+sessione. La prosodia non falliva e non scriveva errori, semplicemente
+non tornava.
+
+**Perché nessuno se ne accorgeva in tempo.** La soglia per andare in
+parallelo è di 20 segmenti, e il ciclo end-to-end gira su file da
+mezzo minuto con sei segmenti: il difetto toccava solo i file veri da
+un'ora, quindi di notte, con la macchina già calda. Corretto, lo stesso
+stadio passa da oltre dieci minuti bloccato a dieci secondi.
+
+### 16. ~~Rifare la trascrizione faceva perdere gli interlocutori~~ — chiuso
+
+**Stato.** Chiuso. Rifare il testo svuota i chunk ASR e li ricrea, ma i
+turni di diarizzazione vivono nello stadio accanto, che risultava già
+fatto e veniva saltato. I chunk nuovi nascevano quindi senza voce.
+
+**Il sintomo è il peggiore possibile.** Una sessione intera etichettata
+`UNKNOWN`, senza che nulla fallisse e con tutti i file scritti: la
+sessione risultava perfettamente riuscita e inutilizzabile. Trovato
+guardando i quattro file veri, uno dei quali aveva 126 segmenti e nessun
+interlocutore.
+
+**Il resto è a posto, per una volta.** Nomi coerenti dentro la stessa
+trascrizione (Gianlu sei volte, Schumacher cinque), 6.130 parole nel
+primo file, flag di qualità distribuiti su ok/low/unreliable.
 
 ---
 
