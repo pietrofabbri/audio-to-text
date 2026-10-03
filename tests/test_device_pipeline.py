@@ -649,6 +649,159 @@ def test_purge_removes_orphans_but_only_when_old_enough(tmp: Path) -> None:
     assert n == 1
 
 
+def test_purge_removes_derivatives_of_finished_session(tmp: Path) -> None:
+    """Un derivato della sessione finita sparisce anche senza essere citato.
+
+    Il caso reale: il VAD produceva una copia della variante ripulita e
+    nessun file di metadati la nominava, quindi finiva nel ramo degli
+    orfani e aspettava sei ore. Con diciotto file da un'ora a notte
+    sono oltre due gigabyte che sopravvivono alla passata.
+    """
+    root = tmp / "root"
+    wav = _wav(tmp, "c_cafebabe_16k.wav", root)
+    derivato = _wav(tmp, "c_cafebabe_16k_dn_deadbeef_16k.wav", root)
+    _checkpoint(root, "c", wav, done=True)
+
+    vad = _vad_under(root)
+    try:
+        n, freed = vad.purge_wav_cache()
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert not wav.exists(), "il WAV citato della sessione finita si cancella"
+    assert not derivato.exists(), (
+        f"il derivato di una sessione finita si cancella subito, "
+        f"non dopo sei ore: resta {derivato.name}"
+    )
+    assert n == 2, f"cancellati {n} file invece di 2"
+
+
+def test_purge_keeps_derivatives_of_unfinished_session(tmp: Path) -> None:
+    """La regola che protegge il lavoro di notte vale anche per i derivati."""
+    root = tmp / "root"
+    wav = _wav(tmp, "d_cafebabe_16k.wav", root)
+    derivato = _wav(tmp, "d_cafebabe_16k_dn_deadbeef_16k.wav", root)
+    _checkpoint(root, "d", wav, done=False)
+
+    vad = _vad_under(root)
+    try:
+        n, _ = vad.purge_wav_cache()
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert n == 0, "sessione a meta': non si cancella niente"
+    assert wav.exists() and derivato.exists(), (
+        "checkpoint incompleto: il WAV e i suoi derivati devono restare"
+    )
+
+
+def test_derivatives_of_another_session_are_left_alone(tmp: Path) -> None:
+    """Due sessioni diverse non si cancellano a vicenda.
+
+    Il nome di una sessione puo' essere prefisso di un'altra, quindi il
+    confronto si fa sul nome intero piu' il separatore.
+    """
+    root = tmp / "root"
+    wav = _wav(tmp, "e_cafebabe_16k.wav", root)
+    altro = _wav(tmp, "e2_deadbeef_16k.wav", root)
+    _checkpoint(root, "e", wav, done=True)
+
+    vad = _vad_under(root)
+    try:
+        vad.purge_wav_cache()
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert not wav.exists(), "la sessione finita si cancella"
+    assert altro.exists(), (
+        "un file di una sessione diversa non si tocca: "
+        "il prefisso del nome non basta a dirgli che appartiene a questa"
+    )
+
+
+def _write_wav(path: Path, *, rate: int, channels: int, seconds: float = 1.0):
+    """Un WAV vero, con il formato richiesto."""
+    import numpy as np
+    import soundfile as sf
+    path.parent.mkdir(parents=True, exist_ok=True)
+    t = np.arange(int(rate * seconds)) / rate
+    onda = 0.2 * np.sin(2 * np.pi * 220.0 * t)
+    if channels == 1:
+        sf.write(str(path), onda.astype("float32"), rate, subtype="PCM_16")
+    else:
+        stereo = np.stack([onda, onda * 0.5], axis=1)
+        sf.write(str(path), stereo.astype("float32"), rate, subtype="PCM_16")
+    return path
+
+
+def test_wav_16k_mono_is_reused_not_copied(tmp: Path) -> None:
+    """Un audio gia' 16 kHz mono non viene copiato.
+
+    La variante ripulita di afftdn e' gia' 16 kHz mono, quindi il VAD la
+    riconverteva in un file identico: 115 MB e qualche decina di secondi
+    di CPU per un'ora di audio, ogni volta.
+    """
+    root = tmp / "root"
+    sorgente = _write_wav(root / "variante.wav", rate=16_000, channels=1)
+
+    import shutil
+
+    from core.config import ASRConfig, VADConfig
+
+    vad = _vad_under(root)
+    try:
+        if not shutil.which("ffmpeg"):
+            # La prova vera richiede ffmpeg, che questa suite non deve
+            # dare per presente: il predicato resta verificato lo stesso.
+            assert vad._is_wav_16k_mono(sorgente)
+            return
+        ottenuto = vad.VoiceActivityDetector(
+            VADConfig(), ASRConfig()
+        )._to_wav(sorgente)
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert ottenuto == sorgente, (
+        "un WAV 16 kHz mono va riusato cosi' com'e', non convertito"
+    )
+    cache = root / "data" / "wav_cache"
+    assert not cache.exists() or not list(cache.glob("*.wav")), (
+        "riusare il file non deve produrre copie in cache"
+    )
+
+
+def test_wav_in_other_format_is_not_reused(tmp: Path) -> None:
+    """Stereo o frequenza diversa: la copia serve, e va fatta."""
+    root = tmp / "root"
+    stereo = _write_wav(root / "stereo.wav", rate=44_100, channels=2)
+
+    vad = _vad_under(root)
+    try:
+        ok = vad._is_wav_16k_mono(stereo)
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert not ok, "uno stereo a 44.1 kHz non e' un 16 kHz mono"
+
+
+def test_wav_16k_mono_is_detected(tmp: Path) -> None:
+    """Il formato giusto viene riconosciuto, non dedotto dal nome."""
+    root = tmp / "root"
+    buono = _write_wav(root / "a.wav", rate=16_000, channels=1)
+    cattivo = _write_wav(root / "b.wav", rate=16_000, channels=2)
+    vuoto = root / "non-esiste.wav"
+
+    vad = _vad_under(root)
+    try:
+        assert vad._is_wav_16k_mono(buono), "16 kHz mono va riconosciuto"
+        assert not vad._is_wav_16k_mono(cattivo), "stereo non va riconosciuto"
+        assert not vad._is_wav_16k_mono(vuoto), (
+            "un file che non esiste non puo' essere un formato valido"
+        )
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+
 def test_purge_on_missing_cache_is_noop(tmp: Path) -> None:
     root = tmp / "vuoto"
     root.mkdir()

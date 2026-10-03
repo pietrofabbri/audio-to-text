@@ -134,11 +134,32 @@ def _decide_denoise(
 
     # --- VAD sulla variante ripulita: quanto parlato è sopravvissuto? ---
     denoised_vad_stats: dict = {}
+    probe_wav: Path | None = None
     try:
         vad = VoiceActivityDetector(cfg.vad, cfg.asr)
-        _, _, denoised_vad_stats = vad.process(denoised)
+        probe_wav, _, denoised_vad_stats = vad.process(denoised)
     except Exception as exc:  # noqa: BLE001
         logger.warning("VAD sulla variante ripulita fallito: %s", exc)
+
+    def _butta_via_derivati() -> None:
+        """Cancella i WAV prodotti dal denoise: non servono a nessuno.
+
+        Non basta cancellare quello prodotto da afftdn: il VAD puo'
+        averne creato un altro (una copia, se l'ingresso non era gia'
+        nel formato giusto), e quello non e' citato da nessun
+        checkpoint, quindi nessuno lo recupererebbe mai. Sono 115 MB
+        per ora di audio, e senza questa riga restano in cache per
+        sempre.
+        """
+        for p in {denoised, probe_wav}:
+            if p is None:
+                continue
+            try:
+                Path(p).unlink()
+            except OSError as exc:
+                logger.warning(
+                    "Non riesco a cancellare %s: %s", p, exc,
+                )
 
     original_vad_stats = ck._data.get("vad_stats", {}) or {}
 
@@ -220,18 +241,12 @@ def _decide_denoise(
         # Il WAV ripulito è derivabile (lo si rifà con una riga di
         # ffmpeg) e i chunk sono ormai nel checkpoint: tenerlo occuperebbe
         # 115 MB per ogni ora registrata senza servire a nulla.
-        try:
-            denoised.unlink()
-        except OSError:
-            pass
+        _butta_via_derivati()
         return denoised_chunks, "denoised"
 
     # L'originale ha vinto: la variante ripulita non serve più e occupa
     # disco (~115 MB per ora di audio a 16 kHz mono).
-    try:
-        denoised.unlink()
-    except OSError:
-        pass
+    _butta_via_derivati()
     ck.complete_stage("denoise", winner="original", reason="; ".join(decision["reasons"]))
     return asr_chunks, "original"
 
@@ -683,28 +698,6 @@ def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
 
     return True
 
-
-def _purge_wav_cache() -> None:
-    """Svuota la cache WAV di cio' che non serve piu'.
-
-    Non solleva mai: la pulizia è economia di disco, non un risultato.
-    Se il VAD non e' importabile (venv sbagliato) la notte deve andare
-    avanti lo stesso, e 4 GB in piu' sono un problema di domani.
-    """
-    try:
-        from pipeline.vad import purge_wav_cache
-    except ImportError as exc:  # pragma: no cover - difensivo
-        logger.debug("purge_wav_cache non disponibile: %s", exc)
-        return
-    try:
-        purge_wav_cache()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Pulizia cache WAV saltata: %s", exc)
-
-
-# ---------------------------------------------------------------------------
-# Raccolta file da processare
-# ---------------------------------------------------------------------------
 
 def _collect_files(args, cfg) -> list[Path]:
     from core.config import INPUT_DIR, OUTPUT_DIR

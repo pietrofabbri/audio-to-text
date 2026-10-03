@@ -55,7 +55,29 @@ def wav_cache_dir() -> Path:
     return ROOT_DIR / "data" / "wav_cache"
 
 
-def _wav_status() -> dict[Path, bool]:
+def _is_wav_16k_mono(path: Path) -> bool:
+    """True solo se il file e' gia' un WAV 16 kHz mono a 16 bit.
+
+    Tre condizioni, tutte necessarie, e nessuna viene dedotta dal nome:
+    controllare il nome sarebbe indovinare, e il nome del file puo'
+    essere quello di una copia vecchia che contiene altro.
+    """
+    try:
+        import soundfile as sf
+        info = sf.info(str(path))
+    except Exception:  # noqa: BLE001
+        # Non si puo' leggere il formato: allora si converte. Meglio una
+        # copia inutile che scoprirlo alla fine, quando il VAD ha gia'
+        # prodotto segmenti sbagliati.
+        return False
+    return (
+        getattr(info, "subtype", None) == "PCM_16"
+        and info.samplerate == 16_000
+        and info.channels == 1
+    )
+
+
+def _wav_status() -> tuple[dict[Path, bool], set[str]]:
     """Per ogni WAV citato da un checkpoint: True se la sessione è finita.
 
     Il caso da distinguere è "sessione completa" (il WAV non serve più, si
@@ -65,8 +87,9 @@ def _wav_status() -> dict[Path, bool]:
     """
     out_dir = ROOT_DIR / "output"
     status: dict[Path, bool] = {}
+    stem_completi: set[str] = set()
     if not out_dir.is_dir():
-        return status
+        return status, stem_completi
 
     for ck_file in out_dir.glob("*/*.checkpoint.json"):
         try:
@@ -78,7 +101,9 @@ def _wav_status() -> dict[Path, bool]:
         wav = (stages.get("ffmpeg") or {}).get("wav_path")
         if wav:
             status[Path(wav).resolve()] = complete
-    return status
+        if complete:
+            stem_completi.add(ck_file.parent.name)
+    return status, stem_completi
 
 
 def purge_wav_cache(force: bool = False, min_age_sec: float = 6 * 3600) -> tuple[int, int]:
@@ -106,7 +131,7 @@ def purge_wav_cache(force: bool = False, min_age_sec: float = 6 * 3600) -> tuple
     if not cache.is_dir():
         return 0, 0
 
-    status = _wav_status()
+    status, stem_completi = _wav_status()
     now = time.time()
     n = 0
     freed = 0
@@ -115,6 +140,17 @@ def purge_wav_cache(force: bool = False, min_age_sec: float = 6 * 3600) -> tuple
         try:
             rp = p.resolve()
             complete = status.get(rp)
+            if complete is None and any(
+                p.name.startswith(f"{stem}_") for stem in stem_completi
+            ):
+                # Un derivato della stessa sessione, non citato da nessun
+                # checkpoint (la copia che il VAD faceva della variante
+                # ripulita, per esempio). Se la sessione e' finita non
+                # serve a nessuno, anche se nessun file di metadati lo
+                # nomina: aspettare le sei ore dell'orfanato per liberare
+                # disco che tanto non tornerera' e' solo una sciagura
+                # rimandata.
+                complete = True
             if complete is None:
                 # Non citato da nessun checkpoint: orfano, ma solo se
                 # ha avuto il tempo di diventarlo.
@@ -216,7 +252,13 @@ class VoiceActivityDetector:
     def _to_wav(self, audio_path: Path) -> Path:
         """
         Converte qualsiasi formato audio/video in WAV 16kHz mono.
-        Se il file è già WAV 16kHz mono, salta la conversione.
+        Se il file è già WAV 16kHz mono, non lo converte: lo riusa.
+
+        Il riuso non è un dettaglio. La variante ripulita prodotta da
+        afftdn è già 16kHz mono, quindi il VAD la riconverteva in un
+        file identico da 115 MB che nessuno cancellava: ogni ora di
+        audio lasciava un orfano in cache, e con diciotto file a notte
+        la cache cresceva di oltre due gigabyte a passata.
         """
         # La cache sta sotto la radice della pipeline, MAI accanto al
         # file sorgente. Con il registratore collegato, "accanto al
@@ -225,6 +267,13 @@ class VoiceActivityDetector:
         # che sono temporanei, e la pull successiva li trovava come
         # registrazioni nuove, li elaborava e li cancellava dal device.
         # Su un volume exFAT da 18 ore è anche lentissimo.
+        if _is_wav_16k_mono(audio_path):
+            logger.info(
+                "Audio già 16kHz mono WAV: lo uso così com'è (%s)",
+                audio_path.name,
+            )
+            return audio_path
+
         wav_dir = wav_cache_dir()
         wav_dir.mkdir(parents=True, exist_ok=True)
         # L'hash del percorso distingue due file omonimi che stanno in
