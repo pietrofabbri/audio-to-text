@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -35,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.text_correction import (  # noqa: E402
     Correttore, SegmentResult, WordFix, _applica, _coda, _estrai_json,
+    correggi_segmenti, scrivi_varianti,
 )
 
 
@@ -321,6 +323,89 @@ def tentativi_e_backoff() -> None:
 
 
 # ----------------------------------------------------------------------
+# Le varianti pubblicabili: cio' che si legge su GitHub
+# ----------------------------------------------------------------------
+
+def _segmento(idx: int, testo: str) -> dict:
+    return {"idx": idx, "speaker": "GLOBAL_001", "start": 0.0,
+            "end": 4.0, "text": testo, "words": []}
+
+
+def varianti_affiancano_l_originale(tmp) -> None:
+    """Il file originale non si tocca, quello nuovo sta accanto.
+
+    Il corpus pubblicato copia i file di sessione: se il testo corretto
+    sostituisse quello di Whisper, il confronto che rende giudicabile
+    il correttore sparirebbe — e insieme a esso la possibilita' di
+    capire se una frase sbagliata l'ha fatta la trascrizione o la
+    correzione. Non e' una scelta di formato: e' il modo in cui si
+    tiene conto dei due errori insieme.
+    """
+    d = Path(tmp)
+    segmenti = [_segmento(0, "a stegnavano a matiala vera")]
+    (d / "segments.jsonl").write_text(
+        "\n".join(json.dumps(s) for s in segmenti), encoding="utf-8")
+    (d / "transcript.txt").write_text("testo di Whisper\n", encoding="utf-8")
+
+    correzioni = {0: {"idx": 0, "discarded": False,
+                      "corrected_text": "a segnavano a maiala vera",
+                      "n_changed": 2}}
+    scritti = scrivi_varianti(d, segmenti, correzioni)
+
+    nomi = {p.name for p in scritti}
+    require(nomi == {"transcript.corrected.txt", "transcript.corrected.srt",
+                     "segments.corrected.jsonl"}, nomi)
+    for p in scritti:
+        require(p.exists(), f"{p.name} non è stato scritto")
+
+    require((d / "transcript.txt").read_text() == "testo di Whisper\n",
+            "l'originale non deve cambiare")
+    corretto = (d / "transcript.corrected.txt").read_text()
+    require("segnavano" in corretto, f"il nuovo deve essere corretto: {corretto!r}")
+
+    righe = [json.loads(l) for l in
+             (d / "segments.corrected.jsonl").read_text().splitlines() if l.strip()]
+    require(len(righe) == 1, f"una riga per segmento, risultano {len(righe)}")
+    require(righe[0]["text"] == "a segnavano a maiala vera", righe[0])
+    require(righe[0]["text_raw"] == "a stegnavano a matiala vera", righe[0])
+    require(righe[0]["n_words_changed"] == 2, righe[0])
+
+
+def senza_correzioni_niente_varianti(tmp) -> None:
+    """Nessuna correzione, nessun file: non si finge un lavoro fatto.
+
+    Un `transcript.corrected.txt` identico all'originale suggerirebbe
+    un passaggio di correzione che non e' mai avvenuto, e su GitHub
+    sarebbe indistinguibile da una correzione che non ha cambiato
+    niente — che sono due cose molto diverse.
+    """
+    d = Path(tmp)
+    segmenti = [_segmento(0, "una due tre")]
+    solo_scarti = {0: {"idx": 0, "discarded": True,
+                       "corrected_text": "una due tre", "n_changed": 0}}
+    for argomento, nome in (({}, "nessuna correzione"),
+                            (solo_scarti, "solo scarti")):
+        scritti = scrivi_varianti(d, segmenti, argomento)
+        require(not scritti,
+                f"{nome}: non doveva scrivere nulla, ha scritto {scritti}")
+        require(not (d / "transcript.corrected.txt").exists(),
+                f"{nome}: il file non deve esistere")
+
+
+def correggere_segmenti_non_tocca_l_originale(tmp) -> None:
+    """La funzione restituisce copie: la fonte resta quella che è."""
+    segmenti = [_segmento(0, "a stegnavano a matiala vera")]
+    correzioni = {0: {"idx": 0, "discarded": False,
+                      "corrected_text": "a segnavano a maiala vera",
+                      "n_changed": 2}}
+    out = correggi_segmenti(segmenti, correzioni)
+    require(out[0]["text"] == "a segnavano a maiala vera", out[0])
+    require(segmenti[0]["text"] == "a stegnavano a matiala vera",
+            "il segmento in ingresso non deve essere modificato")
+    require(out is not segmenti, "devono essere copie, non lo stesso oggetto")
+
+
+# ----------------------------------------------------------------------
 # Il consenso: la parte che non si puo' testare a posteriori
 # ----------------------------------------------------------------------
 
@@ -461,6 +546,12 @@ CHECKS = [
     ("correggere due volte non degrada", correggere_un_testo_già_corretto),
     ("il JSON viene trovato sotto qualsiasi involucro",
      _estrai_json_accetta_i_modi),
+    ("le varianti pubblicabili stanno accanto all'originale",
+     varianti_affiancano_l_originale),
+    ("senza correzioni non si scrive nessuna variante",
+     senza_correzioni_niente_varianti),
+    ("correggere i segmenti non tocca la fonte",
+     correggere_segmenti_non_tocca_l_originale),
 ]
 
 
@@ -469,7 +560,11 @@ def main() -> int:
     failed: list[str] = []
     for name, fn in CHECKS:
         try:
-            fn()
+            if fn.__code__.co_argcount:
+                with TemporaryDirectory() as tmp:
+                    fn(tmp)
+            else:
+                fn()
             passed += 1
             print(f"  ok  {name}")
         except Failure as exc:

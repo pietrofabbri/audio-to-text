@@ -92,6 +92,82 @@ Se non c'e' niente da correggere, rispondi con {"correzioni": []}.
 """
 
 
+def correggi_segmenti(segmenti: Iterable[dict], correzioni: dict) -> list[dict]:
+    """I segmenti con il testo da analizzare, senza toccare gli originali.
+
+    Restituisce copie: i segmenti in ingresso rappresentano quello che
+    e' stato detto e vanno conservati, e una correzione non deve
+    scrivere sopra la fonte da cui e' venuta.
+    """
+    out = []
+    for s in segmenti:
+        corr = (correzioni or {}).get(s.get("idx"))
+        if not corr or corr.get("discarded") or not corr.get("corrected_text"):
+            out.append(dict(s))
+            continue
+        nuovo = dict(s)
+        nuovo["text_raw"] = s.get("text")
+        nuovo["text"] = corr["corrected_text"]
+        nuovo["n_words_changed"] = corr.get("n_changed") or 0
+        out.append(nuovo)
+    return out
+
+
+def scrivi_varianti(
+    session_dir: Path,
+    segmenti: list[dict],
+    correzioni: dict,
+) -> list[Path]:
+    """Le varianti corrette della sessione, con l'originale accanto.
+
+    Il corpus pubblicato copia i **file** di sessione, non il database:
+    se il testo corretto restasse solo in `corpus.db`, su GitHub si
+    continuerebbe a leggere il testo impreciso — che e' esattamente il
+    difetto che si voleva chiudere. Percio' qui si scrivono file
+    paralleli, e non si sovrascrive niente: `transcript.txt` resta
+    quello che Whisper ha capito.
+
+    I formattatori sono quelli dell'assembler, non altri: il formato
+    deve essere identico per costruzione, altrimenti un file diverrebbe
+    piu' avanti di un altro e nessuno se ne accorgerebbe guardando i
+    due affiancati.
+
+    Se nessuna correzione e' stata applicata non si scrive niente: un
+    `transcript.corrected.txt` identico all'originale suggerirebbe un
+    passaggio di correzione che non e' avvenuto.
+    """
+    from pipeline.assembler import _write_srt, _write_txt
+
+    usabili = {
+        i: r for i, r in (correzioni or {}).items()
+        if not r.get("discarded") and r.get("corrected_text")
+    }
+    if not usabili:
+        return []
+
+    corretti = correggi_segmenti(segmenti, usabili)
+    if not any(c.get("text") != s.get("text")
+               for c, s in zip(corretti, segmenti)):
+        return []
+
+    session_dir = Path(session_dir)
+    scritti = []
+    for nome, scrivi in (
+        ("transcript.corrected.txt", lambda p: _write_txt(corretti, p)),
+        ("transcript.corrected.srt", lambda p: _write_srt(corretti, p)),
+    ):
+        p = session_dir / nome
+        scrivi(p)
+        scritti.append(p)
+
+    p_jsonl = session_dir / "segments.corrected.jsonl"
+    with p_jsonl.open("w", encoding="utf-8") as f:
+        for s in corretti:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    scritti.append(p_jsonl)
+    return scritti
+
+
 @dataclass
 class WordFix:
     """Una parola, prima e dopo."""

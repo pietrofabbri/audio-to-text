@@ -940,6 +940,285 @@ def test_corpus_db_name_sync_sets_null_not_pseudonym(tmp: Path) -> None:
         assert row["name"] is None, dict(row)
 
 
+# ----------------------------------------------------------------------
+# Il testo corretto dentro il corpus
+# ----------------------------------------------------------------------
+
+_PAROLE_GREZZE = "a stegnavano a matiala vera"
+
+
+def _trascrizione_grezza() -> dict:
+    """Una sessione minima, con word-level timestamps come le vere."""
+    parole = _PAROLE_GREZZE.split()
+    return {
+        "meta": {"speakers": ["GLOBAL_001"], "speaker_names": {}},
+        "segments": [{
+            "idx": 0, "speaker": "GLOBAL_001", "start": 0.0, "end": 5.0,
+            "text": _PAROLE_GREZZE,
+            "words": [{"word": w, "start": float(i), "end": i + 0.4}
+                      for i, w in enumerate(parole)],
+            "quality": "ok",
+        }],
+    }
+
+
+def _correzione() -> dict:
+    """La correzione che il modello produrrebbe per quel segmento."""
+    return {
+        0: {
+            "idx": 0, "discarded": False,
+            "original_text": _PAROLE_GREZZE,
+            "corrected_text": "a segnavano a maiala vera",
+            "n_words": 5, "n_changed": 2,
+            "words": [
+                {"i": 0, "raw": "a", "fixed": "a", "changed": False},
+                {"i": 1, "raw": "stegnavano", "fixed": "segnavano", "changed": True},
+                {"i": 2, "raw": "a", "fixed": "a", "changed": False},
+                {"i": 3, "raw": "matiala", "fixed": "maiala", "changed": True},
+                {"i": 4, "raw": "vera", "fixed": "vera", "changed": False},
+            ],
+        }
+    }
+
+
+def test_senza_correzione_il_corpus_non_cambia(tmp: Path) -> None:
+    """Nessun file di correzione, nessun cambiamento.
+
+    Il caso normale non e' il caso eccezionale: il 90% delle sessioni
+    non ha ancora una correzione, e per quelle il database deve essere
+    identico a prima — non «quasi identico». Se questa prova passasse ma
+    l'altra no, il silenzio sarebbe il difetto.
+    """
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza())
+        r = db.query("SELECT text, text_raw, corrected, n_words_changed "
+                     "FROM segments")[0]
+        assert r["text"] == _PAROLE_GREZZE, dict(r)
+        assert r["text_raw"] == _PAROLE_GREZZE, dict(r)
+        assert r["corrected"] == 0, dict(r)
+        assert r["n_words_changed"] == 0, (
+            f"un conteggio e' 0 anche quando non si e' corretto, "
+            f"risulta {r['n_words_changed']!r}")
+        tok = [t["word"] for t in db.query(
+            "SELECT word FROM tokens ORDER BY token_idx")]
+        assert tok == _PAROLE_GREZZE.split(), tok
+
+
+def test_il_testo_analizzato_e_il_corretto(tmp: Path) -> None:
+    """Su `text` finisce il testo da analizzare, su `text_raw` l'originale.
+
+    Non e' una questione di stile: senza il grezzo conservato uno dei
+    due errori sparisce. Whisper sbaglia, il correttore sbaglia a suo
+    volta, e senza i due testi affiancati non si sa quale dei due ha
+    prodotto una frase sbagliata — che e' la domanda che rende
+    giudicabile un correttore automatico.
+    """
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza(),
+                          correzioni=_correzione())
+        r = db.query("SELECT text, text_raw, corrected, n_words_changed "
+                     "FROM segments")[0]
+        assert r["text"] == "a segnavano a maiala vera", dict(r)
+        assert r["text_raw"] == _PAROLE_GREZZE, dict(r)
+        assert r["corrected"] == 1, dict(r)
+        assert r["n_words_changed"] == 2, dict(r)
+
+
+def test_i_timestamp_restano_validi_sul_testo_corretto(tmp: Path) -> None:
+    """Le parole corrette prendono le posizioni di quelle di Whisper.
+
+    E' il regalo che fa la regola «il numero di parole non puo'
+    cambiare»: se quella regola regge, l'i-esima parola del testo
+    corretto e' l'i-esima parola che l'ASR ha collocato nel tempo, e i
+    timestamp restano quelli giusti. Senza quella regola i due elenchi
+    si sfalserebbero e un tempo di 1,4 secondi finirebbe addosso alla
+    parola sbagliata — un errore invisibile, perche' il numero c'e' e
+    sembra giusto.
+    """
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza(),
+                          correzioni=_correzione())
+        righe = db.query("SELECT word, start_sec FROM tokens ORDER BY token_idx")
+        parole = [r["word"] for r in righe]
+        assert parole == "a segnavano a maiala vera".split(), parole
+        assert [r["start_sec"] for r in righe] == [0.0, 1.0, 2.0, 3.0, 4.0], righe
+
+
+def test_allineamento_rotto_non_viene_applicato(tmp: Path) -> None:
+    """Se i due elenchi hanno lunghezze diverse, non si tocca niente.
+
+    Non dovrebbe mai succedere — e' la garanzia del correttore — ma il
+    database non puo' fidarsi di un file scritto da un altro programma.
+    Applicare una correzione disallineata sposterebbe ogni parola su
+    quella successiva, e i timestamp su parole sbagliate: peggio del
+    testo grezzo, che almeno e' quello che qualcuno ha detto.
+    """
+    rotta = _correzione()
+    rotta[0]["words"] = rotta[0]["words"][:3]     # tre parole per cinque
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza(),
+                          correzioni=rotta)
+        parole = [t["word"] for t in db.query(
+            "SELECT word FROM tokens ORDER BY token_idx")]
+        assert parole == _PAROLE_GREZZE.split(), (
+            f"i token devono restare quelli di Whisper, sono {parole}")
+
+
+def test_ricalcolare_torna_al_grezzo(tmp: Path) -> None:
+    """Rifare l'ingestione senza correzioni non lascia residui.
+
+    `wordfreq` e `bigrams` si ricostruiscono ogni volta: se il reingest
+    aggiungesse le parole corrette senza cancellare quelle di Whisper,
+    il conteggio delle parole conterrebbe entrambe le versioni, e la
+    statistica che si voleva correggere sarebbe falsata in modo che
+    nessuno vedrebbe — il numero sarebbe semplicemente piu' alto.
+    """
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza(),
+                          correzioni=_correzione())
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza())
+        parole = {r["word"] for r in db.query("SELECT word FROM wordfreq")}
+        assert "stegnavano" in parole, parole
+        assert "segnavano" not in parole, (
+            f"resta una parola che nessuno ha detto: {parole}")
+        r = db.query("SELECT text, corrected FROM segments")[0]
+        assert r["text"] == _PAROLE_GREZZE and r["corrected"] == 0, dict(r)
+
+
+def test_uno_scarto_non_entra_nel_corpus(tmp: Path) -> None:
+    """Un segmento scartato resta grezzo, e resta dichiarato tale.
+
+    Il correttore scarta quando non e' sicuro. Applicare lo scarto
+    significherebbe fidarsi di una risposta che il codice stesso ha
+    deciso di non fidarsi, e prenderebbe la forma peggiore: un testo
+    che sembra curato ma su cui nessuno ha potuto verificare niente.
+    """
+    scartata = _correzione()
+    scartata[0]["discarded"] = True
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza(),
+                          correzioni=scartata)
+        r = db.query("SELECT text, corrected FROM segments")[0]
+        assert r["text"] == _PAROLE_GREZZE and r["corrected"] == 0, dict(r)
+
+
+def test_quanta_correzione_c_e(tmp: Path) -> None:
+    """Le statistiche dicono quanto materiale e' davvero corretto.
+
+    Non serve a giudicare il correttore — quello si giudica guardando le
+    coppie — ma a non lasciarsi sfuggire che un corpus «corretto al 40%»
+    e' un corpus su cui il conteggio delle parole continua a sbagliare
+    per il 60% restante, e su cui fare le analisi e' prematuro.
+    """
+    with CorpusDB(tmp / "c.db") as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza(),
+                          correzioni=_correzione())
+        st = db.correction_stats()
+        assert st["segments"] == 1 and st["corrected_segments"] == 1, st
+        assert st["corrected_share"] == 1.0, st
+        assert st["words"] == 5 and st["words_changed"] == 2, st
+        assert abs(st["changed_share"] - 0.4) < 1e-9, st
+
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza())
+        st = db.correction_stats()
+        assert st["corrected_segments"] == 0 and st["words_changed"] == 0, st
+        assert st["corrected_share"] == 0.0, st
+
+
+def test_ingest_dir_legge_la_correzione(tmp: Path) -> None:
+    """Il percorso vero della pipeline: la cartella, non i parametri.
+
+    Tutti gli altri test passano le correzioni a mano. Questo verifica
+    che `ingest_session_dir` trovi da solo il file nella cartella della
+    sessione, perche' e' l'unica chiamata che fa la notte.
+    """
+    d = tmp / "2026-10-02_19-42-33"
+    d.mkdir(parents=True)
+    tr = _trascrizione_grezza()
+    (d / "transcript.json").write_text(
+        json.dumps({"meta": {"stem": "2026-10-02_19-42-33"}, **tr}),
+        encoding="utf-8")
+    (d / "text_correction.json").write_text(
+        json.dumps({"segments": [{**_correzione()[0]}]}), encoding="utf-8")
+
+    with CorpusDB(tmp / "c.db") as db:
+        assert db.ingest_session_dir(d), "la sessione doveva essere ingestata"
+        r = db.query("SELECT text, text_raw FROM segments")[0]
+        assert r["text"] == "a segnavano a maiala vera", dict(r)
+        assert r["text_raw"] == _PAROLE_GREZZE, dict(r)
+
+
+def test_correzione_illeggibile_non_blocca(tmp: Path) -> None:
+    """Un file di correzione rotto non deve far perdere la sessione.
+
+    Una notte interrotta lascia file a meta'. Se un JSON troncato
+    facesse saltare l'ingestione, si perderebbe tutto il resto della
+    sessione — e proprio nel momento in cui i dati sono incompleti e
+    quindi piu' utili, si avrebbe un database con un buco in piu' e
+    nessuna spiegazione.
+    """
+    d = tmp / "2026-10-02_19-42-33"
+    d.mkdir(parents=True)
+    (d / "transcript.json").write_text(
+        json.dumps({"meta": {"stem": "2026-10-02_19-42-33"},
+                    **_trascrizione_grezza()}), encoding="utf-8")
+    (d / "text_correction.json").write_text("{rotto", encoding="utf-8")
+
+    with CorpusDB(tmp / "c.db") as db:
+        assert db.ingest_session_dir(d), "la sessione doveva entrare lo stesso"
+        r = db.query("SELECT text, corrected FROM segments")[0]
+        assert r["text"] == _PAROLE_GREZZE and r["corrected"] == 0, dict(r)
+
+
+def test_correzioni_ignora_chi_non_ha_indice(tmp: Path) -> None:
+    """Una riga senza indice non deve far cadere la lettura del file.
+
+    Il file lo scrive un altro programma e puo' contenere una riga
+    strana. Perderla e' giusto; far fallire tutte le altre no.
+    """
+    d = tmp / "s1"
+    d.mkdir()
+    (d / "text_correction.json").write_text(json.dumps({"segments": [
+        {"discarded": True, "corrected_text": "niente"},
+        {"idx": "non_un_numero", "corrected_text": "x"},
+        {"idx": 7, "corrected_text": "a segnavano a maiala vera",
+         "n_changed": 2, "words": []},
+    ]}), encoding="utf-8")
+    corr = CorpusDB.load_corrections(d)
+    assert set(corr) == {7}, corr
+
+
+def test_migrazione_riempie_il_testo_originale(tmp: Path) -> None:
+    """Un database gia' scritto deve avere l'originale anche lui.
+
+    `ALTER TABLE ADD COLUMN` aggiunge la colonna vuota, e una riga
+    scritta prima della correzione avrebbe l'originale a NULL. Non e'
+    un dettaglio: `suspect_text` serve a rivedere a mano i segmenti
+    sospetti, e una colonna vuota proprio li' e' useless. Il valore non
+    si indovina, si copia: per una riga mai corretta il testo da
+    analizzare *e'* quello di Whisper.
+    """
+    path = tmp / "vecchio.db"
+    with CorpusDB(path) as db:
+        db.ingest_session(stem="s1", transcript=_trascrizione_grezza())
+
+    # Si simulate il database di prima: colonne nuove assenti e vuote.
+    with CorpusDB(path) as db:
+        db.conn.execute("UPDATE segments SET text_raw = NULL")
+        db.conn.execute("UPDATE segments SET n_words_changed = NULL")
+
+    with CorpusDB(path) as db:
+        r = db.query("SELECT text, text_raw, n_words_changed FROM segments")[0]
+        assert r["text_raw"] == _PAROLE_GREZZE, dict(r)
+        assert r["n_words_changed"] == 0, dict(r)
+
+    # E riaprirlo non deve cambiare niente: la migrazione non deve
+    # fare male neppure quando non c'e' niente da fare.
+    with CorpusDB(path) as db:
+        r = db.query("SELECT text_raw FROM segments")[0]
+        assert r["text_raw"] == _PAROLE_GREZZE, dict(r)
+
+
 # -------------------------------------------------------------------
 
 def main() -> int:

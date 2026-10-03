@@ -48,7 +48,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from core.config import OUTPUT_DIR  # noqa: E402
-from core.text_correction import MODELLO, Correttore  # noqa: E402
+from core.text_correction import (  # noqa: E402
+    MODELLO, Correttore, scrivi_varianti,
+)
 
 logger = logging.getLogger("correct_text")
 
@@ -262,8 +264,17 @@ def main() -> int:
         # rifatto in questa passata sostituisce il suo vecchio.
         uniti = {r["idx"]: r for r in _carica_precedente(d).values()}
         uniti.update({r["idx"]: r for r in out_segmenti})
-        _scrivi(d, sorted(uniti.values(), key=lambda r: r["idx"]), args.model)
+        finali = sorted(uniti.values(), key=lambda r: r["idx"])
+        _scrivi(d, finali, args.model)
+
+        # Le varianti pubblicabili, cosi' che su GitHub si legga il
+        # testo corretto e non quello grezzo. `transcript.txt` resta
+        # intatto: i due errori devono restare entrambi visibili.
+        scritti = scrivi_varianti(d, _leggi_sessione(d), {
+            r["idx"]: r for r in finali})
         print(f"  scritto {d / NOME_FILE}")
+        for p in scritti:
+            print(f"  scritto {p.name}")
 
     if args.dry:
         print("\n[dry-run] niente scritto. Con --consent si scrive.")

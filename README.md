@@ -771,6 +771,48 @@ Ogni giro registra un'impronta del testo, quindi un tentativo
 interrotto a metà non si paga due volte e non corregge due volte lo
 stesso testo.
 
+### Dove finisce il testo corretto
+
+In tre posti, tutti con l'originale accanto.
+
+Nel **database**: `segments.text` diventa il testo da analizzare,
+`segments.text_raw` conserva l'originale, e `n_words_changed` dice
+quanto ha lavorato il correttore. I token, il conteggio delle parole e
+i bigrami si ricostruiscono sul testo corretto — che è il punto: sul
+testo grezzo il conteggio delle parole sbaglia.
+
+```python
+with CorpusDB() as db:
+    print(db.correction_stats())
+# {'segments': 429, 'corrected_segments': 0, 'corrected_share': 0.0, ...}
+```
+
+Quel numero serve a una cosa sola: accorgersi che un corpus «corretto
+al 12%» è un corpus su cui il conteggio delle parole continua a
+sbagliare per l'88% restante. Non dice se il correttore è bravo —
+quello si giudica guardando le coppie originale/corretto.
+
+Nei **file pubblicati**: `transcript.corrected.txt`,
+`transcript.corrected.srt` e `segments.corrected.jsonl` finiscono
+nella repo privata accanto agli originali. Senza, su GitHub si
+continuerebbe a leggere il testo impreciso, che è il difetto che si
+voleva chiudere. `transcript.txt` non viene mai sovrascritto: i due
+errori devono restare entrambi visibili.
+
+La **sorpresa utile**: i timestamp restano validi sul testo corretto.
+L'i-esima parola del testo corretto è l'i-esima parola che l'ASR ha
+collocato nel tempo, e funziona *proprio perché* il numero di parole
+non può cambiare. È il regalo che fa la regola più stringente del
+modulo: se i due elenchi avessero lunghezze diverse, i tempi
+finirebbero addosso alle parole sbagliate — un errore invisibile,
+perché il numero ci sarebbe e sembrerebbe giusto.
+
+Per ricalcolare il database dopo una correzione:
+
+```bash
+python publish_corpus.py reindex
+```
+
 ---
 
 `speaker_local` (ID della sessione) e `speaker_names` (nome umano se

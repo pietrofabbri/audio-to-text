@@ -72,7 +72,14 @@ PUBLISHABLE = (
     "transcript.json", "transcript.txt", "transcript.srt",
     "prosody.csv", "session.json", "segments.jsonl",
     "wordfreq.csv", "analysis_ready.md", "speaker_profiles.json",
-    "denoise_decision.json",
+    "denoise_decision.json", "text_correction.json",
+)
+# Le varianti corrette hanno un suffisso proprio invece di stare in
+# elenco: se un giorno non ci sono (nessuna correzione fatta), non si
+# devono pubblicare file di una sessione che non ne ha.
+PUBLISHABLE_AFFIANCO = (
+    "transcript.corrected.txt", "transcript.corrected.srt",
+    "segments.corrected.jsonl",
 )
 
 # File che non devono MAI essere copiati, per nome. La lista è volutamente
@@ -145,7 +152,7 @@ def _publish_session(stem: str, dry_run: bool = False) -> list[Path]:
     dest = _session_dir(stem)
     written: list[Path] = []
 
-    for name in PUBLISHABLE:
+    for name in PUBLISHABLE + PUBLISHABLE_AFFIANCO:
         s = src / name
         if not s.exists():
             continue
@@ -242,6 +249,12 @@ def _write_index(dry_run: bool = False) -> Path:
         "- `prosody.csv` — F0, intensità, ritmo per segmento",
         "- `session.json` — durate, statistiche per speaker",
         "- `analysis_ready.md` — testo pronto per un LLM",
+        "- `transcript.corrected.txt` / `.srt` — le stesse cose col testo "
+        "corretto dal modello di lingua, dove esiste",
+        "- `segments.corrected.jsonl` — segmenti con testo corretto e "
+        "originale affiancato",
+        "- `text_correction.json` — ogni parola, originale e corretta: "
+        "serve a misurare quanto sbaglia ciascuno dei due",
         "",
     ]
     p = LOCAL_CLONE / "INDEX.md"

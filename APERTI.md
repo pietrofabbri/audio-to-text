@@ -584,10 +584,49 @@ modello ripeteva la punteggiatura, «sera.» diventava «sera..». Poi una
 risposta JSON valida ma fatta di lista faceva fallire il chiamante su
 un `.get` che su una lista non esiste — crash, non scarto.
 
-**Verificato.** 15 test sulla correzione, 9 sulla matrice delle voci, 158
-in tutto su 11 suite. Il percorso di rete provato davvero: la chiamata
-a Gemini parte, la chiave finta fa fallire la chiamata, il segmento
-resta grezzo con il motivo dichiarato.
+**Il seguito, che mancava ed era il punto vero.** Il correttore scriveva
+il file e **nessuno lo leggeva**: il corpus continuava a mangiare il
+testo grezzo, e su GitHub si sarebbe continuato a leggere proprio il
+testo impreciso che si voleva correggere. Correzione senza consumatore
+e' un file che nessuno apre.
+
+Ora il testo corretto finisce in tre posti, tutti con l'originale
+accanto:
+
+  - **`segments.text`** riceve il testo da analizzare, `segments.text_raw`
+    tiene l'originale, `n_words_changed` dice quanto ha lavorato il
+    correttore. Token, conteggio delle parole e bigrami si ricostruiscono
+    sul testo corretto.
+  - **`transcript.corrected.txt` / `.srt` / `segments.corrected.jsonl`**
+    finiscono nella repo privata. `transcript.txt` non e' mai
+    sovrascritto.
+  - **`correction_stats()`** dice quanto materiale e' davvero corretto,
+    perche' un corpus al 12% e' un corpus su cui il conteggio delle
+    parole continua a sbagliare.
+
+**Il regalo che fa la regola piu' stringente.** Se il numero di parole
+non puo' cambiare, l'i-esima parola del testo corretto e' l'i-esima
+parola che l'ASR ha collocato nel tempo: i timestamp restano giusti
+anche sul testo corretto. Il costo dell'invarianza — non poter
+riscrivere — si paga qui come un vantaggio che, altrimenti, non si
+avrebbe.
+
+**Due difetti di cui uno e' sparso.** Il filtro sugli scarti stava solo
+nel lettore del file, non in `ingest_session`: chi passava il dizionario
+a mano applicava una risposta che il correttore aveva dichiarato
+inaffidabile. La garanzia deve valere per chiunque passi le
+correzioni, quindi e' stata spostata dentro. E la migrazione del
+database aggiungeva `text_raw` ma non lo riempiva: le righe gia'
+scritte avrebbero avuto l'originale a NULL, e `suspect_text` — che serve
+a rivedere a mano i segmenti sospetti — avrebbe restituito una colonna
+vuota proprio li'.
+
+**Verificato.** 18 test sulla correzione, 9 sulla matrice delle voci, 11
+nuovi sull'ingestione, 172 in tutto su 11 suite. Le varianti
+pubblicabili provate su una sessione vera in copia: `transcript.txt`
+intatto, `transcript.corrected.txt` corretto. La migrazione provata sul
+database reale in copia: 429 righe, nessuna senza originale, riaprendo
+non cambia niente.
 
 ---
 

@@ -259,6 +259,9 @@ class CorpusDB:
         wanted = {"segments": {
             "quality": "TEXT",
             "quality_reasons": "TEXT",
+            "text_raw": "TEXT",
+            "n_words_changed": "INTEGER",
+            "corrected": "INTEGER",
         }}
         for table, cols in wanted.items():
             have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -266,6 +269,23 @@ class CorpusDB:
                 if name not in have:
                     logger.info("Migrazione: aggiungo %s.%s", table, name)
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+
+        # `text_raw` non si può ricavare indovinando: si copia. Per una
+        # riga mai corretta il testo da analizzare *è* quello di
+        # Whisper, quindi il valore è noto, non stimato. Senza questo
+        # le righe precedenti alla correzione avrebbero l'originale a
+        # NULL, e `suspect_text` restituirebbe una colonna vuota
+        # esattamente sulle righe che si vanno a rivedere a mano.
+        cur = self.conn.execute(
+            "UPDATE segments SET text_raw = text "
+            "WHERE text_raw IS NULL AND COALESCE(corrected, 0) = 0 "
+            "AND text IS NOT NULL"
+        )
+        if cur.rowcount:
+            logger.info("Migrazione: %d segmenti con testo originale", cur.rowcount)
+        self.conn.execute(
+            "UPDATE segments SET n_words_changed = 0 WHERE n_words_changed IS NULL"
+        )
 
     def close(self) -> None:
         self.conn.close()
@@ -279,6 +299,38 @@ class CorpusDB:
     # ------------------------------------------------------------------
     # Ingestione
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def load_corrections(output_dir: Path) -> dict[int, dict[str, Any]]:
+        """Le correzioni di testo di una sessione, per indice di segmento.
+
+        Vengono accettate solo le righe **non scartate**: un segmento che
+        il correttore non ha potuto sistemare resta grezzo, e fingere
+        che sia corretto sarebbe peggio che non averlo. Lo scarto e'
+        comunque leggibile nel file della sessione.
+
+        Un file assente o rotto non e' un errore: e' una sessione senza
+        correzione, e il database deve accettarla lo stesso. Altrimenti
+        un'interruzione notturna renderebbe illeggibile tutto il resto.
+        """
+        path = Path(output_dir) / "text_correction.json"
+        if not path.exists():
+            return {}
+        try:
+            dati = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("%s non leggibile, proseguo senza correzioni: %s",
+                           path.name, exc)
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for r in dati.get("segments", []):
+            if r.get("discarded") or not r.get("corrected_text"):
+                continue
+            try:
+                out[int(r["idx"])] = r
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
 
     def ingest_session_dir(self, output_dir: Path) -> bool:
         """Ingesta la sessione scritta in `output_dir`, se e' completa.
@@ -330,6 +382,7 @@ class CorpusDB:
                 transcript=transcript,
                 vad_stats=vad_stats,
                 recorded_at=recorded_at,
+                correzioni=self.load_corrections(output_dir),
             )
         except Exception:  # noqa: BLE001
             return False
@@ -344,6 +397,7 @@ class CorpusDB:
         source_device: str | None = None,
         source_filename: str | None = None,
         denoise_winner: str | None = None,
+        correzioni: dict[int, dict[str, Any]] | None = None,
     ) -> dict[str, int]:
         """
         Inserisce una sessione e tutto ciò che ne deriva.
@@ -352,8 +406,26 @@ class CorpusDB:
         invece di duplicarli. Serve perché un file può essere
         rielaborato (denoise migliore, modello ASR aggiornato) e il
         database non deve crescere a ogni rerun.
+
+        `correzioni` e' il testo corretto dal modello di lingua, per
+        indice di segmento. Il campo `text` riceve il testo **da
+        analizzare** — quello corretto dove c'e', quello di Whisper
+        dove non c'e' — e `text_raw` conserva sempre l'originale. Non
+        si sovrascrive niente: i due errori devono restare entrambi
+        misurabili, o si perde quello che non si sta guardando.
         """
         vad_stats = vad_stats or {}
+        # Lo scarto si filtra **qui**, non solo in `load_corrections`:
+        # la garanzia che uno scarto non venga applicato deve valere
+        # per chiunque passi le correzioni, non solo per chi le legge da
+        # un file. Filtrare al lettore lascia un buco: un richiamo che
+        # passa il dizionario a mano applicherebbe una risposta che il
+        # correttore ha dichiarato inaffidabile, e il corpus conterrebbe
+        # testo che sembra curato e su cui nessuno ha potuto guardare.
+        correzioni = {
+            i: r for i, r in (correzioni or {}).items()
+            if not r.get("discarded") and r.get("corrected_text")
+        }
         meta = transcript.get("meta", {})
         segments = transcript.get("segments", [])
 
@@ -411,21 +483,32 @@ class CorpusDB:
         # --- segmenti + prosodia ----------------------------------------
         # 8 colonne fisse (stem, idx, speaker, start, end, durata, testo,
         # n_words) più le 12 feature prosodiche
-        seg_placeholders = ", ".join(["?"] * (8 + len(PROSODY_COLUMNS)
+        seg_placeholders = ", ".join(["?"] * (11 + len(PROSODY_COLUMNS)
                                              + len(QUALITY_COLUMNS)))
         prosody_names = ", ".join(PROSODY_COLUMNS)
         quality_names = ", ".join(QUALITY_COLUMNS)
         n_seg = 0
         for s in segments:
             pros = s.get("prosody", {}) or {}
+            grezzo = s.get("text")
+            corr = correzioni.get(s.get("idx"))
+            # Il testo su cui si conta, si cerca e si fa sentiment e'
+            # quello corretto. L'originale resta in `text_raw` e il
+            # numero di parole cambiate in `n_words_changed`, cosi'
+            # «quanto ha lavorato il correttore» e' una query e non
+            # un'altra analisi da rifare.
+            testo = corr["corrected_text"] if corr else grezzo
             row = [
                 stem, s.get("idx"), s.get("speaker"),
                 s.get("start"), s.get("end"),
                 s.get("duration_sec") or (
                     (s["end"] - s["start"]) if s.get("end") is not None else None
                 ),
-                s.get("text"),
-                len((s.get("text") or "").split()),
+                testo,
+                len((testo or "").split()),
+                grezzo,
+                (corr or {}).get("n_changed") or 0,
+                1 if corr else 0,
             ] + [pros.get(c) for c in PROSODY_COLUMNS] + [
                 s.get("quality"),
                 ";".join(s.get("quality_reasons") or []) or None,
@@ -433,6 +516,7 @@ class CorpusDB:
             self.conn.execute(
                 f"INSERT OR REPLACE INTO segments "
                 f"(stem, idx, speaker, start_sec, end_sec, duration_sec, text, n_words, "
+                f"text_raw, n_words_changed, corrected, "
                 f"{prosody_names}, {quality_names}) "
                 f"VALUES ({seg_placeholders})",
                 row,
@@ -447,17 +531,33 @@ class CorpusDB:
 
         for s in segments:
             toks = s.get("words") or []
+            corr = correzioni.get(s.get("idx"))
             if not toks:
                 # Senza word-level timestamps si ricade sul testo: le
                 # parole si contano lo stesso, le posizioni no. Ecco il
                 # motivo del flag "estimated" nella tabella tokens.
-                text = (s.get("text") or "")
+                testo = corr["corrected_text"] if corr else (s.get("text") or "")
                 words_this_session.extend(
-                    w for w in (text.split()) if _normalize_word(w)
+                    w for w in (testo.split()) if _normalize_word(w)
                 )
                 continue
-            for w in toks:
+
+            # Le parole corrette prendono il posto di quelle di Whisper
+            # **sulle stesse posizioni**, e i timestamp restano quelli
+            # dell'ASR. Funziona perche' il correttore non puo' aggiungere
+            # ne togliere parole: se il numero e' diverso, i due elenchi
+            # non sono piu' allineati e i tempi non significherebbero
+            # piu' niente, quindi in quel caso non si tocca niente.
+            parole_corr = None
+            if corr:
+                candidate = (corr.get("words") or [])
+                if len(candidate) == len(toks):
+                    parole_corr = candidate
+
+            for pos, w in enumerate(toks):
                 word = (w.get("word") or "").strip()
+                if parole_corr is not None and parole_corr[pos].get("changed"):
+                    word = (parole_corr[pos].get("fixed") or word).strip()
                 if not word:
                     continue
                 self.conn.execute(
@@ -773,14 +873,19 @@ class CorpusDB:
         """I segmenti peggiori del corpus, per revisione a mano.
 
         Pensata per il momento in cui si guarda un risultato e ci si
-        chiede se è reale: un elenco dei peggiori, non una media. La
-        media di un corpus in cui il 5% è inventato sembra quasi uguale
+        chiede se è reale:        un elenco dei peggiori, non una media.
+        La media di un corpus in cui il 5% è inventato sembra quasi uguale
         a quella di un corpus pulito, ed è per questo che il flag
         serve: la differenza si vede solo scendendo al singolo segmento.
+
+        Riporta anche `text_raw`: guardando i segmenti sospetti la
+        domanda è sempre «Whisper ha capito male, o il correttore ha
+        peggiorato?», e senza il testo originale la domanda non ha
+        risposta.
         """
         return self.query(
             "SELECT stem, idx, speaker, start_sec, end_sec, quality, "
-            "quality_reasons, text FROM segments "
+            "quality_reasons, text, text_raw, n_words_changed FROM segments "
             "WHERE quality IN ('low','unreliable') "
             "ORDER BY CASE quality WHEN 'unreliable' THEN 0 ELSE 1 END, n_words "
             "LIMIT ?",
@@ -822,4 +927,35 @@ class CorpusDB:
             "total_speech_hours": round(
                 (one("SELECT COALESCE(SUM(speech_sec), 0) FROM sessions") or 0) / 3600, 2
             ),
+            "corrected_segments": one(
+                "SELECT COUNT(*) FROM segments WHERE corrected = 1"),
+        }
+
+    def correction_stats(self) -> dict[str, Any]:
+        """Quanto ha lavorato il correttore, e quanto ha ancora da fare.
+
+        Non per giudicare il correttore — quello si giudica guardando le
+        coppie originale/corretto — ma per sapere **quanto materiale e'
+        stato davvero corretto**. Un corpus in cui il 2% e' corretto non
+        e' un corpus su cui fare le analisi: il 98% resta grezzo, e il
+        conteggio delle parole continua a sbagliare di conseguenza.
+        """
+        r = self.conn.execute(
+            "SELECT COUNT(*) tot, COALESCE(SUM(corrected), 0) corr, "
+            "COALESCE(SUM(n_words), 0) parole, "
+            "COALESCE(SUM(CASE WHEN corrected = 1 THEN n_words ELSE 0 END), 0) "
+            "parole_corr, "
+            "COALESCE(SUM(CASE WHEN corrected = 1 THEN n_words_changed ELSE 0 "
+            "END), 0) cambiate "
+            "FROM segments"
+        ).fetchone()
+        parole = r["parole"] or 0
+        return {
+            "segments": r["tot"],
+            "corrected_segments": r["corr"],
+            "corrected_share": round(r["corr"] / r["tot"], 3) if r["tot"] else 0.0,
+            "words": parole,
+            "corrected_words": r["parole_corr"],
+            "words_changed": r["cambiate"],
+            "changed_share": round(r["cambiate"] / parole, 4) if parole else 0.0,
         }
