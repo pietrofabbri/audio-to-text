@@ -18,9 +18,10 @@ diventato una scoperta (4 thread sono più veloci di 8).
 **Aperti:** 1 (la prima notte vera), 8 (biometria), 10–14 (da valutare).
 **Chiusi stanotte:** 15 (la prosodia in parallelo, che non terminava
 mai), 16 (rifare la trascrizione perdeva gli interlocutori), 17 (la
-cache dei WAV cresceva di due gigabyte a notte) e 18 (il database
-locale restava vuoto). Tutti e quattro scoperti elaborando i file
-veri: vedi la sezione in fondo.
+cache dei WAV), 18 (il database locale vuoto), 19 (la sovrasegmentazione
+delle voci: 21 identita' globali su quattro ore di una conversazione
+sono diventate 9). Tutti e cinque scoperti elaborando i file veri: vedi
+la sezione in fondo.
 
 ---
 
@@ -465,6 +466,50 @@ sediciottomila parole, zero righe nel database.
 quella che dovrebbe servire a chiedere qualcosa al proprio corpus, non
 poteva essere provata perche' dentro non c'era niente. Con `reindex` si
 ripara senza rielaborare nulla.
+
+### 19. ~~La sovrasegmentazione delle voci~~ — chiuso
+
+**Stato.** Chiuso. Quattro ore di una stessa conversazione erano finite
+in ventuno voci globali, undici delle quali parlavano meno di novanta
+secondi. Non era un errore di programma: la pipeline era completa, i
+file scritti, nessuna eccezione. Ventuno voci pero' non erano ventuno
+persone, e un corpus con ventuno voci su una conversazione a tavolo non
+e' interrogabile per interlocutore.
+
+**La chiave e' stata capire dove si perde, e l'ordine conta piu' della
+soglia.** Il cluster debole si scioglie nel piu' simile prima che le
+identita' globali vengano assegnate: **21 voci diventano 9**, e tutte e
+nove parlano almeno 160 secondi. La stessa fusione applicata *dopo* non
+cambia niente, perche' il DB delle voci ha gia' dato un'identita' a ogni
+frammento e non torna mai indietro a riconoscere che aveva contato due
+volte la stessa voce.
+
+**Le due soglie rispondono a domande diverse.** `match_threshold` (0,78)
+chiede «e' la stessa persona fra sessioni diverse?» e resta dove e'.
+`merge_threshold` (0,45) chiede «questa voce e' troppo piccola per essere
+qualcuno?», che e' facile: nessuno che parli tredici secondi in una
+conversazione lunga e' un interlocutore. La soglia 0,45 non e' un
+numero scelto a caso: ogni soglia fra 0,30 e 0,45 dà lo stesso risultato
+sui quattro file veri, e 0,45 e' la piu' alta del pianoro, cioe' la piu'
+conservatrice che ancora cattura tutta la fusione utile.
+
+**La regola che tiene la cosa sicura.** Due voci grandi non si fondono
+mai, a nessuna somiglianza. Se la fusione sbaglia, sbaglia solo sui
+frammenti, che sono rumore comunque. Unire due persone vere sarebbe
+stato l'errore che costa di piu', perche' il DB delle voci non torna
+indietro.
+
+**Tre difetti che sono usciti insieme.** Rietichettare le sessioni vecchie
+richiedeva che il DB delle voci potesse *dimenticare* una sessione
+(`forget_session`), altrimenti il frammento ritrovava subito l'identita'
+che si era creato. La tabella dei parlanti in `corpus.db` non potava mai
+le voci assorbite, e `sync_speaker_names` non sapeva cancellare un nome
+che la fonte non ha piu': ci si era un «Pietro» che nessuno sapeva piu'
+da dove venisse.
+
+**Verificato sui dati veri.** 28 cluster locali in 16, 21 voci globali
+in 9. Le quattro sessioni hanno 4/5/6/3 voci dove prima erano
+5/8/11/3. Il corpus pubblicato e' stato ricalcolato e ripubblicato.
 
 ---
 

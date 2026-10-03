@@ -359,6 +359,8 @@ python review_speakers.py merge GLOBAL_003 GLOBAL_004
 python review_speakers.py split GLOBAL_005
 python review_speakers.py sync                 # riallinea i nomi ovunque
 python review_speakers.py sync --dry-run       # cosa cambierebbe
+python review_speakers.py consolidate          # rifonde i cluster troppo brevi
+python review_speakers.py consolidate --dry-run
 ```
 
 **Il nome vive in un posto solo.** La fonte è
@@ -374,6 +376,35 @@ Il **merge** fa di più: rietichetta anche le sessioni già scritte
 Senza, unire due voci lasciava due ID per la stessa persona nel corpus,
 con statistiche che non si sommano — il problema che il merge doveva
 risolvere restava aperto.
+
+**I cluster troppo brevi non sono persone.** Su quattro ore di una stessa
+conversazione la diarizzazione aveva prodotto 28 cluster locali e 21
+identità globali: undici di quelle voci parlavano meno di novanta
+secondi. Non era un errore — la pipeline finiva regolarmente — ma
+ventuno voci su una conversazione a tavolo rendono il corpus
+interrogabile solo in parte.
+
+Ora i cluster che parlano meno di `merge_min_seconds` (90 s) si sciolgono
+nel più simile prima che le identità globali vengano assegnate: **21
+voci diventano 9**, e tutte e nove parlano almeno 160 secondi. L'ordine è
+la parte che conta più della soglia: fuse dopo, non cambierebbe nulla,
+perché il DB delle voci ha già dato un'identità a ogni frammento e non
+torna mai indietro.
+
+Le due soglie rispondono a domande diverse e non vanno confuse. Quella
+fra file diversi resta a 0,78 e chiede «è la stessa persona?». Quella
+di fusione è 0,45 e chiede «questa voce è troppo piccola per essere
+qualcuno?», che è una domanda molto più facile — nessuno che parli
+tredici secondi in una conversazione lunga è un interlocutore. Ogni
+soglia fra 0,30 e 0,45 dà lo stesso risultato sui dati veri; 0,45 è la
+più alta del pianoro, cioè la più conservatrice che ancora fa tutto il
+lavoro utile.
+
+La regola che tiene la cosa sicura è che **due voci grandi non si
+fondono mai**, a nessuna somiglianza: se la fusione sbaglia, sbaglia
+solo sui frammenti. Ogni sessione scrive `speaker_merge.json` con cosa è
+stato fuso, perché fra sei mesi l'unica cosa che distingue «ha parlato
+poco» da «la fusione ha sbagliato» è quella traccia.
 
 Su quattro registrazioni reali la separazione è netta: persone diverse
 stanno a 0,13–0,29 di coseno, e l'unica coppia unita automaticamente
@@ -498,7 +529,14 @@ python publish_corpus.py init              # clona la repo privata in locale
 python publish_corpus.py push              # pubblica le sessioni nuove
 python publish_corpus.py push --with-names  # pubblica anche i nomi reali
 python publish_corpus.py status            # cosa c'è e cosa manca
+python publish_corpus.py reindex           # ricostruisce il database locale
 ```
+
+`reindex` non serve nel caso normale — la pipeline aggiorna il database
+appena finisce una sessione. Serve dopo un rilascio che cambia come si
+scrive l'output, dopo un restore, e per riparare un database indietro
+senza rielaborare nulla. Allinea anche i nomi alla fonte e toglie dalla
+tabella dei parlanti le voci che nessuna sessione cita più.
 
 Sulla repo **non** finiscono mai: audio, embedding vocali, i database
 locali, i checkpoint. Non è una scelta di comodità: testo, prosodia e
@@ -557,6 +595,7 @@ output/registrazione/
 ├── wordfreq.csv         # frequenze parole per speaker
 ├── analysis_ready.md    # testo chunked pronto per un LLM
 ├── speaker_profiles.json# profilo aggregato delle voci globali (senza vettori)
+├── speaker_merge.json  # cosa e' stato fuso fra i cluster troppo brevi
 └── registrazione.checkpoint.json  # stato avanzamento (ripresa automatica)
 ```
 
