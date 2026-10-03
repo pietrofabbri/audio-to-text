@@ -17,8 +17,10 @@ parlanti), 5 (punteggiatura come segnale debole), 6 (flag di qualità),
 diventato una scoperta (4 thread sono più veloci di 8).
 **Aperti:** 1 (la prima notte vera), 8 (biometria), 10–14 (da valutare).
 **Chiusi stanotte:** 15 (la prosodia in parallelo, che non terminava
-mai) e 16 (rifare la trascrizione perdeva gli interlocutori). Entrambi
-scoperti elaborando i quattro file veri: vedi la sezione in fondo.
+mai), 16 (rifare la trascrizione perdeva gli interlocutori), 17 (la
+cache dei WAV cresceva di due gigabyte a notte) e 18 (il database
+locale restava vuoto). Tutti e quattro scoperti elaborando i file
+veri: vedi la sezione in fondo.
 
 ---
 
@@ -436,6 +438,33 @@ interlocutore.
 **Il resto è a posto, per una volta.** Nomi coerenti dentro la stessa
 trascrizione (Gianlu sei volte, Schumacher cinque), 6.130 parole nel
 primo file, flag di qualità distribuiti su ok/low/unreliable.
+
+---
+
+### 17. ~~La cache dei WAV cresceva di due gigabyte a notte~~ — chiuso
+
+**Stato.** Chiuso. Due difetti insieme. Il VAD riconverteva in un file
+identico tutto cio' che era gia' 16 kHz mono, quindi 115 MB e qualche
+decina di secondi di CPU per un'ora di audio; e la copia che ne nasceva
+non era citata da nessun checkpoint, finiva nel ramo degli orfani e
+aspettava sei ore, che a quel punto non erano sei ore ma spazzatura
+stabile. Verificato sui quattro file veri: 401,9 MB rimasti in cache.
+
+**Perche' nessuno se ne accorgeva.** La cache sta fuori dalla vista di
+chi lavora, e il disco si riempie piano. Un disco pieno, di notte, fa
+fermare la coda a meta' senza che nessuno capisca perche'.
+
+### 18. ~~Il database locale era vuoto~~ — chiuso
+
+**Stato.** Chiuso. A riempire il database era solo `sync_device pull`,
+cioe' il percorso del registratore. Ogni sessione elaborata a mano finiva
+nell'output e da li' nel nulla: quattro ore di registrazione e
+sediciottomila parole, zero righe nel database.
+
+**La parte peggiore e' un'altra.** La parte interrogativa del progetto,
+quella che dovrebbe servire a chiedere qualcosa al proprio corpus, non
+poteva essere provata perche' dentro non c'era niente. Con `reindex` si
+ripara senza rielaborare nulla.
 
 ---
 
