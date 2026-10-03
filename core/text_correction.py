@@ -58,10 +58,29 @@ logger = logging.getLogger(__name__)
 # riapplicare alla fine. E' tutto quello che separa «sera.» da «sera».
 PUNTEGGIATURA = " \t\n.,;:!?()[]{}\"'«»…—-"
 
-# Modello e contesto abbondante: il testo da correggere arriva con
-# qualche minuto di contesto intorno, e una parola si corregge guardando
-# il mondo in cui e' stata detta.
-MODELLO = "gemini-2.5-flash"
+# Il modello e' cambiato perche' quello di prima non e' piu'
+# utilizzabile da chi non l'ha mai usato: Google ha limitato l'accesso a
+# 2.5 riservandolo agli account che lo avevano gia' chiamato in passato.
+# Per un nuovo account la chiamata si ferma con un errore che non dice
+# nulla, quindi conviene partire da quello attuale.
+#
+# Fra i due, 3.8 e' il piu' capace e 3.5 Flash-Lite il piu' economico.
+# Per un lavoro in cui il guasto da evitare e' la riscrittura — il
+# modello che corregge tutto perche' crede di poter migliorare il testo —
+# la capacita' conta piu' del centesimo. Per una passata sulle quattro
+# sessioni intere si puo' scegliere il leggero:
+#     python correct_text.py --consent --model gemini-3.5-flash-lite
+MODELLO = "gemini-3.8-flash"
+
+# Modelli noti, per quando quello scelto non esiste piu'. Non e' una
+# lista ufficiale: sono quelli che hanno funzionato quando questo
+# modulo e' stato scritto, e servono a dare un errore utile invece di
+# un codice HTTP.
+MODELLI_NOTI = {
+    "gemini-3.8-flash": "il piu' capace, scelta predefinita",
+    "gemini-3.5-flash-lite": "il piu' economico, per le passate lunghe",
+    "gemini-3.7-flash": "generazione precedente",
+}
 
 ISTRUZIONI = """\
 Sei un correttore di trascrizioni automatiche di una conversazione \
@@ -330,6 +349,20 @@ def _applica(originale: str, correzioni: list[dict]) -> tuple[str, list[WordFix]
     ]
 
 
+def _modello_mancante(exc: Exception) -> bool:
+    """L'errore dice «modello sconosciuto», non una punta esclamativa.
+
+    Google risponde con un 404 e un testo che varia; qui si cerca la
+    parola che conta per non dipendere dalla formulazione esatta. Il
+    caso da distinguere e' solo uno: il modello esiste ma non e'
+    accessibile a questo account — per esempio 2.5, che ora e' riservato
+    a chi lo aveva gia' usato.
+    """
+    testo = str(exc).lower()
+    return ("not found" in testo or "404" in testo) and (
+        "model" in testo or "not supported" in testo)
+
+
 def _coda(parola: str) -> str:
     """La punteggiatura finale di una parola, staccata dal testo.
 
@@ -411,6 +444,32 @@ class Correttore:
                 break
             except Exception as exc:  # noqa: BLE001
                 ultimo = exc
+                # Un modello che non esiste piu' non si risolve
+                # aspettando: neppure al terzo tentativo risponde come
+                # al primo. Fermarsi subito e dirlo vale piu' di tre
+                # chiamate perse e di un segmento dichiarato «non
+                # corretto» senza che nessuno capisca perche'.
+                if _modello_mancante(exc):
+                    # Non si suggerisce il modello che ha appena
+                    # fallito: sarebbe il modo piu' rapido per
+                    # ritrovarsi lo stesso errore subito dopo.
+                    altri = {k: v for k, v in MODELLI_NOTI.items()
+                             if k != self.modello}
+                    elenco = "\n  ".join(f"{k}: {v}" for k, v in altri.items())
+                    primo = next(iter(altri), None) if altri else None
+                    scelta = (
+                        f"\n\n  Riprova con: --model {primo}\n"
+                        f"  (oppure cambia il default MODELLO in "
+                        f"core/text_correction.py)"
+                        if primo else
+                        "\n\n  Non ci sono altri modelli noti: cambia "
+                        "MODELLO in core/text_correction.py"
+                    )
+                    raise RuntimeError(
+                        f"il modello '{self.modello}' non e' piu' "
+                        f"disponibile per questo account.\n  "
+                        f"{elenco}{scelta}"
+                    ) from exc
                 # Backoff: un rate limit di notte non e' un errore da
                 # far fallire il batch, e' una ragione per aspettare.
                 attesa = self.pausa * (2 ** tentativo)

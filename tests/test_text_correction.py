@@ -36,8 +36,9 @@ sys.path.insert(0, str(ROOT))
 
 from core.text_correction import (  # noqa: E402
     Correttore, SegmentResult, WordFix, _applica, _coda, _estrai_json,
-    correggi_segmenti, scrivi_varianti,
+    _modello_mancante, correggi_segmenti, scrivi_varianti,
 )
+from core.text_correction import MODELLO  # noqa: E402
 
 
 class Failure(Exception):
@@ -570,9 +571,75 @@ def commento_in_coda_rinomato() -> None:
             "l'errore normale deve nominare il flag sbagliato")
 
 
+def modello_non_disponibile() -> None:
+    """Un modello che non esiste va detto per nome, non ripetuto tre volte.
+
+    Il difetto che questo test copre e' gia' successo: il default era un
+    modello che Google ha limitato agli account che lo avevano gia' usato
+    in passato. Per un account nuovo la chiamata si ferma con un errore
+    che non spiega niente, e il batch continuerebbe a consumare tentativi
+    su una richiesta che non puo' riuscire — dichiarando ogni segmento
+    «non corretto» senza che nessuno capisca perche'.
+    """
+    # L'errore si riconosce dalla forma del messaggio, non dal testo
+    # esatto: Google cambia la formulazione da una versione all'altra.
+    for exc, atteso in [
+        (RuntimeError("404 NOT_FOUND: models/gemini-2.5-flash is not found"), True),
+        (RuntimeError("404 model not supported"), True),
+        (RuntimeError("PERMISSION_DENIED: the model is not available"), False),
+        (RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded"), False),
+        (RuntimeError("500 INTERNAL: model overloaded"), False),
+        (RuntimeError("Connection reset by peer"), False),
+    ]:
+        require(_modello_mancante(exc) is atteso,
+                f"{exc} -> {_modello_mancante(exc)}, atteso {atteso}")
+
+    # E quando l'errore e' quello giusto, deve fermarsi subito e
+    # nominare i modelli che funzionano.
+    c = _correttore([RuntimeError("404 NOT_FOUND: models/xyz is not found")],
+                    modello="xyz")
+    try:
+        c.correggi_segmento(0, "una due tre")
+    except RuntimeError as exc:
+        testo = str(exc)
+        require("xyz" in testo, f"deve nominare il modello: {testo!r}")
+        require("gemini-3.8-flash" in testo,
+                f"deve suggerire un modello che funziona: {testo!r}")
+        require(c._client.chiamate == 1,
+                f"non deve riprovare, ha chiamato {c._client.chiamate} volte")
+    else:
+        raise Failure("un modello inesistente deve far fallire subito")
+
+    # E non deve consigliare il modello che ha appena fallito: sarebbe
+    # il modo piu' rapido per ritrovarsi lo stesso errore subito dopo.
+    for fallito in ("gemini-2.5-flash", MODELLO):
+        c = _correttore(
+            [RuntimeError(f"404 NOT_FOUND: models/{fallito} is not found")],
+            modello=fallito)
+        try:
+            c.correggi_segmento(0, "una due tre")
+        except RuntimeError as exc:
+            require(f"--model {fallito}" not in str(exc),
+                    f"non deve riproporre {fallito}: {exc}")
+            require("--model" in str(exc),
+                    f"deve comunque proporre qualcosa: {exc}")
+        else:
+            raise Failure(f"{fallito}: doveva fallire")
+
+    # Con un errore invece normale, il backoff resta.
+    c = _correttore([RuntimeError("429 quota"), RuntimeError("429 quota"),
+                     _risposta([{"i": 0, "a": "una", "b": "una"}])],
+                    tentativi=3)
+    r = c.correggi_segmento(0, "una due tre")
+    require(not r.scartato, "un rate limit si ritenta, non si ferma tutto")
+    require(c._client.chiamate == 3, "deve aver riprovato")
+
+
 CHECKS = [
     ("il commento in coda viene spiegato, non ignorato",
      commento_in_coda_rinomato),
+    ("un modello non più disponibile si ferma subito",
+     modello_non_disponibile),
     ("il testo non cambia se il modello non cambia niente", testo_immutato),
     ("si correggono solo le parole giuste", correzione_solo_delle_parole_giuste),
     ("il numero di parole non puo' cambiare", numero_di_parole_invariabile),

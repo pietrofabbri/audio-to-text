@@ -736,12 +736,41 @@ pubblico. Mandare il testo a un servizio esterno è una scelta diversa, e
 non la prende uno script per abitudine. Senza `--consent` il comando
 mostra cosa farebbe e si ferma.
 
-La chiave si chiama `GOOGLE_API_KEY` e va nell'ambiente:
+### Ottenere la chiave, passo passo
+
+1. Apri **https://aistudio.google.com/app/apikey** e accedi con il tuo
+   account Google. Se è la prima volta, accetta i termini: Google crea
+   automaticamente un progetto Google Cloud di default.
+2. Clicca **Create API key**. Comparirà una finestra che chiede in quale
+   progetto metterla: lascia il default, se non ne hai altri.
+3. Comparirà una chiave che comincia per `AIza`. **Copiala subito**:
+   Google la mostra una volta sola e non si può rivedere dopo.
+4. Mettila nell'ambiente — su macOS con zsh:
+
+   ```bash
+   echo 'export GOOGLE_API_KEY="AIza..."' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   Verifica che sia arrivata con `echo $GOOGLE_API_KEY | cut -c1-8`:
+   deve stampare i primi caratteri della chiave. **Non stampare la
+   chiave intera** in un terminale che può finire in una trascrizione.
+
+Dipendenza Python, una volta sola:
 
 ```bash
-export GOOGLE_API_KEY="..."
 pip install google-genai
 ```
+
+Vale anche `GEMINI_API_KEY`; se sono entrambe presenti vince
+`GOOGLE_API_KEY`.
+
+> **Il modello conta.** Il default è `gemini-3.8-flash`. I modelli
+> `2.5` sono ormai accessibili solo agli account che li avevano già
+> usati in passato, quindi per un account nuovo la chiamata si ferma con
+> un errore che non spiega nulla — è successo, ed è il motivo per cui
+> l'errore adesso nomina i modelli che funzionano. Per una passata
+> lunga: `--model gemini-3.5-flash-lite`.
 
 ### Il numero di parole non può cambiare
 
