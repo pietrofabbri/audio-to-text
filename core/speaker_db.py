@@ -308,6 +308,94 @@ class SpeakerDB:
         new = (old + np.asarray(vector, dtype=np.float32) * weight) / (1.0 + weight)
         rec["centroid"] = [float(x) for x in new]
 
+    # ------------------------------------------------------------------
+    # Ripensamento
+    # ------------------------------------------------------------------
+
+    def forget_session(self, session_stem: str) -> list[str]:
+        """Dimentica una sessione: via i suoi contributi dalle voci.
+
+        Serve quando una sessione va rielaborata con criteri diversi da
+        quelli con cui era stata risolta la prima volta — per esempio
+        dopo che i cluster deboli sono stati fusi. Senza questo,
+        ririsolvere la sessione non corregge niente: il DB ha gia'
+        un'identita' per ogni cluster, la risoluzione ritrova le stesse
+        identita' e il frammento resta un'identita' per sempre.
+
+        Ritorna gli ID che non hanno piu' nessun contributo e che
+        vengono rimossi. Un ID con un nome non viene mai rimosso:
+        cancellare un nome che qualcuno ha assegnato a mano e' una
+        perdita di informazione, non una pulizia, e una voce senza
+        contributi ma con un nome e' una persona che si ricorda ma che
+        non ha ancora parlato in nessuna sessione.
+        """
+        vuoti = []
+        for gid, rec in self._data["speakers"].items():
+            sessions = rec.get("sessions", {})
+            tolti = [k for k, v in sessions.items()
+                     if v.get("stem") == session_stem]
+            for k in tolti:
+                del sessions[k]
+            if not tolti:
+                continue
+            rec["total_seconds"] = round(
+                sum(s.get("seconds", 0) for s in sessions.values()), 2
+            )
+            rec["sessions_count"] = len({
+                s.get("stem") for s in sessions.values()
+            })
+            if not sessions:
+                vuoti.append(gid)
+
+        for gid in vuoti:
+            if self._data["speakers"][gid].get("name"):
+                logger.info(
+                    "  %s resta nel DB senza contributi: ha un nome",
+                    gid,
+                )
+                continue
+            del self._data["speakers"][gid]
+            logger.info("  %s rimossa: nessun contributo e nessun nome", gid)
+
+        if vuoti or True:
+            self.save()
+        return [g for g in vuoti if g not in self._data["speakers"]]
+
+    def merge_ids(self, keep: str, drop: str) -> bool:
+        """Versa tutti i contributi di `drop` dentro `keep`.
+
+        La stessa operazione di `review_speakers.py merge`, messa nel
+        DB cosi' che anche i programmi possano rifarla: consolidare
+        piu' sessioni in una passata sola significa chiamare questa
+        funzione, non invocare un altro processo.
+        """
+        if keep == drop or drop not in self._data["speakers"] \
+                or keep not in self._data["speakers"]:
+            return False
+        src = self._data["speakers"].pop(drop)
+        dst = self._data["speakers"][keep]
+        for k, v in src.get("sessions", {}).items():
+            dst.setdefault("sessions", {})
+            if k in dst["sessions"]:
+                dst["sessions"][k]["seconds"] = round(
+                    dst["sessions"][k].get("seconds", 0) + v.get("seconds", 0), 2
+                )
+            else:
+                dst["sessions"][k] = v
+        dst["total_seconds"] = round(
+            sum(s.get("seconds", 0) for s in dst.get("sessions", {}).values()), 2
+        )
+        dst["sessions_count"] = len({
+            s.get("stem") for s in dst.get("sessions", {}).values()
+        })
+        for campo, peggio in (("first_seen", min), ("last_seen", max)):
+            if src.get(campo) and dst.get(campo):
+                dst[campo] = peggio(dst[campo], src[campo])
+        if not dst.get("name") and src.get("name"):
+            dst["name"] = src["name"]
+        self.save()
+        return True
+
     def _next_id(self) -> str:
         n = len(self._data["speakers"])
         while f"GLOBAL_{n + 1:03d}" in self._data["speakers"]:

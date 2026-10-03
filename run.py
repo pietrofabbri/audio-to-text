@@ -342,8 +342,72 @@ def _transcribe_windows(
 # Identità speaker cross-file
 # ---------------------------------------------------------------------------
 
+def _merge_weak_speakers(cfg, diar_segments, embeddings):
+    """Scioglie i cluster troppo brevi per essere persone.
+
+    Va chiamata prima di `_resolve_global_speakers`, e non e' un
+    dettaglio dell'ordine delle chiamate: il DB delle voci assegna
+    un'identita' globale a ogni cluster che riceve e non riconsidera
+    mai la decisione. Un frammento di venti secondi che arriva al DB
+    resta un'identita' per sempre, e da li' in poi ogni sessione lo
+    cerca come se fosse qualcuno.
+
+    Non solleva mai. Una fusione sbagliata e' un difetto di qualita'
+    del corpus; una fusione che fa fallire la notte e' la perdita
+    delle registrazioni. Se il modulo non c'e', si prosegue con i
+    cluster come sono.
+    """
+    from core.speakers_merge import MergePolicy, merge_weak_clusters
+
+    if not cfg.speaker_id.merge_weak_clusters or not diar_segments:
+        return diar_segments, embeddings, None
+
+    try:
+        policy = MergePolicy(
+            min_seconds=cfg.speaker_id.merge_min_seconds,
+            threshold=cfg.speaker_id.merge_threshold,
+        )
+        segmenti, emb, report = merge_weak_clusters(
+            diar_segments, embeddings, policy,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Fusione dei cluster deboli saltata (%s: %s): "
+            "proseguo con i cluster originali",
+            type(exc).__name__, exc,
+        )
+        return diar_segments, embeddings, None
+
+    if report.changed:
+        logger.info(
+            "Cluster di voce: %d -> %d (%d fusioni, %d senza partner)",
+            report.clusters_before, report.clusters_after,
+            len(report.merged), len(report.orphans),
+        )
+    return segmenti, emb, report
+
+
+def _write_merge_report(output_dir: Path, report) -> None:
+    """Scrive nella cartella di sessione cosa e' stato fuso.
+
+    Non e' un file di servizio: e' l'unica traccia che permette di
+    capire, fra sei mesi, se una voce e' sparita perche' qualcuno ha
+    parlato poco o perche' la fusione ha sbagliato. Un corpus senza
+    questa traccia non si puo' revisionare.
+    """
+    if report is None:
+        return
+    try:
+        (output_dir / "speaker_merge.json").write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("speaker_merge.json non scritto: %s", exc)
+
+
 def _resolve_global_speakers(
-    cfg, session_stem: str, diar_result
+    cfg, session_stem: str, diar_result, db=None
 ) -> tuple[dict[str, str], dict[str, str]]:
     """
     Trasforma i label locali SPEAKER_xx in ID globali persistenti.
@@ -351,6 +415,13 @@ def _resolve_global_speakers(
     Ritorna (speaker_global_map, speaker_names): il primo serve
     all'assembler per rietichettare i segmenti, il secondo per
     stampare i nomi umani dove esistono.
+
+    `db` permette di passare un SpeakerDB gia' aperto invece di
+    aprirne uno nuovo. Serve a `review_speakers.py consolidate`, che
+    lavora su piu' sessioni e deve tenere un solo DB in memoria: due
+    istanze sullo stesso file si sovrascrivono a vicenda, e la seconda
+    che salva vince, azzerando tutto quello che la prima aveva
+    registrato.
 
     Fallisce in silenzio (mapping vuoto) se il DB non è scrivibile o
     gli embedding mancano: la diarizzazione locale resta valida e la
@@ -362,7 +433,7 @@ def _resolve_global_speakers(
         return {}, {}
 
     try:
-        db = SpeakerDB(
+        db = db or SpeakerDB(
             path=cfg.speaker_id.db_path,
             threshold=cfg.speaker_id.match_threshold,
             update_centroid=cfg.speaker_id.update_centroid,
@@ -594,6 +665,20 @@ def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
             collect_embeddings=cfg.speaker_id.enabled,
         )
         diar_segments = diar_result.segments
+
+        # I cluster troppo deboli per essere persone si sciolgono QUI,
+        # prima di ogni altra cosa e soprattutto prima che le identita'
+        # globali vengano assegnate. L'ordine e' il punto: il DB delle
+        # voci registra ogni cluster come una persona a se e non torna
+        # mai indietro, quindi un frammento che arriva li diventa
+        # un'identita' permanente. Fuso prima, il frammento non arriva
+        # affatto. Sulla stessa conversazione: 21 voci globali diventano
+        # 9 fuse prima, 21 fuse dopo.
+        diar_segments, diar_result.embeddings, merge_report = _merge_weak_speakers(
+            cfg, diar_segments, diar_result.embeddings,
+        )
+        diar_result.segments = diar_segments
+        _write_merge_report(output_dir, merge_report)
 
         # Arricchisci ASR con speaker label
         asr_chunks = diarizer.assign_speakers_word_level(asr_chunks, diar_segments)

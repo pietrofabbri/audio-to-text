@@ -389,6 +389,31 @@ class SpeakerIDConfig:
     # accanto agli output della sessione
     write_profiles_json: bool = True
 
+    # Se True, i cluster di voce che parlano meno di `merge_min_seconds`
+    # vengono sciolti nel piu' simile prima che le identita' globali
+    # vengano assegnate. Vedi core/speakers_merge.py.
+    #
+    # Due soglie diverse qui, e non per disordine. `match_threshold` (0.78)
+    # risponde a «e' la stessa persona attraverso sessioni diverse?»,
+    # che e' una domanda difficile e che lascia stare: abbassarla
+    # fonderebbe persone vere. `merge_threshold` (0.45) risponde a
+    # «questa voce e' troppo piccola per essere qualcuno?», che e' una
+    # domanda facile: undici voci su ventuno parlavano meno di novanta
+    # secondi in due ore e un quarto di registrazione, e nessuno che
+    # parli tredici secondi in una conversazione lunga e' un
+    # interlocutore, e' un pezzo di qualcun altro.
+    #
+    # L'ordine in cui le due cose girano e' la parte che conta, piu'
+    # del valore dei numeri: la fusione viene prima della risoluzione
+    # delle identita'. Sulla stessa conversazione cosi' le voci globali
+    # passano da 21 a 9; al contrario restano 21, dodici delle quali non
+    # esistono. Il DB delle voci non torna mai indietro a contare due
+    # volte la stessa persona, quindi ogni frammento che gli arriva
+    # diventa un'identita' permanente.
+    merge_weak_clusters: bool = True
+    merge_min_seconds: float = 90.0
+    merge_threshold: float = 0.45
+
 
 # ---------------------------------------------------------------------------
 # Pipeline globale

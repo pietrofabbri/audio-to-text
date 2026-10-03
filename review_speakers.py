@@ -251,6 +251,147 @@ def cmd_threshold(db: SpeakerDB, args) -> int:
     return 0
 
 
+def cmd_consolidate(db: SpeakerDB, args) -> int:
+    """Rifonde le voci dei cluster deboli nelle sessioni gia' scritte.
+
+    La fusione e' gia' dentro la pipeline, e questa e' la same
+    operazione per il materiale che e' passato da prima: senza questo
+    comando le sessioni vecchie resterebbero con 21 voci per sempre e
+    il corpus avrebbe due linguaggi, uno pulito e uno no, senza che
+    niente lo dichiarasse.
+
+    Non rilegge l'audio e non rielabora niente: prende i segmenti e
+    gli embedding gia' salvati nel checkpoint, li rifonde, e poi
+    riscrive quello che da quei segmenti dipende — i turni di voce
+    dentro le parole, la mappa delle identita', il checkpoint.
+
+    Le identita' globali gia' assegnate vengono ricalcolate da capo
+    dopo che la sessione e' stata rimossa dal DB delle voci: altrimenti
+    il frammento troverebbe subito l'identita' che si era creato la
+    prima volta e la fusione non cambierebbe nulla.
+    """
+    from core.checkpoint import Checkpoint
+    from core.config import OUTPUT_DIR
+    from core.speakers_merge import MergePolicy, merge_weak_clusters
+
+    dry = getattr(args, "dry_run", False)
+    # I default vengono dalla configurazione e non dai numeri scritti qui:
+    # due copie degli stessi valori in due posti divergono appena uno
+    # dei due viene ritoccato, e il comando che rifonde rifonderebbe
+    # secondo regole diverse da quelle della pipeline.
+    policy = MergePolicy(
+        min_seconds=(args.min_seconds if args.min_seconds is not None
+                     else config.speaker_id.merge_min_seconds),
+        threshold=(args.threshold if args.threshold is not None
+                   else config.speaker_id.merge_threshold),
+    )
+
+    sessioni = sorted(
+        d for d in OUTPUT_DIR.iterdir()
+        if d.is_dir() and list(d.glob("*.checkpoint.json"))
+    ) if OUTPUT_DIR.is_dir() else []
+    if not sessioni:
+        print("Nessuna sessione con checkpoint in output/.")
+        return 1
+
+    # Tutte le sessioni con embedding vengono ricalcolate, anche quelle
+    # senza fusioni da fare. Il motivo e' che questo comando non corregge
+    # solo i frammenti: ricostruisce anche le identita' globali, e quelle
+    # vanno ricalcolate per tutte. Una sessione senza frammenti che
+    # salta il giro terrebbe la mappa che le avevano dato le identita'
+    # sbagliate, e il DB continuerebbe a contare voci che nessuna
+    # sessione genera piu'.
+    piani = []
+    for d in sessioni:
+        ck_file = next(d.glob("*.checkpoint.json"))
+        dati = json.loads(ck_file.read_text(encoding="utf-8"))
+        segmenti = dati.get("diarization_segments") or []
+        emb = dati.get("speaker_embeddings") or {}
+        if not segmenti or not emb:
+            continue
+        nuovi, nuovi_emb, rep = merge_weak_clusters(segmenti, emb, policy)
+        piani.append((d, ck_file, dati, nuovi, nuovi_emb, rep))
+
+    da_fondere = [p for p in piani if p[5].changed]
+    if not da_fondere:
+        print("Nessun cluster da fondere: i segmenti sono gia' buoni.")
+        print("Le identita' globali verranno comunque ricalcolate.\n")
+
+    if dry:
+        print("[dry-run] rifonderei:\n")
+        for d, _, _, _, _, rep in piani:
+            if not rep.changed:
+                print(f"  {d.name}: {rep.clusters_after} voci, nessuna fusione")
+                continue
+            print(f"  {d.name}: {rep.clusters_before} -> {rep.clusters_after} voci")
+            for da, a in sorted(rep.merged.items()):
+                print(f"      {da} ({rep.seconds_before.get(da, 0):.0f}s) -> {a}")
+        print("\nNessuna scrittura eseguita.")
+        return 0
+
+    rinessi = []
+    for d, ck_file, dati, nuovi, nuovi_emb, rep in piani:
+        # `dati` serve solo per il percorso del file audio, che il
+        # checkpoint usa per sapere di quale sessione si tratta.
+        stem = d.name
+        audio = Path(dati.get("file") or (d / f"{stem}.wav"))
+        ck = Checkpoint(audio, OUTPUT_DIR, stem=stem)
+
+        db.forget_session(stem)
+
+        ck.save_diarization(nuovi, nuovi_emb, None)
+        # La mappa globale la rifa' il DB, non questo comando: qui si
+        # cancella quella vecchia cosi' `resolve` parte da zero e non
+        # riusa per sbaglio una corrispondenza con le voci già sciolte.
+        ck._data["speaker_global_map"] = {}
+        ck.save()
+
+        from run import _resolve_global_speakers, _write_merge_report
+
+        class _Fake:            # solo i campi che _resolve_global_speakers usa
+            embeddings = nuovi_emb
+            speaker_seconds = _speaking_seconds(nuovi)
+
+        nuova_mappa, _ = _resolve_global_speakers(config, stem, _Fake(), db=db)
+        ck.save_diarization(nuovi, nuovi_emb, nuova_mappa)
+
+        # I turni di voce dentro le parole vanno ricalcolati: le parole
+        # hanno il speaker vecchio scritto dentro, e senza questo passaggio
+        # il testo continuerebbe a citare voci che non esistono piu'.
+        from pipeline.diarizer import Diarizer
+        ck._data["chunks"] = Diarizer.assign_speakers_word_level(
+            ck.get_all_chunks(), nuovi,
+        )
+        # Solo l'assemblaggio va rifatto: la prosodia e' gia' calcolata e
+        # non cambia, e rifarla costerebbe minuti di CPU per ottenere lo
+        # stesso identico risultato.
+        ck.reset_stage("assembly")
+        ck.save()
+
+        _write_merge_report(d, rep)
+        rinessi.append(stem)
+        print(f"  {stem}: {rep.clusters_before} -> {rep.clusters_after} voci "
+              f"({len(rep.merged)} fusioni)")
+
+    # Gli ID globali che non hanno piu' nessun contributo sono gia' stati
+    # rimossi da `forget_session`, che si fa carico del caso anche
+    # quando le sessioni sono piu' di una: una voce che aveva
+    # contributi in due file li perde entrambi alla prima passata e la
+    # seconda non trova piu' niente da togliere.
+
+    print(f"\nRifuse {len(rinessi)} sessioni. "
+          f"Il DB delle voci conta ora {len(db._data['speakers'])} identita'.")
+    print("Ora lancia la pipeline per riscrivere gli output:")
+    print("  python run.py input/ --all")
+    print("e poi: python publish_corpus.py reindex")
+    return 0
+
+
+def _speaking_seconds(segmenti):
+    from core.speakers_merge import speaking_seconds
+    return speaking_seconds(segmenti)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd")
@@ -276,6 +417,18 @@ def main() -> int:
     t = sub.add_parser("threshold", help="cambia la soglia di somiglianza")
     t.add_argument("value", type=float)
 
+    c = sub.add_parser(
+        "consolidate",
+        help="rifonde i cluster di voce troppo brevi nelle sessioni gia' "
+             "elaborate, senza rileggere l'audio",
+    )
+    c.add_argument("--dry-run", action="store_true",
+                   help="mostra cosa verrebbe rifuso senza scrivere")
+    c.add_argument("--min-seconds", type=float, default=None,
+                   help="sotto quanti secondi un cluster e' un frammento")
+    c.add_argument("--threshold", type=float, default=None,
+                   help="somiglianza minima per sciogliere un frammento")
+
     y = sub.add_parser(
         "sync",
         help="allinea i nomi a corpus.db e alle sessioni già scritte",
@@ -300,6 +453,7 @@ def main() -> int:
     return {
         "list": cmd_list, "name": cmd_name, "merge": cmd_merge,
         "split": cmd_split, "threshold": cmd_threshold, "sync": cmd_sync,
+        "consolidate": cmd_consolidate,
     }[cmd](db, args)
 
 

@@ -434,8 +434,26 @@ def cmd_reindex(args) -> int:
 
         st = cdb.stats()
 
+        # I nomi vengono dai DB delle voci, che e' la fonte: senza
+        # questo allineamento la tabella `speakers` del database tiene i
+        # nomi di un tempo, anche per voci che non esistono piu'.
+        try:
+            from core.speaker_db import SpeakerDB
+            from core.speaker_sync import names_from_db
+            cdb.sync_speaker_names(names_from_db(SpeakerDB()))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Allineamento dei nomi saltato: %s", exc)
+
+        # Poi la potatura: senza, un merge delle identita' lascia le voci
+        # assorbite nella tabella e le query per parlante contano anche
+        # quelle.
+        potate = cdb.prune_speakers()
+        st = cdb.stats()
+
     print(f"\nDatabase ricostruito: {n_ok} sessioni ingestate"
           f"{f', {n_skipped} saltate' if n_skipped else ''}.")
+    if potate:
+        print(f"  {potate} voci obsolete rimosse dalla tabella speakers")
     print(f"  sessioni={st['sessions']} segmenti={st['segments']} "
           f"parole_distinte={st['distinct_words']} "
           f"parlato={st['total_speech_hours']:.1f} h")

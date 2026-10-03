@@ -40,6 +40,7 @@ FAST = [
     ([sys.executable, str(HERE / "test_prosody_workers.py")], "prosodia in parallelo"),
     ([sys.executable, str(HERE / "test_thermal.py")], "protezione termica"),
     ([sys.executable, str(HERE / "test_speaker_assignment.py")], "collegamento testo-voce"),
+    ([sys.executable, str(HERE / "test_speakers_merge.py")], "fusione cluster deboli"),
 ]
 
 

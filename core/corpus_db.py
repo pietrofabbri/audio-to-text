@@ -592,8 +592,74 @@ class CorpusDB:
                 "UPDATE speakers SET name = ? WHERE global_id = ?", (wanted, gid)
             )
             changed += 1
+
+        # E il caso inverso, che e' quello che fa male. Un nome che qui
+        # c'e' e nel DB delle voci no non e' un dato che questo database
+        # conosce: e' una copia rimasta indietro, e la fonte e' la
+        # sola che puo' dire che quel nome non esiste piu'. Senza questo
+        # cancellamento, togliere un nome dal DB delle voci non lo
+        # toglie da qui, e la voce continua a comparire con quel nome
+        # nelle query — che e' il contrario di quello che chiede
+        # `review_speakers.py name GLOBAL_001` senza argomento.
+        for row in self.conn.execute(
+            "SELECT global_id FROM speakers WHERE name IS NOT NULL"
+        ).fetchall():
+            if row["global_id"] not in names:
+                self.conn.execute(
+                    "UPDATE speakers SET name = NULL WHERE global_id = ?",
+                    (row["global_id"],),
+                )
+                changed += 1
+
         self.conn.commit()
         return changed
+
+    def prune_speakers(self, keep_names: bool = False) -> int:
+        """Rimuove dalla tabella le voci che nessuna sessione cita piu'.
+
+        La tabella `speakers` si riempie con `INSERT OR IGNORE` e non
+        aveva nessuna via per svuotirsi. Dopo un merge delle identita'
+        restano li le voci assorbite: query come «chi parla di piu' nel
+        corpus» continuano a dividerne il tempo fra una persona e un
+        frammento di lei, e il risultato e' sbagliato in un modo che non
+        si vede.
+
+        Non cancella mai un nome: la fonte dei nomi e'
+        `data/speakers_db.json`, e questa tabella ne e' una copia. Se
+        qui c'e' un nome che al DB delle voci non c'e' piu', la copia
+        mente e va rimessa a NULL — altrimenti una voce che hai
+        cancellato un anno fa continua a comparire con il suo nome
+        nelle query. Per questo `keep_names`: senza, il nome sparisce
+        insieme alla voce che non esiste piu'.
+
+        Returns:
+            quante righe sono state rimosse.
+        """
+        citate = {
+            r["speaker"] for r in self.conn.execute(
+                "SELECT DISTINCT speaker FROM segments WHERE speaker IS NOT NULL"
+            )
+        }
+        citate |= {
+            r["speaker"] for r in self.conn.execute(
+                "SELECT DISTINCT speaker FROM tokens WHERE speaker IS NOT NULL"
+            )
+        }
+        # 'UNKNOWN' non e' una voce: e' l'assenza di un'etichetta, e
+        # viene usato nelle query come "non attribuito". Non e' un
+        # interlocutore e non deve sparire dalla tabella.
+        citate.add("UNKNOWN")
+
+        da_rimuovere = [
+            r["global_id"] for r in self.conn.execute("SELECT global_id FROM speakers")
+            if r["global_id"] not in citate
+        ]
+        for gid in da_rimuovere:
+            self.conn.execute("DELETE FROM speakers WHERE global_id = ?", (gid,))
+        self.conn.commit()
+        logger.info("CorpusDB: %d voci obsolete rimosse dalla tabella",
+                    len(da_rimuovere))
+        return len(da_rimuovere)
 
     def relabel_speakers(self, renames: dict[str, str], dry_run: bool = False) -> int:
         """Rietichetta gli ID nelle tabelle del corpus dopo un merge.
