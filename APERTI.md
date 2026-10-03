@@ -9,6 +9,12 @@ Convenzione: **Io** = lavoro di codice che posso fare subito.
 **Tu** = serve il registratore, una decisione tua, o un dispositivo che
 non ho ancora.
 
+I punti **2** (cache WAV), **3** (finestra notturna) e **4** (nomi dei
+parlanti) sono **chiusi**, e c'è un punto nuovo sul **carico termico**.
+Il punto **7** (saturazione del registratore) è **archiviato**: non è
+risolto, è che non è risolvibile da qui. Sotto ciascuno è scritto cosa
+è stato fatto e cosa resta.
+
 ---
 
 ## Bloccanti — da fare prima della prima notte vera
@@ -34,76 +40,141 @@ notte*, senza nessuno che guardi i log.
 
 ---
 
-### 2. La cache WAV non viene mai cancellata
+### 2. ~~La cache WAV non viene mai cancellata~~ — chiuso il 3 ottobre
 
-**Stato.** I WAV derivati finiscono in `data/wav_cache/` e ci restano
-per sempre. Misurato: **132 MB per quattro estratti da 8 minuti**. Un
-file da un'ora sono 115 MB, più 115 MB della variante ripulita.
-Con 18 file al giorno sono **~4 GB al giorno**, ~120 GB al mese.
+**Stato.** Chiuso. `pipeline/vad.py` espone `purge_wav_cache()`, chiamata
+da `run.py` appena la sessione è completa.
 
-**Pro di fare subito.** Cresce da solo, senza che nessuno se ne accorga
-finché il disco non è pieno — e quando è pieno la notte si ferma a
-metà, che è il modo peggiore.
+**La regola, che è la parte difficile.** Tre casi, non uno:
 
-**Contra.** Nessuno. È un difetto, non una scelta.
+| Caso | Cosa si fa | Perché |
+|---|---|---|
+| sessione finita | cancella subito | il WAV non serve più |
+| nessun checkpoint lo cita, età > 6 h | cancella | è un orfano: nessuno lo riapre |
+| nessuno lo cita, appena scritto | **tira avanti** | può essere una run in corso |
+| checkpoint incompleto | **mai** | serve per riprendere dal chunk interrotto |
 
-**Perché proprio.** Il checkpoint ha bisogno del WAV per riprendere un
-file interrotto, ma solo per i file in corso. Finita la sessione non
-serve più.
+L'ultima riga è quella che viene facilmente sbagliata: cancellare il WAV
+di una sessione a metà significa che la notte dopo ricomincia dal primo
+chunk, e il lavoro di notte è buttato. Lo copre
+`test_purge_keeps_wav_of_unfinished_session`.
 
-**Io.** Pulizia a fine sessione, con un test che verifica che il
-checkpoint continui a funzionare dopo.
+**Conto.** ~4 GB/giorno smettono di accumularsi, e il controllo spazio
+disco di `sync_device.py check` smette di minacciare.
 
 ---
 
-### 3. La finestra notturna è scritta in tre posti, e due non concordano
+### 3. ~~La finestra notturna è scritta in tre posti~~ — chiuso il 3 ottobre
 
-**Stato.** `setup_launchd.py` dice 4 ore (02:00–06:00),
-`nightly.DEFAULT_WINDOW_SEC` dice 3 ore, il README dice 4. Lanciando
-`nightly.py` a mano senza argomenti si ottiene una finestra più corta di
-quella che il job launchd usa.
+**Stato.** Chiuso. Orario, durata, thread, priorità e pausa stanno tutti
+in `core/config.py`; `nightly.py` e `setup_launchd.py` li leggono da lì.
 
-**Pro di sistemarlo.** Il piano che leggi a mano e quello che gira di
-notte devono essere lo stesso numero, altrimenti "la coda non si
-chiude" significa due cose diverse a seconda di chi lo chiede.
+**Perché una costante e non tre copie.** Il difetto non era il numero
+sbagliato: era che esistevano tre numeri. Il piano che leggi a mano e
+quello che gira di notte erano due piani diversi per la stessa notte, e
+"la coda non si chiude" significava due cose a seconda di chi chiedeva.
 
-**Contra.** Cinque minuti di lavoro.
+Il test `t_window_lives_in_one_place` verifica la catena intera, non
+solo la costante: prende il `--max-seconds` che il plist passa a
+`nightly.py` e lo confronta con il default che `nightly.py` usa quando
+lo lanci a mano. Sono due cose diverse che possono divergere.
 
-**Perché.** È la classe di difetto più insidiosa: non rompe niente,
-finché un giorno non rompe.
+---
 
-**Io.** Una sola costante, letta da entrambi.
+## Termico — la macchina scalda troppo di notte
+
+### 3b. La pipeline teneva la CPU al massimo per quattro ore
+
+**Stato.** Chiuso, e il risultato ha superato le aspettative.
+
+**Cosa è successo misurando, non ragionando.** Ho misurato l'ASR su
+10 chunk e 166 s di parlato della registrazione vera, cambiando solo il
+numero di thread:
+
+| Thread | Tempo | Realtime sul parlato |
+|---|---|---|
+| 8 | 53,4 s | 3,11× |
+| **4** | **43,0 s** | **3,86×** |
+| 3 | 47,9 s | 3,47× |
+| 2 | 66,9 s | 2,48× |
+
+Quattro thread sono **più veloci** di otto. La M1 Pro ha 4 core
+performance e 4 efficiency: usarli tutti insieme non raddoppia il
+lavoro, aggiunge contesa e tiene la CPU al pacchetto termico massimo,
+dopo il quale scende la frequenza e va più piano di quanto andasse con
+la metà dei core.
+
+**Perché conta più del tempo.** Il risparmio termico non è il prezzo di
+un rallentamento: **fa parte** del miglioramento. Il file da 16 minuti
+resta da 16 minuti — anzi, un filo più corto — e la macchina non si
+scalda. Quello che resta da calmare è il resto.
+
+**Cosa è stato fatto.**
+
+- `NIGHT_THREADS = 4`, tetto dichiarato in `MAX_THREADS` e verificato da
+  un test: nessuno può alzarlo "perché tanto la macchina è libera",
+  che è esattamente il cambiamento che peggiorerebbe tempo e calore
+  insieme;
+- prosodia da 4 a 2 worker (è un secondo carico parallelo, e insieme
+  all'ASR conta più di quanto dichiarato);
+- `nice 10` di notte, `nice 15` di giorno — anche lanciando a mano, non
+  solo da launchd: il termico non deve dipendere da chi ha digitato il
+  comando;
+- pausa di respiro di 90 s fra un file e il successivo (30 s di giorno).
+  Il costo è dichiarato nel docstring e nel `--help`: la coda avanza un
+  po' meno, la macchina resta usabile il giorno dopo.
+
+**Il conto, per onestà.** Con 18 file da un'ora al giorno: 4 thread
+(16 min/file) + 90 s di respiro ≈ 17,5 min per file, ~13 file a notte
+contro ~15 prima. Le passate diurne coprono il resto. La coda resta in
+pari o quasi, ma il margine è più stretto di prima e va guardato nelle
+prime notte vere.
+
+**Cosa resta aperto.** Il comportamento termico vero — ventola,
+frequenza, temperatura — non l'ho misurato: per farlo servono
+`powermetrics` e qualche ora di registrazione (punto 15). Quello che ho
+misurato è il tempo, che è il termine che conta per la coda.
 
 ---
 
 ## Qualità — il corpus si degrada piano, e non se ne accorge
 
-### 4. Rinominare una voce non aggiorna nulla di esistente
+### 4. ~~Rinominare una voce non aggiorna nulla di esistente~~ — chiuso il 3 ottobre
 
-**Stato.** Ci sono **tre** posti dove vive il nome di un parlante e
-nessuno parla con gli altri:
+**Stato.** Chiuso. La fonte è una sola, `data/speakers_db.json`. Tutto il
+resto è derivato e si riallinea con un comando.
 
-| Dove | Contenuto dopo un rename |
-|---|---|
-| `data/speakers_db.json` | `Pietro` ✅ |
-| `corpus.db`, tabella `speakers.name` | `GLOBAL_001` ❌ |
-| `session.json` delle sessioni già scritte | `GLOBAL_001` ❌ |
+**La decisione presa sul nome.** Il nome reale può stare in
+`transcript.json` e in `session.json` anche in locale: è materiale che
+resta sulla tua macchina. Resta però una decisione separata e più grave,
+che è **cosa finisce sulla repo del corpus**. Il default di
+`publish_corpus.py` continua a sostituire i nomi con gli pseudonimi, e
+esiste `push --with-names` per pubblicarli volutamente. La ragione della
+separazione è che cambiare la privacy del materiale locale è reversibile,
+mentre pubblicare nomi veri non lo è.
 
-Verificato: dopo `review_speakers.py name GLOBAL_001 Pietro`, le sessioni
-precedenti continuano a dire `GLOBAL_001`.
+**Cosa è stato fatto.**
 
-**Pro.** Una fonte sola. Ogni query sul corpus restituisce il nome senza
-codice di join, e le sessioni vecchie si aggiornano con un comando.
+- `core/speaker_sync.py`: allinea `corpus.db`
+  (`CorpusDB.sync_speaker_names`) e ogni `session.json` /
+  `transcript.json` già scritto;
+- `review_speakers.py sync`, e `name` e `merge` lo chiamano da soli — un
+  rename non finisce più a metà, con il nome nuovo in un file e
+  invecchiato in tutti gli altri;
+- le voci senza nome non vengono riempite con il pseudonimo: nella
+  colonna `name`, `GLOBAL_004` sembrerebbe un nome e non lo è.
 
-**Contra.** Riusare `speaker_names` dentro `transcript.json` significa
-scrivere un nome vero in un file che oggi pubblica solo pseudonimi: va
-deciso se il nome resta locale o entra nel corpus pubblicato.
+**Una sottigliezza che è costata un test.** La mappa dei nomi di una
+sessione si ricostruisce dagli ID che *quel file* contiene, non dal DB
+delle voci: copiare tutto in ogni sessione significa che il
+`session.json` di martedì contiene informazioni su persone che non hanno
+parlato martedì. Ma gli ID già elencati nella mappa contano come
+riferimenti, altrimenti togliere un nome non lo toglierebbe mai da lì.
 
-**Perché conta.** Hai detto tu che vuoi trovare gli stessi personaggi
-fra file diversi e poi analizzarli per persona. Oggi puoi farlo solo per
-le sessioni elaborate *dopo* il rename.
-
-**Io.** Il refactor. **Tu.** La decisione su dove il nome può finire.
+**Cosa non fa.** Non rilegge l'audio e non rielabora: il merge delle
+identità resta valido solo per le sessioni future. Rietichettare le
+sessioni passate quando due voci vengono unite è un lavoro separato,
+e non l'ho fatto.
 
 ---
 
@@ -153,24 +224,19 @@ corpus contenga buchi.
 
 ---
 
-### 7. Il registratore satura, e questo non lo posso sistemare io
+### 7. ~~Il registratore satura~~ — archiviato il 3 ottobre
 
-**Stato.** Picco vero **+3,2 dBFS**, **0,19–0,30%** dei campioni a
-fondo scala. Loudness −12,1 LUFS: registra forte.
+**Stato.** Archiviato, non risolto. Hai detto che del registratore non
+puoi fare nulla, e la misura dice che hai ragione a non tentare: picco
++3,2 dBFS, 0,19–0,30% dei campioni a fondo scala. L'informazione è già
+persa nel file, e nessun filtro la ricrea. Si può solo limitare il
+danno a valle, e il denoise lo fa già scegliendo da solo la variante
+migliore.
 
-**Pro di intervenire.** Nessun vantaggio. Il dato è che l'informazione
-**è già stata persa** nel file: nessun filtro la ricrea. Si può solo
-limitare il danno a valle, e il denoise già lo fa da sé scegliendo la
-variante migliore.
-
-**Contra (del non fare nulla).** Le registrazioni successive avranno
-sempre più voce distorta, e la qualità ASR peggiora lentamente.
-
-**Perché è tuo.** Se il registratore ha un'impostazione di
-sensibilità o di AGC, va regolata lì. È l'unico punto dell'elenco in
-cui la soluzione non è nel software.
-
-**Tu.** Verificare se il dispositivo ha la regolazione.
+Non lo chiudo perché sia risolto: lo chiudo perché è l'unico punto
+dell'elenco in cui la soluzione non è nel software, e tenerlo in aperto
+accanto a cose che posso fare io serviva solo a ricordarti un vincolo
+che conosci già.
 
 ---
 
@@ -223,21 +289,22 @@ errore è irreversibile: dati pubblicati per errore non si richiamano.
 | 12 | `A2T_ASR_MODEL=medium` | ~2× più veloce | Qualità ASR peggiore | **Tu** |
 | 13 | Archivio locale a 7 giorni | Rete di sicurezza | 7 GB occupati | Io |
 | 14 | Segmenti da ~18 s per l'analisi | Prosodia misurabile per frase | Turni di parlato meno leggibili | Io |
+| 15 | Misurare il termico vero (ventola, °C) | Il dato vero, non dedotto dal tempo | Serve `powermetrics` e qualche ora | Io, dopo una notte |
 
 ---
 
 ## L'ordine in cui li farei
 
-1. **2 — cache WAV.** Cresce da sola e rompe la notte. Difetto puro.
-2. **3 — finestra notturna.** Cinque minuti, elimina una classe di bug.
-3. **4 — una fonte sola per i nomi.** Il corpus è inutilizzabile per
-   persona senza questo.
-4. **1 — la prima notte vera.** Con 1–3 fatti, è un test vero.
-5. **6 — flag di qualità.** Prima di costruirci analisi sopra.
-6. **7 — sensibilità del registratore.** Tuo, e vale per tutto il resto.
-7. **9 — pubblicazione.** Prima che il corpus sia grosso.
-8. **8 — biometria.** Quando arriva l'hardware.
+Fatti: **2** (cache WAV), **3** (finestra unica), **4** (nomi), e il
+punto sul termico.
 
-I punti 1–3 sono di un'ora di lavoro e chiudono i rischi che si
-presentano da soli. Il resto può aspettare che il sistema abbia girato
-qualche notte e accumulato dati su cui decidere.
+1. **1 — la prima notte vera.** Con 2–4 fatti è un test vero, e non è
+   più un rischio teorico: è l'unica verifica che manca.
+2. **6 — flag di qualità.** Prima di costruirci analisi sopra.
+3. **9 — pubblicazione.** Prima che il corpus sia grosso, e prima che ci
+   sia materiale che non vorresti vedere sulla repo.
+4. **15 — misurare il termico vero.** Dopo una notte.
+5. **8 — biometria.** Quando arriva l'hardware.
+
+Il resto può aspettare che il sistema abbia girato qualche notte e
+accumulato dati su cui decidere.

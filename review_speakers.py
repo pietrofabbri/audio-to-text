@@ -5,6 +5,7 @@ Rivedi le identità vocali: vedi chi è chi, metti i nomi, correggi gli errori.
     python review_speakers.py name GLOBAL_001 Pietro
     python review_speakers.py merge GLOBAL_003 GLOBAL_004
     python review_speakers.py threshold 0.70
+    python review_speakers.py sync            # allinea i nomi a tutto il materiale già scritto
 
 Perché esiste. Il riconoscimento automatico lavora su una soglia di
 coseno, e su quattro registrazioni reali i numeri sono ambigui in una
@@ -97,6 +98,53 @@ def cmd_name(db: SpeakerDB, args) -> int:
     db.set_name(args.gid, args.name or None)
     db.save()
     print(f"{args.gid} -> {args.name or '(senza nome)'}")
+
+    # Rinominare non finisce qui. Il nome era finito anche dentro
+    # transcript.json, session.json e corpus.db di ogni sessione già
+    # scritta, e quelle copie non si aggiornano da sole: senza questo
+    # passaggio il rename vale solo da oggi in poi, e il corpus continua
+    # a parlare di GLOBAL_001 per settimane.
+    return cmd_sync(db, args, quiet=False)
+
+
+def cmd_sync(db: SpeakerDB, args, quiet: bool = False) -> int:
+    """Riallinea i nomi a tutto il materiale già scritto.
+
+    Il DB delle voci è l'unica fonte: questo comando copia il nome dove
+    serve, senza rileggere l'audio e senza rielaborare nulla. Costa
+    secondi, e dopo un rename o un merge è il passo che rende il cambio
+    visibile nelle sessioni passate.
+    """
+    from core.speaker_sync import sync_speaker_names
+
+    try:
+        report = sync_speaker_names(db=db, dry_run=getattr(args, "dry_run", False))
+    except Exception as exc:  # noqa: BLE001
+        # L'allineamento è manutenzione, non lavoro notturno: se fallisce
+        # il nome è già salvato nel DB delle voci e si può ritentare.
+        print(f"Allineamento fallito: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    if quiet:
+        return 0
+
+    if report["dry_run"]:
+        print(f"[dry-run] {report['named_speakers']} voci nominate; "
+              f"aggiornerei {report['db_rows']} righe in corpus.db e "
+              f"{report['sessions_updated']} sessioni")
+        return 0
+
+    print(f"Allineati {report['named_speakers']} voci nominate: "
+          f"{report['db_rows']} righe in corpus.db, "
+          f"{report['sessions_updated']} sessioni aggiornate "
+          f"({report['files_updated']} file), "
+          f"{report['sessions_unchanged']} già allineate")
+    if report["sessions_updated"]:
+        # Le sessioni aggiornate vanno ripubblicate, o la repo del corpus
+        # continua a mostrare i vecchi pseudonimi: il sync corregge il
+        # materiale locale, non quello già pushato.
+        print("Se hai gia' pubblicato il corpus, rilancia: "
+              "python publish_corpus.py push")
     return 0
 
 
@@ -136,7 +184,12 @@ def cmd_merge(db: SpeakerDB, args) -> int:
     db.save()
     print(f"{drop} unita in {keep} "
           f"({dst['total_seconds']/60:.1f} min, {dst['sessions_count']} sessioni)")
-    return 0
+    # Le sessioni che citavano il vecchio ID continuano a citarlo: sono
+    # dati già scritti e non si rietichettano da sole. Si dice, e si
+    # lascia il comando a chi lo vuole.
+    print("Attenzione: le sessioni gia' scritte che citano "
+          f"{drop} non vengono rietichettate.")
+    return cmd_sync(db, args, quiet=False)
 
 
 def cmd_split(db: SpeakerDB, args) -> int:
@@ -177,6 +230,8 @@ def main() -> int:
     n = sub.add_parser("name", help="assegna un nome a una voce")
     n.add_argument("gid")
     n.add_argument("name", nargs="?", help="vuoto per rimuovere il nome")
+    n.add_argument("--no-sync", action="store_true",
+                   help="salva il nome senza riallineare le sessioni già scritte")
 
     m = sub.add_parser("merge", help="unisce due voci: sono la stessa persona")
     m.add_argument("gid")
@@ -188,13 +243,30 @@ def main() -> int:
     t = sub.add_parser("threshold", help="cambia la soglia di somiglianza")
     t.add_argument("value", type=float)
 
+    y = sub.add_parser(
+        "sync",
+        help="allinea i nomi a corpus.db e alle sessioni già scritte",
+    )
+    y.add_argument("--dry-run", action="store_true",
+                   help="mostra cosa cambierebbe senza scrivere")
+
     args = ap.parse_args()
     cmd = args.cmd or "list"
 
     db = SpeakerDB()
+
+    if cmd == "name" and getattr(args, "no_sync", False):
+        if args.gid not in db._data["speakers"]:
+            print(f"Voce sconosciuta: {args.gid}", file=sys.stderr)
+            return 1
+        db.set_name(args.gid, args.name or None)
+        db.save()
+        print(f"{args.gid} -> {args.name or '(senza nome)'} (nessun allineamento)")
+        return 0
+
     return {
         "list": cmd_list, "name": cmd_name, "merge": cmd_merge,
-        "split": cmd_split, "threshold": cmd_threshold,
+        "split": cmd_split, "threshold": cmd_threshold, "sync": cmd_sync,
     }[cmd](db, args)
 
 

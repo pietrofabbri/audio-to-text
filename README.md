@@ -17,11 +17,21 @@ Pipeline locale per trascrizione, diarizzazione speaker e analisi prosodia di fi
 
 **Tempi misurati su M1 Pro (16 GB), registrazioni vere:**
 - Un file da 1h con 65% di parlato costa **~16 minuti**
-- L'ASR gira a **4,2× realtime** sul parlato, la diarizzazione a **15,8×**
-- Con 18 file da 1h al giorno: notte da 4h ne prende 15, le passate diurne 7 → **la coda si chiude**
+- L'ASR gira a **3,9× realtime** sul parlato (a 4 thread, vedi sotto),
+  la diarizzazione a **15,8×**
+- Con 18 file da 1h al giorno: notte da 4h ne prende ~13, le passate
+  diurne coprono il resto → **la coda si chiude**
 
 I numeri non vengono da stime ma da misure sul tuo registratore, e il
 modello che le usa è in [`core/cost.py`](core/cost.py).
+
+**Attenzione al calore.** Di notte la pipeline gira con 4 thread, non 8,
+e fa una pausa di 90 secondi fra un file e il successivo. Non è una
+concessione: **4 thread sono risultati più veloci di 8** (3,86× contro
+3,11× sul parlato reale), perché gli altri 4 core della M1 Pro sono
+efficiency e insieme ai primi fanno contesa, non lavoro. Il tetto è in
+[`core/config.py`](core/config.py) (`MAX_THREADS`) e un test impedisce di
+alzarlo.
 
 **Cosa non va ancora:** la lista dei punti aperti, con pro, contro e
 responsabilità, è in [`APERTI.md`](APERTI.md).
@@ -148,7 +158,7 @@ python run.py --status
 
 ---
 
-## Scheduling notturno (03:00 ogni notte)
+## Scheduling notturno (02:00 ogni notte)
 
 ### Installa il job launchd
 
@@ -156,8 +166,16 @@ python run.py --status
 python setup_launchd.py install
 ```
 
-Ogni notte alle 03:00 la pipeline si avvia, processa tutti i file in `input/`
-che non hanno ancora un output completo, e si ferma dopo 2.5 ore.
+Ogni notte alle **02:00** la pipeline si avvia, importa dal registratore,
+elabora entro un budget di **4 ore** e pubblica il corpus. Viene
+installato anche un job diurno: tre passate brevi (09:30, 15:30, 21:30,
+40 minuti, 3 thread, priorità bassa) che fanno avanzare la coda senza
+rubare la macchina.
+
+Orario, finestra, thread, priorità e pausa stanno tutti in
+[`core/config.py`](core/config.py): sono un numero solo, letto sia dal
+job launchd sia da `nightly.py` lanciato a mano. Cambiarli lì cambia
+entrambi — prima erano scritti in tre file e due non concordavano.
 
 ### Controlla lo stato
 
@@ -181,6 +199,36 @@ python setup_launchd.py uninstall
 
 ## Tempi reali misurati (le stime precedenti erano ottimistiche ~3x)
 
+### Il numero di thread: perché 4 e non 8
+
+Misurato sull'audio reale (10 chunk, 166 s di parlato), cambiando solo il
+numero di thread:
+
+| Thread | Tempo | Realtime sul parlato |
+|---|---|---|
+| 8 | 53,4 s | 3,11× |
+| **4** | **43,0 s** | **3,86×** |
+| 3 | 47,9 s | 3,47× |
+| 2 | 66,9 s | 2,48× |
+
+**Quattro thread sono più veloci di otto.** La M1 Pro ha 4 core
+performance e 4 efficiency: usarli tutti non raddoppia il lavoro,
+aggiunge contesa e tiene la CPU al pacchetto termico massimo, dopo il
+quale scende la frequenza e va più piano di quanto andasse con la metà
+dei core.
+
+Questo cambia il modo di pensare il problema termico: non è «velocità
+contro caldo», è che il vincolo era fasullo — la configurazione che
+scaldava di più era anche la più lenta. Sotto i 4 thread il tempo
+peggiora davvero, e con 2 si sente.
+
+Resta una cosa che il tempo non dice: la pausa di 90 secondi fra un file
+e il successivo. Quella costa davvero (~13 file a notte invece di ~15),
+ed è dichiarata in `core/config.py` (`NIGHT_COOLDOWN_SEC`) con il flag
+`--cooldown-sec 0` per disattivarla.
+
+### Il resto dei costi
+
 Su questo Mac, misurati sul campione reale da 97,8 s (non stimati):
 
 | Stadio | RTF misurato | 18 file da 1h |
@@ -192,9 +240,9 @@ Su questo Mac, misurati sul campione reale da 97,8 s (non stimati):
 | Prosodia + output | 49x realtime | ~22 min |
 | **Totale** | | **~8 h** |
 
-Nella finestra notturna di 3 ore entrano quindi **3 file da un'ora**, e
-gli altri restano sul device: la coda avanza di 3 file a notte, dal più
-vecchio al più nuovo. Non è un limite aggirabile con l'attesa.
+Nella finestra notturna di 4 ore entrano quindi **~13 file da un'ora**,
+e gli altri restano sul device: la coda avanza dal più vecchio al più
+nuovo, senza perdere nulla. Non è un limite aggirabile con l'attesa.
 
 Il parallelismo non aiuta: `num_workers` di faster-whisper agisce solo
 se si passano più segmenti in una singola chiamata, mentre la pipeline
@@ -288,10 +336,20 @@ giudizio finale — quando due voci sono la stessa persona — spetta a te:
 
 ```bash
 python review_speakers.py                       # elenco + matrice
-python review_speakers.py name GLOBAL_001 Pietro
+python review_speakers.py name GLOBAL_001 Pietro  # assegna (e riallinea)
 python review_speakers.py merge GLOBAL_003 GLOBAL_004
 python review_speakers.py split GLOBAL_005
+python review_speakers.py sync                 # riallinea i nomi ovunque
+python review_speakers.py sync --dry-run       # cosa cambierebbe
 ```
+
+**Il nome vive in un posto solo.** La fonte è
+`data/speakers_db.json` (locale, mai nel repo: sono dati biometrici).
+Tutto il resto ne è una copia derivata — `corpus.db`, `session.json`,
+`transcript.json` — e `name` e `merge` la riallineano da soli dopo ogni
+cambio. Prima un rename valeva solo da quel momento in poi, e le
+sessioni vecchie continuavano a dire `GLOBAL_001`: un rename che sembra
+non essere successo.
 
 Su quattro registrazioni reali la separazione è netta: persone diverse
 stanno a 0,13–0,29 di coseno, e l'unica coppia unita automaticamente
@@ -319,10 +377,21 @@ python publish_corpus.py push         # pubblica sulla repo privata
 ```
 
 Il ciclo notturno si ferma **fra un file e l'altro** quando il budget
-di tempo (`--max-seconds`, 3h di default) è esaurito: iniziare un file
+di tempo (`--max-seconds`, 4h di default) è esaurito: iniziare un file
 che non finisce dentro la finestra costerebbe il suo tempo senza
 produrre nulla. Quello che non entra resta sul device e riparte dalla
 stessa condizione la notte dopo.
+
+Il ciclo non finisce finché c'è un file da elaborare: tra l'uno e
+l'altro c'è una **pausa di respiro** (`--cooldown-sec`, 90 s di notte,
+30 s di giorno) e il ciclo è a `nice 10`. Il costo in tempo è dichiarato
+e voluto: la coda avanza un po' meno, la macchina resta usabile il
+giorno dopo.
+
+I **WAV derivati** che la pipeline usa per il VAD stanno in
+`data/wav_cache/` e vengono cancellati appena la sessione è finita —
+ma **non** se il checkpoint è a metà, perché quello serve per riprendere
+dal chunk interrotto. Erano ~4 GB al giorno e non finivano mai da soli.
 
 I file **non** vengono copiati prima di essere elaborati: vengono letti
 dove sono. Il registratore resta la fonte di verità finche il lavoro non
@@ -384,16 +453,23 @@ materiale che un LLM deve poter leggere: transcript, segmenti, token,
 frequenze, markdown di analisi, con `INDEX.md` come punto d'ingresso.
 
 ```bash
-python publish_corpus.py init     # clona la repo privata in locale
-python publish_corpus.py push     # pubblica le sessioni nuove
-python publish_corpus.py status   # cosa c'è e cosa manca
+python publish_corpus.py init              # clona la repo privata in locale
+python publish_corpus.py push              # pubblica le sessioni nuove
+python publish_corpus.py push --with-names  # pubblica anche i nomi reali
+python publish_corpus.py status            # cosa c'è e cosa manca
 ```
 
-Sulla repo **non** finiscono mai: audio, embedding vocali, il mapping
-`GLOBAL_00x → nome reale`, i database locali, i checkpoint. Non è una
-scelta di comodità: testo, prosodia e statistiche parlarie insieme
-ricostruiscono un profilo che nessun file rivela da solo. Tenendo i
-nomi fuori, un accesso alla repo non dà l'identità.
+Sulla repo **non** finiscono mai: audio, embedding vocali, i database
+locali, i checkpoint. Non è una scelta di comodità: testo, prosodia e
+statistiche parlarie insieme ricostruiscono un profilo che nessun file
+rivela da solo.
+
+**I nomi reali dei parlanti** stanno in `transcript.json` e
+`session.json` in locale — è materiale che resta sulla tua macchina.
+Sulla repo, per default, vengono sostituiti dagli pseudonimi: un accesso
+alla repo non dà l'identità. `--with-names` li pubblica, ed è una
+decisione che va presa **a ogni push**, non un'impostazione da
+dimenticare: pubblicare nomi veri non si richiama.
 
 **`core/corpus_db.py`** tiene un SQLite **locale** che fa ciò che git
 non sa fare: aggregare mesi di dati in una query. Lo schema è pensato
@@ -457,9 +533,14 @@ print(db.profiles())                  # ore parlate, sessioni, date
 
 Nei file di output i segmenti riportano `speaker` (ID globale),
 `speaker_local` (ID della sessione) e `speaker_names` (nome umano se
-assegnato). La soglia di match è `match_threshold` in `core/config.py`
-(default 0.78): più alta = più conservativo. Sopra la soglia una voce
-è considerata nuova persona e nasce un ID nuovo.
+assegnato, **in locale**). La soglia di match è `match_threshold` in
+`core/config.py` (default 0.78): più alta = più conservativo. Sopra la
+soglia una voce è considerata nuova persona e nasce un ID nuovo.
+
+`core/speaker_sync.py` allinea i nomi su tutto il materiale già scritto:
+`review_speakers.py name`, `merge` e `sync` lo chiamano. Senza, un
+rename vale solo per le sessioni successive e `corpus.db` continua a
+restituire pseudonimi per voci che da settimane hanno un nome.
 
 > `data/speakers_db.json` contiene embedding vocali, che sono
 > identificatori biometrici: resta in locale e non va nel repo. Se lo
@@ -467,10 +548,11 @@ assegnato). La soglia di match è `match_threshold` in `core/config.py`
 
 ```bash
 python tests/test_speaker_db.py        # matching cross-file delle voci
-python tests/test_device_pipeline.py   # device, denoise, corpus, archivio
+python tests/test_device_pipeline.py   # device, denoise, corpus, archivio, cache WAV, nomi
+python tests/test_nightly.py           # piano notturno, finestra, carico termico
 ```
 
-Entrambi girano con embedding e file sintetici: nessun modello, nessun
+Girano tutti con embedding e file sintetici: nessun modello, nessun
 audio, nessuna rete, pochi secondi.
 
 ### Esempio transcript.txt
@@ -510,11 +592,24 @@ cfg.asr.model_id = "mlx-community/whisper-large-v3-mlx-q8"  # più accurato, 3GB
 # Forza numero di speaker
 cfg.diarization.num_speakers = 3
 
-# Più worker CPU per prosodia (se hai core liberi)
-cfg.prosody.num_workers = 6
+# Worker CPU per la prosodia. Il default è 2, e alzarlo insieme all'ASR
+# è il modo più rapido per scaldare la macchina: sono due carichi paralleli.
+cfg.prosody.num_workers = 3
 
-# Timeout notturno: 3 ore invece di 2.5
+# Timeout per singolo file
 cfg.max_runtime_sec = 10800
+```
+
+I parametri **della pianificazione** stanno in cima allo stesso file e
+non in una dataclass: orario, durata della finestra, thread, priorità e
+pausa di respiro.
+
+```python
+NIGHT_WINDOW_SEC   = 4 * 3600    # 02:00 → 06:00
+NIGHT_THREADS      = 4           # i core performance: 4 è più veloce di 8
+NIGHT_NICE         = 10
+NIGHT_COOLDOWN_SEC = 90          # 0 per non fermarsi mai
+MAX_THREADS        = 4           # tetto misurato, verificato da un test
 ```
 
 ---

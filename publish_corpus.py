@@ -13,18 +13,30 @@ Va:
 Non va, mai:
   - audio di qualsiasi tipo
   - embedding vocali (identificatori biometrici)
-  - il mapping GLOBAL_00x → nome reale
   - i database locali
   - i log grezzi
 
-Il perché è il motivo per cui la repo esiste: un corpus di voci e
-comportamento di una persona è un profilo, e un profilo ricostruibile
-in un colpo da testo, prosodia e statistiche parlarie è un rischio di
-ri-identificazione che nessun singolo file rivela da solo. Tenendo i
-nomi fuori dalla repo, un accesso alla repo non dà l'identità.
+I nomi reali dei parlanti esistono, e stanno in `transcript.json` e
+`session.json` in locale: è una scelta, non un limite. Di default non
+vengono pubblicati, e `push --with-names` serve per pubblicarli
+volutamente.
+
+Il perché della protezione è il motivo per cui la repo esiste: un corpus
+di voci e comportamento di una persona è un profilo, e un profilo
+ricostruibile in un colpo da testo, prosodia e statistiche parlarie è un
+rischio di re-identificazione che nessun singolo file rivela da solo.
+Tenendo i nomi fuori dalla repo, un accesso alla repo non dà l'identità.
+
+Il `--with-names` esiste perché la protezione di default e la comodità
+sono in tensione: i nomi rendono il corpus leggibile voce per voce, e una
+repo privata è già, per definizione, sotto il controllo di una sola
+persona. Il default resta quello che non espone nulla; accettare
+l'esposizione deve essere una decisione presa ogni volta, non una
+impostazione dimenticata.
 
     python publish_corpus.py init      # clona la repo privata in locale
     python publish_corpus.py push      # pubblica le sessioni nuove
+    python publish_corpus.py push --with-names   # pubblica anche i nomi
     python publish_corpus.py status    # cosa c'è dentro, cosa manca
 """
 
@@ -45,6 +57,11 @@ sys.path.insert(0, str(ROOT))
 from core.config import OUTPUT_DIR  # noqa: E402
 
 logger = logging.getLogger("publish")
+
+# Se True, i nomi reali dei parlanti vengono pubblicati. Non è un
+# dettaglio: cambia chi può dare un nome alle voci di un corpus. Default
+# False — vedere il docstring in cima.
+keep_names = False
 
 REPO_SLUG = "pietrofabbri/corpus"
 LOCAL_CLONE = ROOT / "corpus_repo"
@@ -70,7 +87,13 @@ def _scrub(obj):
 
     Non ci fidiamo del fatto che oggi i nomi non ci siano: se domani
     assegni un nome a una voce, non deve finire qui per sbaglio.
+
+    Con `keep_names=True` non viene toccato nulla. E' quello che fa
+    `push --with-names`, e la differenza è una riga: per questo il
+    default resta lo scrubbing, e la scelta va ripetuta a ogni push.
     """
+    if keep_names:
+        return obj
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
@@ -188,8 +211,11 @@ def _write_index(dry_run: bool = False) -> Path:
         "# Corpus — indice",
         "",
         "> Generato automaticamente. Un file per sessione in `sessions/`.",
-        "> Gli speaker compaiono come pseudonimi `GLOBAL_00x`: la mappa con i",
-        "> nomi reali sta solo in locale e non viene pubblicata.",
+        "> Gli speaker compaiono come pseudonimi `GLOBAL_00x`" + (
+            ": la mappa con i nomi reali e' pubblicata accanto a questi file."
+            if keep_names else
+            ": la mappa con i nomi reali sta solo in locale e non viene pubblicata."
+        ),
         "",
         f"Sessioni: **{len(entries)}**",
         "",
@@ -250,6 +276,14 @@ def cmd_push(args) -> int:
     if not LOCAL_CLONE.exists():
         print("Repo non clonata. Esegui prima: python publish_corpus.py init")
         return 1
+
+    global keep_names
+    keep_names = bool(getattr(args, "with_names", False))
+    if keep_names:
+        logger.warning(
+            "--with-names: i nomi reali dei parlanti verranno pubblicati. "
+            "Chi legge la repo potra' dare un nome alle voci."
+        )
 
     _, before_sha = _run(["git", "rev-parse", "HEAD"], cwd=LOCAL_CLONE)
     pushed = []
@@ -338,6 +372,11 @@ def main() -> int:
     sub.add_parser("init", help="clona la repo privata in locale").set_defaults(func=cmd_init)
     p = sub.add_parser("push", help="pubblica le sessioni nuove")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument(
+        "--with-names", action="store_true",
+        help="pubblica anche i nomi reali dei parlanti (default: no, "
+             "vengono sostituiti dagli pseudonimi)",
+    )
     p.set_defaults(func=cmd_push)
     sub.add_parser("status", help="cosa c'è sulla repo e cosa manca").set_defaults(func=cmd_status)
 

@@ -26,6 +26,44 @@ LOGS_DIR   = ROOT_DIR / "logs"
 # venv con faster-whisper / whisperx / pyannote già installati
 VENV_PYTHON = Path.home() / "Desktop" / "Titoli Fabbri" / "whisperx_env" / "bin" / "python"
 
+# ---------------------------------------------------------------------------
+# Pianificazione — l'unico posto dove la finestra notturna è scritta
+# ---------------------------------------------------------------------------
+# Prima questi numeri vivevano in tre file (setup_launchd.py, nightly.py,
+# README) e due non concordavano: lanciando nightly.py a mano la finestra
+# era più corta di quella del job launchd. Il numero che conta è "quanto
+# tempo ha la notte", quindi sta qui, e nightly.py e setup_launchd.py lo
+# leggono. Cambiarlo qui cambia ovunque, che è il punto.
+
+# Notte: pieno regime. La macchina è libera e serve.
+NIGHT_START_HOUR   = 2
+NIGHT_START_MINUTE = 0
+NIGHT_WINDOW_SEC   = 4 * 3600      # 02:00 → 06:00
+NIGHT_NICE         = 10            # priorità sotto la normale
+NIGHT_THREADS      = 4             # i core performance: vedi core/cost.py
+NIGHT_COOLDOWN_SEC = 90            # pausa di respiro fra un file e il successivo
+
+# Passate diurne: processo leggero in background, tre volte al giorno.
+# Non sono un secondo ciclo completo: sono lo stesso ciclo con un budget
+# piccolo, pensato per non lasciare la coda ferma otto ore senza pero'
+# rubare la macchina a chi la sta usando.
+DAYTIME_HOURS       = (9, 15, 21)
+DAYTIME_BUDGET_SEC  = 40 * 60
+DAYTIME_THREADS     = 3
+DAYTIME_NICE        = 15
+DAYTIME_COOLDOWN_SEC = 30
+
+# I thread non sono una scelta di compromesso fra velocità e calore:
+# sono una misura. Sulla M1 Pro, 4 thread danno un ASR più VELOCE di 8
+# (3,86x realtime contro 3,11x sul parlato reale), perché gli altri 4
+# core sono efficiency: non aggiungono lavoro, aggiungono contesa e
+# consumo termico. Sotto 4 il tempo peggiora davvero.
+#
+# Perciò il tetto è dichiarato qui e verificato da un test: nessuno
+# deve "mettere più thread perché tanto la macchina è libera" senza
+# sapere che sta rendendo più lento il lavoro e più caldo il portatile.
+MAX_THREADS = 4
+
 
 # ---------------------------------------------------------------------------
 # ASR — backend e modello
@@ -171,9 +209,19 @@ def _read_hf_token_from_file() -> str:
 
 @dataclass
 class ProsodyConfig:
-    # Numero di processi CPU paralleli per l'estrazione prosodica
-    # Su M1 Pro (6 perf core): 4 è sicuro mentre GPU lavora sull'ASR
-    num_workers: int = 4
+    # Numero di processi CPU paralleli per l'estrazione prosodica.
+    # La prosodia gira insieme all'ASR, quindi insieme a lui scalda:
+    # con l'ASR già limitato a N thread, la prosodia ne prende un paio.
+    # Il default è 2 perché il riscaldamento non è un dettaglio estetico: il
+    # portatile sotto un carico prolungato al 100% diventa scomodo da
+    # usare di giorno, e la notte e' l'unico momento in cui il lavoro
+    # viene fatto.
+    num_workers: int = field(
+        default_factory=lambda: (
+            int(os.environ["A2T_PROSODY_WORKERS"])
+            if os.environ.get("A2T_PROSODY_WORKERS") else 2
+        )
+    )
 
     # Parametri Praat/Parselmouth per F0 (pitch)
     f0_min_hz: float = 75.0    # Hz — limite inferiore pitch voce umana

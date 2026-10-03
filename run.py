@@ -363,7 +363,15 @@ def _resolve_global_speakers(
         if mapping:
             readable = {local: db.get_name(gid) for local, gid in mapping.items()}
             logger.info("Identità vocali: %s", readable)
-        names = {gid: db.get_name(gid) for gid in set(mapping.values())}
+        # Solo le voci con un nome vero: `GLOBAL_004: "GLOBAL_004"` nella
+        # mappa dei nomi è rumore che sembra un'informazione. Chi non ha
+        # nome resta pseudonimo, ed è la scelta giusta finché non gli si
+        # dà un nome.
+        names = {
+            gid: rec.get("name")
+            for gid, rec in db._data.get("speakers", {}).items()
+            if gid in set(mapping.values()) and rec.get("name")
+        }
         return mapping, names
     except OSError as exc:
         logger.warning(
@@ -373,16 +381,27 @@ def _resolve_global_speakers(
 
 
 def _speaker_names_for(cfg, global_ids: set[str]) -> dict[str, str]:
-    """Nomi umani già assegnati nel DB per gli ID indicati."""
+    """Nomi umani già assegnati nel DB delle voci per gli ID indicati.
+
+    Il DB delle voci è l'unica fonte dei nomi. Quando una sessione viene
+    rielaborata, il nome arriva da lì e non da una copia dentro il file
+    vecchio: è quello che distingue una copia che si aggiorna da una che
+    invecchia in silenzio.
+    """
     from core.speaker_db import SpeakerDB
 
     if not cfg.speaker_id.enabled or not global_ids:
         return {}
     try:
         db = SpeakerDB(path=cfg.speaker_id.db_path)
-        return {gid: db.get_name(gid) for gid in global_ids}
     except OSError:
         return {}
+    speakers = db._data.get("speakers", {})
+    return {
+        gid: speakers[gid]["name"]
+        for gid in global_ids
+        if (speakers.get(gid) or {}).get("name")
+    }
 
 
 def _write_speaker_profiles(cfg, output_dir: Path) -> None:
@@ -632,7 +651,33 @@ def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
     )
     logger.info("Output in: %s", output_dir)
 
+    # La sessione è finita: il WAV derivato non serve più. Senza questo
+    # la cache cresce di 115 MB per file (~4 GB al giorno con 18 file da
+    # un'ora) e il giorno in cui il disco si riempie la notte si ferma a
+    # metà, senza che nessuno lo venga a sapere. La pulizia è fatta qui,
+    # dopo l'ultimo uso, e non prima: cancellarla prima romperebbe la
+    # ripresa via checkpoint, che è l'unica difesa contro un'interruzione.
+    _purge_wav_cache()
+
     return True
+
+
+def _purge_wav_cache() -> None:
+    """Svuota la cache WAV di cio' che non serve piu'.
+
+    Non solleva mai: la pulizia è economia di disco, non un risultato.
+    Se il VAD non e' importabile (venv sbagliato) la notte deve andare
+    avanti lo stesso, e 4 GB in piu' sono un problema di domani.
+    """
+    try:
+        from pipeline.vad import purge_wav_cache
+    except ImportError as exc:  # pragma: no cover - difensivo
+        logger.debug("purge_wav_cache non disponibile: %s", exc)
+        return
+    try:
+        purge_wav_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Pulizia cache WAV saltata: %s", exc)
 
 
 # ---------------------------------------------------------------------------

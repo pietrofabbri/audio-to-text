@@ -1,7 +1,9 @@
 """
 setup_launchd.py — Installa il job notturno su macOS via launchd
 
-Crea un LaunchAgent che esegue la pipeline ogni notte dalle 03:00 alle 05:30.
+Crea un LaunchAgent che esegue la pipeline ogni notte dalle 02:00 alle
+06:00, piu' tre brevi passate diurne. Orario e durata stanno in
+core/config.py: questo file li legge, non li decide.
 launchd è il sistema di scheduling nativo di macOS: più affidabile di cron,
 funziona anche se il Mac era in sleep (si attiva al risveglio).
 
@@ -19,6 +21,27 @@ import plistlib
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Orario, finestra, thread e priorita' vivono in core/config.py: sono gli
+# stessi numeri che nightly.py usa a runtime. Prima erano scritti qui e
+# li' separatamente, con un valore discorde sulla durata della notte —
+# e la conseguenza era che il piano che leggi a mano e quello che gira
+# di notte erano due piani diversi per la stessa notte.
+from core.config import (  # noqa: E402
+    DAYTIME_BUDGET_SEC,
+    DAYTIME_COOLDOWN_SEC,
+    DAYTIME_HOURS,
+    DAYTIME_NICE,
+    DAYTIME_THREADS,
+    NIGHT_COOLDOWN_SEC,
+    NIGHT_NICE,
+    NIGHT_START_HOUR,
+    NIGHT_START_MINUTE,
+    NIGHT_THREADS,
+    NIGHT_WINDOW_SEC,
+)
 
 # ---------------------------------------------------------------------------
 # Configurazione del job
@@ -38,19 +61,17 @@ LABEL_DAYTIME = "it.pietrofabbri.audio-to-text-daytime"
 
 # --- Finestra notturna: pieno regime -------------------------------------
 # La macchina è libera e serve: 02:00 → 06:00.
-START_HOUR   = 2
-START_MINUTE = 0
-MAX_RUNTIME_HOURS = 4.0
+START_HOUR   = NIGHT_START_HOUR
+START_MINUTE = NIGHT_START_MINUTE
+MAX_RUNTIME_SEC = NIGHT_WINDOW_SEC
+MAX_RUNTIME_HOURS = NIGHT_WINDOW_SEC / 3600
 
 # --- Passate diurne: processo leggero in background ----------------------
 # Di giorno la macchina è in uso. Il lavoro diurna esiste per non lasciare
 # la coda ferma otto ore, ma è volutamente piccolo: budget breve, pochi
 # thread, priorità bassa. Se non serve, non costa quasi niente; se la
 # macchina è occupata, rallenta e basta.
-DAYTIME_HOURS = (9, 15, 21)      # tre passate brevi
-DAYTIME_BUDGET_MIN = 40           # minuti per passata
-DAYTIME_THREADS = 3               # thread CPU: lascia il resto al sistema
-DAYTIME_NICE = 15                 # priorità sotto la normale
+DAYTIME_BUDGET_MIN = DAYTIME_BUDGET_SEC // 60   # minuti per passata
 
 # Percorso plist LaunchAgent
 PLIST_DIR  = Path.home() / "Library" / "LaunchAgents"
@@ -68,7 +89,9 @@ def build_plist() -> dict:
         "ProgramArguments": [
             str(VENV_PYTHON),
             str(NIGHTLY_SCRIPT),
-            "--max-seconds", str(int(MAX_RUNTIME_HOURS * 3600)),
+            "--max-seconds", str(MAX_RUNTIME_SEC),
+            "--threads", str(NIGHT_THREADS),
+            "--cooldown-sec", str(NIGHT_COOLDOWN_SEC),
         ],
         # Esegui ogni notte alle START_HOUR:START_MINUTE
         "StartCalendarInterval": {
@@ -82,8 +105,9 @@ def build_plist() -> dict:
         # Priorità CPU bassa: di notte la macchina non serve a nessuno,
         # ma lascia comunque il sistema libero di gestire la priorità.
         "ProcessType": "Background",
+        "Nice": NIGHT_NICE,
         # Timeout esplicito (secondi) — margine oltre il budget interno
-        "TimeOut": int(MAX_RUNTIME_HOURS * 3600 + 1800),
+        "TimeOut": int(MAX_RUNTIME_SEC + 1800),
     }
 
 
@@ -98,12 +122,15 @@ def build_plist_daytime() -> dict:
     return {
         "Label": LABEL_DAYTIME,
         "ProgramArguments": [
-            "nice",
-            "-n", str(DAYTIME_NICE),
+            # niente "nice -n" wrapper: la priorita' la applica
+            # nightly.py, cosi' il comando a mano e quello di launchd
+            # si comportano allo stesso modo.
             str(VENV_PYTHON),
             str(NIGHTLY_SCRIPT),
-            "--max-seconds", str(DAYTIME_BUDGET_MIN * 60),
+            "--max-seconds", str(DAYTIME_BUDGET_SEC),
             "--threads", str(DAYTIME_THREADS),
+            "--nice", str(DAYTIME_NICE),
+            "--cooldown-sec", str(DAYTIME_COOLDOWN_SEC),
             "--no-publish",   # si pubblica di notte, quando la coda è intera
         ],
         "StartCalendarInterval": [
@@ -112,7 +139,7 @@ def build_plist_daytime() -> dict:
         "RunAtLoad": False,
         **_common_plist_fields(),
         "ProcessType": "Background",
-        "TimeOut": int(DAYTIME_BUDGET_MIN * 60 + 900),
+        "TimeOut": int(DAYTIME_BUDGET_SEC + 900),
     }
 
 
@@ -159,7 +186,9 @@ def install() -> None:
 
     print(f"\n✓ Job installato: {LABEL}")
     print(f"  Esecuzione ogni notte alle {START_HOUR:02d}:{START_MINUTE:02d}")
-    print(f"  Durata massima: {MAX_RUNTIME_HOURS} ore")
+    print(f"  Durata massima: {MAX_RUNTIME_HOURS:g} ore")
+    print(f"  {NIGHT_THREADS} thread, nice {NIGHT_NICE}, "
+          f"pausa {NIGHT_COOLDOWN_SEC}s fra un file e il successivo")
     print(f"  Log: {LOGS_DIR}/launchd_stdout.log")
 
     # Il passaggio diurno va installato con lo stesso comando: due job
@@ -189,7 +218,7 @@ def install_daytime() -> None:
     print(f"✓ Job diurno installato: {LABEL_DAYTIME}")
     print(f"  Passate alle {', '.join(f'{h:02d}:30' for h in DAYTIME_HOURS)}, "
           f"{DAYTIME_BUDGET_MIN} min ciascuna, {DAYTIME_THREADS} thread, "
-          f"priorita -{DAYTIME_NICE}")
+          f"priorita -{DAYTIME_NICE}, pausa {DAYTIME_COOLDOWN_SEC}s")
 
 
 def uninstall() -> None:
@@ -240,7 +269,7 @@ def main() -> None:
         print("Uso: python setup_launchd.py [install|uninstall|status|run-now]")
         print()
         print(f"  install    Installa i job: notturno ({START_HOUR:02d}:00, "
-              f"{MAX_RUNTIME_HOURS}h) e daytime ({DAYTIME_BUDGET_MIN}min x "
+              f"{MAX_RUNTIME_HOURS:g}h) e daytime ({DAYTIME_BUDGET_MIN}min x "
               f"{len(DAYTIME_HOURS)})")
         print("  uninstall  Rimuove entrambi i job")
         print("  status     Mostra stato dei job e ultime righe di log")

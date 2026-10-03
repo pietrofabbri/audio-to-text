@@ -17,11 +17,13 @@ riduce il carico ASR a ~10 ore effettive, dimezzando i tempi.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +32,109 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import ROOT_DIR  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cache WAV: pulizia
+# ---------------------------------------------------------------------------
+# I WAV derivati (16 kHz mono) sono temporanei per definizione: servono
+# solo finche' una sessione e' in corso. Tenuti per sempre occupavano
+# ~4 GB al giorno con 18 file da un'ora, e il giorno in cui il disco si
+# riempie la notte si ferma a meta' — che e' il modo peggiore in cui puo'
+# andare: si scopre solo dai log del mattino dopo.
+#
+# La regola di cancellazione e' deliberatamente conservativa: si butta
+# solo cio' che non serve a nessuna sessione riprendibile. Un checkpoint
+# incompleto ha ancora bisogno del suo WAV per riprendere, quindi la
+# funzione di pulizia non lo tocca — cancellarlo significherebbe
+# ricalcolare da capo il VAD e ripartire dal primo chunk.
+
+def wav_cache_dir() -> Path:
+    """Cartella dei WAV derivati. Nessun file sorgente li tocca: sono
+    sempre sotto ROOT_DIR, mai accanto all'audio sul registratore."""
+    return ROOT_DIR / "data" / "wav_cache"
+
+
+def _wav_status() -> dict[Path, bool]:
+    """Per ogni WAV citato da un checkpoint: True se la sessione è finita.
+
+    Il caso da distinguere è "sessione completa" (il WAV non serve più, si
+    cancella subito) da "sessione a metà" (il WAV serve per riprendere, non
+    si tocca). Un checkpoint illeggibile non viene contato come completo:
+    non si cancella nulla per un file che non si è riusciti a leggere.
+    """
+    out_dir = ROOT_DIR / "output"
+    status: dict[Path, bool] = {}
+    if not out_dir.is_dir():
+        return status
+
+    for ck_file in out_dir.glob("*/*.checkpoint.json"):
+        try:
+            data = json.loads(ck_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        stages = data.get("stages", {}) or {}
+        complete = bool(stages) and all((s or {}).get("done") for s in stages.values())
+        wav = (stages.get("ffmpeg") or {}).get("wav_path")
+        if wav:
+            status[Path(wav).resolve()] = complete
+    return status
+
+
+def purge_wav_cache(force: bool = False, min_age_sec: float = 6 * 3600) -> tuple[int, int]:
+    """Cancella i WAV derivati che non servono più.
+
+    Tre casi, in quest'ordine:
+
+    1. la sessione che li ha prodotti è finita → si cancella subito,
+       indipendentemente dall'età. È il caso normale e quello che tiene
+       la cache a un file solo;
+    2. nessun checkpoint li cita (una run interrotta prima di salvare, un
+       test) e sono più vecchi di `min_age_sec` → si cancella: sono
+       orfani, e orfani a 115 MB ciascuno sono ciò che riempie un disco;
+    3. la sessione è a metà → NON si cancella. Il checkpoint riprende da
+       lì, e senza WAV ripartirebbe dal primo chunk.
+
+    Args:
+        force: ignora `min_age_sec` e cancella anche gli orfani recenti.
+        min_age_sec: età minima per considerare orfano un WAV non citato.
+
+    Returns:
+        (n_file_cancellati, byte_liberati)
+    """
+    cache = wav_cache_dir()
+    if not cache.is_dir():
+        return 0, 0
+
+    status = _wav_status()
+    now = time.time()
+    n = 0
+    freed = 0
+
+    for p in cache.glob("*.wav"):
+        try:
+            rp = p.resolve()
+            complete = status.get(rp)
+            if complete is None:
+                # Non citato da nessun checkpoint: orfano, ma solo se
+                # ha avuto il tempo di diventarlo.
+                if not force and (now - p.stat().st_mtime) < min_age_sec:
+                    continue
+            elif not complete:
+                continue                  # sessione a metà: tiene
+            size = p.stat().st_size
+            p.unlink()
+        except OSError as exc:
+            # La pulizia non è mai un motivo per fermare la notte: se un
+            # file è in uso o il disco è strano, si logga e si va avanti.
+            logger.debug("WAV non cancellato (%s): %s", p.name, exc)
+            continue
+        n += 1
+        freed += size
+
+    if n:
+        logger.info("Cache WAV: cancellati %d file, %.1f MB liberati", n, freed / 1e6)
+    return n, freed
 
 
 @dataclass
@@ -120,7 +225,7 @@ class VoiceActivityDetector:
         # che sono temporanei, e la pull successiva li trovava come
         # registrazioni nuove, li elaborava e li cancellava dal device.
         # Su un volume exFAT da 18 ore è anche lentissimo.
-        wav_dir = ROOT_DIR / "data" / "wav_cache"
+        wav_dir = wav_cache_dir()
         wav_dir.mkdir(parents=True, exist_ok=True)
         # L'hash del percorso distingue due file omonimi che stanno in
         # cartelle diverse: senza, la cache del secondo riuserebbe quella

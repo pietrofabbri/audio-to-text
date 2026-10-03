@@ -255,6 +255,112 @@ def t_chunks_respect_the_clock_limit(tmp: Path) -> None:
           f"parlato {covered:.0f}/{total:.0f}s")
 
 
+def t_window_lives_in_one_place(tmp: Path) -> None:
+    """La finestra notturna deve essere un numero solo.
+
+    Prima stava in tre file e due non concordavano: lanciando
+    nightly.py a mano si otteneva una notte di 3 ore, mentre il job
+    launchd ne dava 4. Non rompeva niente — finche' un giorno ha
+    significato "la coda non si chiude" in due sensi diversi a seconda
+    di chi chiedeva.
+    """
+    print("  la finestra notturna e' un numero solo")
+    import nightly
+    import setup_launchd
+    from core.config import NIGHT_START_HOUR, NIGHT_WINDOW_SEC
+
+    require(nightly.DEFAULT_WINDOW_SEC == NIGHT_WINDOW_SEC,
+            f"nightly: {nightly.DEFAULT_WINDOW_SEC}s, config: {NIGHT_WINDOW_SEC}s")
+    require(setup_launchd.MAX_RUNTIME_SEC == NIGHT_WINDOW_SEC,
+            f"launchd: {setup_launchd.MAX_RUNTIME_SEC}s, config: {NIGHT_WINDOW_SEC}s")
+    require(setup_launchd.START_HOUR == NIGHT_START_HOUR,
+            "l'ora di avvio non coincide")
+
+    # E soprattutto: quello che il plist passa a nightly.py e' quello
+    # che nightly.py usa se lo lanci a mano senza argomenti.
+    argv = setup_launchd.build_plist()["ProgramArguments"]
+    i = argv.index("--max-seconds")
+    require(int(argv[i + 1]) == nightly.DEFAULT_WINDOW_SEC,
+            f"il plist passa {argv[i+1]}s, nightly usa {nightly.DEFAULT_WINDOW_SEC}s")
+    print(f"    {NIGHT_WINDOW_SEC // 3600}h dalle {NIGHT_START_HOUR:02d}:00, "
+          f"un posto solo")
+
+
+def t_thermal_budget_is_actually_passed_on(tmp: Path) -> None:
+    """Le impostazioni che limitano il calore devono arrivare alla
+    pipeline vera, non restare scritte in un plist che nessuno legge.
+
+    Un `--threads` che non arriva a faster-whisper e' un numero che
+    rassicura: la macchina si scalda lo stesso.
+    """
+    print("  il carico termico e' passato fino alla pipeline")
+    import setup_launchd
+    from core.config import (
+        DAYTIME_BUDGET_SEC, DAYTIME_THREADS, NIGHT_THREADS,
+    )
+
+    night = setup_launchd.build_plist()["ProgramArguments"]
+    day = setup_launchd.build_plist_daytime()["ProgramArguments"]
+
+    for argv, threads, label in ((night, NIGHT_THREADS, "notte"),
+                                 (day, DAYTIME_THREADS, "giorno")):
+        require("--threads" in argv, f"{label}: nessun --threads nel plist")
+        require(int(argv[argv.index("--threads") + 1]) == threads,
+                f"{label}: thread nel plist diverso dalla config")
+        require("--cooldown-sec" in argv, f"{label}: nessuna pausa di respiro")
+        require(threads < 8,
+                f"{label}: {threads} thread su 8 core, la macchina resta bollente")
+
+    # Il worker della prosodia e' un secondo carico parallelo: conta
+    # quanto ne mette insieme all'ASR.
+    from core.config import config as cfg
+    require(cfg.prosody.num_workers <= 2,
+            f"prosodia con {cfg.prosody.num_workers} worker: insieme all'ASR "
+            "fa più carico di quanto dichiarato")
+    require(int(day[day.index("--max-seconds") + 1]) == DAYTIME_BUDGET_SEC,
+            "il budget diurno nel plist non è quello della config")
+    print(f"    notte {NIGHT_THREADS} thread, giorno {DAYTIME_THREADS} thread, "
+          f"prosodia {cfg.prosody.num_workers} worker")
+
+
+def t_thread_cap_is_measured_not_guessed(tmp: Path) -> None:
+    """Il tetto di thread è una misura, non una scelta di buon senso.
+
+    Su questa macchina 4 thread danno un ASR più VELOCE di 8: gli altri
+    4 core sono efficiency e insieme ai primi fanno contesa, non lavoro.
+    Il test non può ripetere la misura (ci vorrerebbero minuti di CPU),
+    ma può impedire che il numero venga alzato "perché tanto la macchina
+    è libera": è esattamente il cambiamento che peggiorerebbe tempo e
+    temperatura insieme.
+    """
+    print("  il tetto di thread e' quello misurato")
+    from core.config import (
+        DAYTIME_THREADS, MAX_THREADS, NIGHT_THREADS, config as cfg,
+    )
+
+    require(NIGHT_THREADS <= MAX_THREADS,
+            f"notte: {NIGHT_THREADS} thread oltre il tetto misurato {MAX_THREADS}")
+    require(DAYTIME_THREADS <= MAX_THREADS,
+            f"giorno: {DAYTIME_THREADS} thread oltre il tetto {MAX_THREADS}")
+
+    # L'ASRConfig deve poter ricevere il limite dalla pipeline: un tetto
+    # che non arriva dove si usa non è un tetto.
+    import os
+    os.environ["A2T_ASR_THREADS"] = str(NIGHT_THREADS)
+    for mod in [m for m in sys.modules if m.split(".")[0] == "core"]:
+        sys.modules.pop(mod, None)
+    from core.config import ASRConfig  # noqa: PLC0415
+    try:
+        require(ASRConfig().cpu_threads == NIGHT_THREADS,
+                "A2T_ASR_THREADS non arriva a faster-whisper")
+    finally:
+        os.environ.pop("A2T_ASR_THREADS", None)
+        for mod in [m for m in sys.modules if m.split(".")[0] == "core"]:
+            sys.modules.pop(mod, None)
+    print(f"    tetto {MAX_THREADS} thread, notte {NIGHT_THREADS}, "
+          f"giorno {DAYTIME_THREADS}, prosodia {cfg.prosody.num_workers}")
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -264,6 +370,9 @@ def main() -> int:
         t_speech_ratio_learns_from_sessions,
         t_cost_model_matches_measurements,
         t_chunks_respect_the_clock_limit,
+        t_window_lives_in_one_place,
+        t_thermal_budget_is_actually_passed_on,
+        t_thread_cap_is_measured_not_guessed,
     ]
     failed = 0
     for fn in tests:

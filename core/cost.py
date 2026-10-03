@@ -25,7 +25,9 @@ porta a comprare una macchina che non serve.
 
 Tutte le costanti vengono da misure, non da ragionamenti. Cambiando
 modello ASR o hardware vanno rimisurate: sono il punto in cui questo
-modello invecchia.
+modello invecchia. Le misure qui dentro sono su 4 thread, che e' il
+numero con cui la pipeline gira davvero: misurare a 8 e poi stimare
+a 4 significa che ogni stima vale per una configurazione che non esiste.
 """
 
 from __future__ import annotations
@@ -40,10 +42,23 @@ VAD_SEC_PER_AUDIO_SEC = 1.0 / 33.0
 
 # --- costo per secondo di PARLATO ----------------------------------------
 
-# ASR faster-whisper large-v3-turbo su CPU INT8: 142 s per 9,9 min di
-# parlato = 4,18x realtime. E' la voce piu' forte del conto, e l'unica
-# che premia le registrazioni silenziose.
-ASR_SEC_PER_SPEECH_SEC = 1.0 / 4.18
+# ASR faster-whisper large-v3-turbo su CPU INT8, misurato su 10 chunk
+# e 166 s di parlato della registrazione vera:
+#
+#   8 thread -> 53,4 s  (3,11x realtime)
+#   4 thread -> 43,0 s  (3,86x realtime)   <- scelto
+#   3 thread -> 47,9 s  (3,47x realtime)
+#   2 thread -> 66,9 s  (2,48x realtime)
+#
+# Il dato che conta e' che 4 thread sono PIU' VELOCI di 8. Sulla M1 Pro
+# ci sono 4 core performance e 4 efficiency: usarli tutti insieme non
+# raddoppia il lavoro, aggiunge contesa e — soprattutto — tiene la CPU al
+# massimo del pacchetto termico per minuti, dopo i quali scende la
+# frequenza e va piu' piano di quanto andasse con la meta' dei core.
+# Limitare i thread e' dunque piu' veloce E piu' freddo: il risparmio
+# termico non e' il prezzo di un rallentamento, e' una parte di quello.
+# Sotto i 4 thread il tempo peggiora davvero, e con 2 si sente.
+ASR_SEC_PER_SPEECH_SEC = 1.0 / 3.86
 
 # --- costi fissi per file -------------------------------------------------
 

@@ -432,7 +432,24 @@ def cmd_pull(args) -> int:
     results = {"ok": 0, "failed": 0, "skipped": 0, "deleted": 0, "kept": 0, "junk": 0}
     budget = _Budget(args.max_seconds, simulate=args.dry_run)
 
+    # La pausa di respiro e' un compromesso, non un trucco. Non la si
+    # mette perche' "rallenta": la si mette perche' diciotto file da
+    # un'ora in quattro ore tengono il processore acceso al massimo per
+    # quattro ore, e quello che ne risente e' la macchina quando la si
+    # usa il giorno dopo. Il costo e' esplicito: si allunga la notte
+    # necessaria a svuotare la coda, e va detto adesso, non scoperto
+    # fra un mese. Chi preferisce la coda rapida passi --cooldown-sec 0.
+    cooldown = max(0.0, float(getattr(args, "cooldown_sec", 0.0) or 0.0))
+    if cooldown:
+        logger.info("Pausa di respiro fra un file e il successo: %.0fs", cooldown)
+
     for i, f in enumerate(files, 1):
+        # La pausa va PRIMA del controllo di budget: il tempo di respiro
+        # è tempo passato, e se non lo si conta il budget si consuma
+        # mentre la macchina è ferma a guardare.
+        if cooldown and i > 1:
+            budget.sleep(cooldown)
+
         # La finestra si controlla PRIMA di iniziare un file, non
         # durante: un file iniziato e non finito costerebbe il suo tempo
         # senza produrre niente, e il giorno dopo lo si rifarebbe da capo.
@@ -740,6 +757,21 @@ class _Budget:
             return False
         return self.remaining() < est
 
+    def sleep(self, seconds: float) -> None:
+        """Tempo di respiro fra due file.
+
+        In simulazione non si dorme davvero ma il tempo si conta lo
+        stesso: altrimenti un --dry-run mostrerebbe un piano che
+        non esiste, e il piano è la cosa che l'utente legge per
+        decidere se fidarsi.
+        """
+        if seconds <= 0:
+            return
+        if self.simulate:
+            self._time_done += seconds
+        else:
+            time.sleep(seconds)
+
     def finish_all(self) -> None:
         self.finished_file(self._current_est / max(self.rtf(), 0.01))
 
@@ -924,6 +956,13 @@ def main() -> int:
         "--max-seconds", type=int, default=0,
         help="budget di tempo: la coda si ferma fra un file e l'altro "
              "quando lo esaurisce (0 = nessun limite)",
+    )
+    p.add_argument(
+        "--cooldown-sec", type=float, default=0.0,
+        help="pausa di respiro fra un file e il successivo, in secondi. "
+             "Costa tempo di elaborazione e toglie calore: con una "
+             "macchina che si scalda, la coda avanza un po' meno ma la "
+             "macchina resta usabile di giorno. 0 = disattivata",
     )
     p.set_defaults(func=cmd_pull)
 

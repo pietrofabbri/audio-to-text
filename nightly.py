@@ -35,7 +35,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from core.config import ROOT_DIR  # noqa: E402
+from core.config import (  # noqa: E402
+    NIGHT_COOLDOWN_SEC,
+    NIGHT_NICE,
+    NIGHT_THREADS,
+    NIGHT_WINDOW_SEC,
+    ROOT_DIR,
+)
 from core.cost import estimate_seconds  # noqa: E402
 
 # Due radici distinte, per due scopi distinti. ROOT e' dove stanno gli
@@ -47,9 +53,18 @@ DATA_ROOT = ROOT_DIR
 
 logger = logging.getLogger("nightly")
 
-# Finestra notturna. launchd avvia il job alle 03:00 e lo ferma poco
-# dopo la mezzanotte: la macchina resta utilizzabile di giorno.
-DEFAULT_WINDOW_SEC = 3 * 3600
+# Finestra notturna. Il numero vive in core/config.py, letto sia da questo
+# file sia da setup_launchd.py: prima era scritto in due posti con due
+# valori diversi, e lanciando nightly.py a mano la finestra era piu'
+# corta di quella del job launchd — la stessa notte, due piani diversi.
+DEFAULT_WINDOW_SEC = NIGHT_WINDOW_SEC
+
+# Anche l'intensita' e' centralizzata: thread, priorita' e pausa di
+# respiro fra un file e il successo, cosi' il job launchd e la passata
+# manuale fanno lo stesso lavoro.
+DEFAULT_THREADS = NIGHT_THREADS
+DEFAULT_NICE = NIGHT_NICE
+DEFAULT_COOLDOWN_SEC = NIGHT_COOLDOWN_SEC
 
 # Il modello di costo vive in core/cost.py: separa i costi fissi per
 # file dai costi per secondo di parlato, ed e' tarato sulle registrazioni
@@ -60,6 +75,12 @@ DEFAULT_WINDOW_SEC = 3 * 3600
 # La costante che c'era prima, 0,76, veniva da novanta secondi di audio
 # di prova e sbagliava di un fattore due sul materiale vero.
 MEASURED_RTF = 0.27
+
+# Quanti secondi di cpu si lasciano accendere insieme. Non e' una
+# concessione alla macchina: 4 thread sono risultati PIU' veloci di 8
+# sulla M1 Pro (0,26 contro 0,32 sul parlato), perche' gli altri 4 core
+# sono efficiency e insieme ai primi non fanno lavoro, fanno contesa e
+# consumo. Vedere la tabella in core/cost.py.
 
 
 def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
@@ -79,9 +100,18 @@ def main() -> int:
     ap.add_argument("--source", help="percorso del device (default: rilevamento)")
     ap.add_argument("--limit", type=int, help="massimo file da prendere")
     ap.add_argument(
-        "--threads", type=int, default=0,
-        help="thread CPU per l'elaborazione (0 = automatico). Le passate "
-             "diurne ne usano pochi per non saturare la macchina",
+        "--threads", type=int, default=DEFAULT_THREADS,
+        help=f"thread CPU per l'elaborazione (default {DEFAULT_THREADS}: "
+             "non tutto il processore, per non scaldare la macchina)",
+    )
+    ap.add_argument(
+        "--nice", type=int, default=0,
+        help="abbassa la priorita' del processo (0 = lascia stare launchd)",
+    )
+    ap.add_argument(
+        "--cooldown-sec", type=float, default=0.0,
+        help=f"pausa di respiro fra un file e il successivo in secondi "
+             f"(0 = usa il default di {DEFAULT_COOLDOWN_SEC})",
     )
     ap.add_argument(
         "--no-publish", action="store_true",
@@ -95,11 +125,28 @@ def main() -> int:
 
     if args.threads and args.threads > 0:
         # Vale per faster-whisper (CTranslate2) e per i worker della
-        # prosodia: limitarli qui evita che una passata diurna si
-        # appropri dei core mentre la macchina serve qualcun altro.
+        # prosodia: limitarli qui evita che una passata si appropri dei
+        # core tutti e lasci la macchina bollente per il resto della
+        # giornata. Non e' una prestazione che si ottiene per free — si
+        # paga in tempo di elaborazione, e il tempo si misura in code
+        # che avanzano piu' lentamente.
         os.environ["OMP_NUM_THREADS"] = str(args.threads)
         os.environ["CT2_NUM_THREADS"] = str(args.threads)
-        logger.info("Thread CPU limitati a %d (passata diurna)", args.threads)
+        logger.info("Thread CPU limitati a %d", args.threads)
+
+    # La priorita' la si abbassa anche quando si lancia a mano: il
+    # termico non deve dipendere da chi ha lanciato il comando.
+    nice_target = args.nice or DEFAULT_NICE
+    if nice_target > 0:
+        try:
+            os.nice(nice_target)
+            logger.info("Priorita' abbassata di %d (nice)", nice_target)
+        except (OSError, PermissionError) as exc:
+            # nice() su un processo non alleviato e' un errore, non un
+            # motivo per non elaborare nulla.
+            logger.debug("nice(%d) non applicato: %s", nice_target, exc)
+
+    cooldown = args.cooldown_sec if args.cooldown_sec > 0 else DEFAULT_COOLDOWN_SEC
 
     logging.basicConfig(
         level=logging.INFO,
@@ -150,6 +197,11 @@ def main() -> int:
         pull += ["--limit", str(args.limit)]
     if args.dry_run:
         pull.append("--dry-run")
+    # La pausa di respiro la applica sync_device, che e' dove i file
+    # vengono presi uno alla volta: qui non ha un file fra le mani.
+    os.environ["A2T_COOLDOWN_SEC"] = str(cooldown)
+    if cooldown > 0:
+        pull += ["--cooldown-sec", str(cooldown)]
 
     logger.info("--- 1/2 import ed elaborazione ---")
     code_pull, out_pull = _run(pull)

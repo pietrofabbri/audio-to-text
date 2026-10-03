@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS speakers (
     global_id  TEXT PRIMARY KEY,
-    name       TEXT             -- nome umano, NULL se non assegnato
+    name       TEXT             -- nome umano, NULL se non assegnato.
+                               -- Copia: la fonte è data/speakers_db.json,
+                               -- allineata con CorpusDB.sync_speaker_names()
 );
 
 -- Chi ha parlato quando, con quanto materiale e con che prosodia.
@@ -456,6 +458,46 @@ class CorpusDB:
         self.conn.commit()
         logger.info("Corpus di riferimento '%s': %d token", name, len(words))
         return len(words)
+
+    # ------------------------------------------------------------------
+    # Nomi dei parlanti
+    # ------------------------------------------------------------------
+
+    def sync_speaker_names(self, names: dict[str, str | None]) -> int:
+        """Allinea la tabella `speakers` a {GLOBAL_00x: nome}.
+
+        Il nome è di proprietà del DB delle voci (`data/speakers_db.json`),
+        non di questo database: qui finisce la copia che le query del
+        corpus usano. Senza questo allineamento, rinominare una voce
+        lascia le query su `GLOBAL_001` per sempre, e il rename sembra
+        non essere successo.
+
+        Returns:
+            quante righe sono cambiate davvero. Le voci senza nome
+            diventano NULL: è preferibile un NULL onesto a un
+            pseudonimo memorizzato nella colonna `name`, che sembrerebbe
+            un nome e non lo è.
+        """
+        changed = 0
+        for gid, name in names.items():
+            row = self.conn.execute(
+                "SELECT name FROM speakers WHERE global_id = ?", (gid,)
+            ).fetchone()
+            wanted = (name or None)
+            if row is None:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO speakers(global_id, name) VALUES(?, ?)",
+                    (gid, wanted),
+                )
+                continue
+            if row["name"] == wanted:
+                continue
+            self.conn.execute(
+                "UPDATE speakers SET name = ? WHERE global_id = ?", (wanted, gid)
+            )
+            changed += 1
+        self.conn.commit()
+        return changed
 
     # ------------------------------------------------------------------
     # Query

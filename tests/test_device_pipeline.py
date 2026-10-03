@@ -13,6 +13,7 @@ quanto quelli positivi.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -358,7 +359,249 @@ def test_fallback_stem_is_unique_per_file(tmp: Path) -> None:
     assert sd._stem_for(tmp / "y.mp3", dt) == "2026-10-03_22-04-15"
 
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Cache WAV: la pulizia non deve rompere la ripresa
+# -------------------------------------------------------------------
+
+def _checkpoint(root: Path, stem: str, wav: Path, done: bool) -> Path:
+    """Scrive un checkpoint finto nella forma che produce la pipeline."""
+    job = root / "output" / stem
+    job.mkdir(parents=True, exist_ok=True)
+    p = job / f"{stem}.checkpoint.json"
+    p.write_text(json.dumps({
+        "stem": stem,
+        "stages": {
+            "ffmpeg": {"done": True, "wav_path": str(wav)},
+            "vad": {"done": True},
+            "transcription": {"done": done},
+            "diarization": {"done": done},
+            "prosody": {"done": done},
+            "assembly": {"done": done},
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def _wav(tmp: Path, name: str, root: Path, size: int = 1024) -> Path:
+    cache = root / "data" / "wav_cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    p = cache / name
+    p.write_bytes(b"x" * size)
+    return p
+
+
+def _vad_under(root: Path):
+    """Importa pipeline.vad con ROOT_DIR che punta a `root`.
+
+    Rileggerlo da solo non basta: ROOT_DIR viene calcolato in
+    core.config all'import, e se quel modulo è già in sys.modules il
+    reload di vad rillega la costante vecchia — cioè la cartella di
+    produzione. Un test che gira sulla cache vera è peggio di un test
+    che non gira.
+    """
+    import importlib
+    os.environ["A2T_ROOT_DIR"] = str(root)
+    for mod in [m for m in sys.modules if m.split(".")[0] in ("core", "pipeline")]:
+        sys.modules.pop(mod, None)
+    return importlib.import_module("pipeline.vad")
+
+
+def test_purge_keeps_wav_of_unfinished_session(tmp: Path) -> None:
+    """La regola che conta: un checkpoint incompleto ha ancora bisogno
+    del suo WAV. Cancellarlo significa ricominciare dal primo chunk, e
+    il lavoro di notte è buttato."""
+    root = tmp / "root"
+    wav = _wav(tmp, "a.mp3_deadbeef_16k.wav", root)
+    _checkpoint(root, "a", wav, done=False)
+
+    vad = _vad_under(root)
+    try:
+        n, _ = vad.purge_wav_cache()
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert n == 0, "un WAV di sessione incompleta non si cancella"
+    assert wav.exists(), "checkpoint incompleto: il WAV deve restare"
+
+
+def test_purge_removes_wav_of_finished_session(tmp: Path) -> None:
+    """Finita la sessione il WAV non serve piu'. Se resta, la cache
+    cresce di 115 MB per file e il disco si riempie in qualche mese."""
+    root = tmp / "root"
+    wav = _wav(tmp, "b.mp3_cafebabe_16k.wav", root)
+    _checkpoint(root, "b", wav, done=True)
+
+    vad = _vad_under(root)
+    try:
+        n, freed = vad.purge_wav_cache()
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert n == 1, "il WAV di una sessione finita va cancellato"
+    assert freed >= 1024, freed
+    assert not wav.exists()
+
+
+def test_purge_removes_orphans_but_only_when_old_enough(tmp: Path) -> None:
+    """Un WAV che nessun checkpoint cita e' orfano. Orfano vuol dire
+    che nessuno lo riapre: si butta, ma non se e' appena stato scritto,
+    perche' potrebbe essere una run ancora in corso."""
+    root = tmp / "root"
+    vecchio = _wav(tmp, "vecchio_16k.wav", root)
+    recente = _wav(tmp, "recente_16k.wav", root)
+    vecchio_time = time.time() - 12 * 3600
+    os.utime(vecchio, (vecchio_time, vecchio_time))
+
+    vad = _vad_under(root)
+    try:
+        n, _ = vad.purge_wav_cache()
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+    assert not vecchio.exists(), "orfano di 12 ore: va buttato"
+    assert recente.exists(), "orfano di pochi secondi: puo' essere una run in corso"
+    assert n == 1
+
+
+def test_purge_on_missing_cache_is_noop(tmp: Path) -> None:
+    root = tmp / "vuoto"
+    root.mkdir()
+    vad = _vad_under(root)
+    try:
+        assert vad.purge_wav_cache() == (0, 0)
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+
+
+# -------------------------------------------------------------------
+# Nomi dei parlanti: fonte unica
+# -------------------------------------------------------------------
+
+def test_rename_propagates_to_corpus_and_sessions(tmp: Path) -> None:
+    """Rinominare una voce deve aggiornare anche il materiale gia'
+    scritto. Prima il rename valeva solo da quel momento in poi, e le
+    sessioni vecchie continuavano a dire GLOBAL_001."""
+    import importlib
+    from core.speaker_db import SpeakerDB
+
+    root = tmp / "root"
+    spk_db_path = root / "data" / "speakers_db.json"
+    spk_db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    db = SpeakerDB(path=spk_db_path)
+    db._data["speakers"] = {
+        "GLOBAL_001": {"name": None, "centroid": [], "sessions": {}},
+        "GLOBAL_002": {"name": None, "centroid": [], "sessions": {}},
+    }
+    db.save()
+    db.set_name("GLOBAL_001", "Pietro")
+
+    # una sessione gia' scritta che contiene GLOBAL_001 e GLOBAL_002
+    job = root / "output" / "s1"
+    job.mkdir(parents=True, exist_ok=True)
+    for fname, doc in (
+        ("session.json", {"stem": "s1",
+                          "speaker_names": {"GLOBAL_001": "GLOBAL_001"},
+                          "speakers": {"GLOBAL_001": {"segments_count": 2},
+                                       "GLOBAL_002": {"segments_count": 1}}}),
+        ("transcript.json", {"meta": {"stem": "s1",
+                                      "speakers": ["GLOBAL_001", "GLOBAL_002"],
+                                      "speaker_names": {"GLOBAL_001": "GLOBAL_001"}},
+                             "segments": [{"idx": 0, "speaker": "GLOBAL_001",
+                                           "start": 0.0, "end": 1.0,
+                                           "text": "ciao"}]}),
+    ):
+        (job / fname).write_text(json.dumps(doc, ensure_ascii=False),
+                                 encoding="utf-8")
+
+    corpus_path = root / "data" / "corpus.db"
+    corpus_path.parent.mkdir(parents=True, exist_ok=True)
+    with CorpusDB(corpus_path) as cdb:
+        cdb.ingest_session("s1", json.loads((job / "transcript.json").read_text()),
+                           {})
+        sync = importlib.import_module("core.speaker_sync")
+        report = sync.sync_speaker_names(
+            output_dir=root / "output", db=SpeakerDB(path=spk_db_path), corpus_db=cdb,
+        )
+        row = cdb.query("SELECT name FROM speakers WHERE global_id='GLOBAL_001'")[0]
+
+    assert row["name"] == "Pietro", "corpus.db deve aggiornarsi al sync"
+    assert report["sessions_updated"] == 1, report
+
+    sess = json.loads((job / "session.json").read_text(encoding="utf-8"))
+    assert sess["speaker_names"] == {"GLOBAL_001": "Pietro"}, sess["speaker_names"]
+
+    tr = json.loads((job / "transcript.json").read_text(encoding="utf-8"))
+    # Solo le voci nominate: GLOBAL_002 non ha nome e non viene
+    # inventato un "GLOBAL_002: GLOBAL_002" che sembrerebbe un nome.
+    assert tr["meta"]["speaker_names"] == {"GLOBAL_001": "Pietro"}, tr["meta"]["speaker_names"]
+
+
+def test_sync_is_idempotent_and_leaves_other_speakers_alone(tmp: Path) -> None:
+    """Il sync non deve riscrivere file che sono gia' allineati: sono
+    file che l'utente puo' avere aperto, e una riscrittura a ogni sync
+    e' rumore che poi sembra un'attivita'."""
+    import importlib
+    from core.speaker_db import SpeakerDB
+
+    root = tmp / "root"
+    p = root / "data" / "speakers_db.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    db = SpeakerDB(path=p)
+    db._data["speakers"] = {"GLOBAL_001": {"name": "Pietro", "centroid": [], "sessions": {}}}
+    db.save()
+
+    job = root / "output" / "s1"
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "session.json").write_text(
+        json.dumps({"stem": "s1", "speaker_names": {"GLOBAL_001": "Pietro"}}),
+        encoding="utf-8")
+
+    sync = importlib.import_module("core.speaker_sync")
+    before = (job / "session.json").stat().st_mtime_ns
+    report = sync.sync_speaker_names(output_dir=root / "output", db=SpeakerDB(path=p))
+    after = (job / "session.json").stat().st_mtime_ns
+
+    assert before == after, "il file era gia' allineato: non deve essere riscritto"
+    assert report["files_updated"] == 0, report
+
+
+def test_sync_does_not_touch_corrupt_session(tmp: Path) -> None:
+    """Un file di sessione corrotto non si deve perdere e non si deve
+    far fallire il sync delle altre: il resto del materiale è valido."""
+    import importlib
+    from core.speaker_db import SpeakerDB
+
+    root = tmp / "root"
+    p = root / "data" / "speakers_db.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    db = SpeakerDB(path=p)
+    db._data["speakers"] = {"GLOBAL_001": {"name": "Pietro", "centroid": [], "sessions": {}}}
+    db.save()
+
+    rotto = root / "output" / "rotto"
+    rotto.mkdir(parents=True, exist_ok=True)
+    (rotto / "session.json").write_text("{non è json", encoding="utf-8")
+
+    sync = importlib.import_module("core.speaker_sync")
+    report = sync.sync_speaker_names(output_dir=root / "output", db=SpeakerDB(path=p))
+    assert report["sessions_updated"] == 0, report
+    assert (rotto / "session.json").read_text(encoding="utf-8") == "{non è json"
+
+
+def test_corpus_db_name_sync_sets_null_not_pseudonym(tmp: Path) -> None:
+    """Rimuovere un nome deve scrivere NULL, non il pseudonimo: nella
+    colonna 'name' un valore che sembra un nome e non lo e' e' peggio
+    di nessun valore."""
+    with CorpusDB(tmp / "c.db") as db:
+        db.sync_speaker_names({"GLOBAL_001": "Pietro"})
+        assert db.sync_speaker_names({"GLOBAL_001": "Pietro"}) == 0, "nessun cambiamento"
+        assert db.sync_speaker_names({"GLOBAL_001": None}) == 1
+        row = db.query("SELECT name FROM speakers WHERE global_id='GLOBAL_001'")[0]
+        assert row["name"] is None, dict(row)
+
+
+# -------------------------------------------------------------------
 
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
@@ -367,6 +610,14 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as d:
             try:
                 fn(Path(d))
+                # Un test che ha ricaricato i moduli con una radice
+                # temporanea li lascia cosi' per il test successivo: il
+                # verdeware seguente scriverebbe dentro la cartella
+                # temporanea invece che in quella giusta, e nessuno se
+                # ne accorgerebbe.
+                for mod in [m for m in sys.modules
+                            if m.split(".")[0] in ("core", "pipeline")]:
+                    sys.modules.pop(mod, None)
             except AssertionError as exc:
                 print(f"FAIL  {fn.__name__}: {exc}")
                 failed += 1
