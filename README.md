@@ -361,7 +361,40 @@ python review_speakers.py sync                 # riallinea i nomi ovunque
 python review_speakers.py sync --dry-run       # cosa cambierebbe
 python review_speakers.py consolidate          # rifonde i cluster troppo brevi
 python review_speakers.py consolidate --dry-run
+python review_speakers.py voices               # ogni voce, e dove l'hai sentita
+python review_speakers.py voices --tutto       # anche tutte le coppie
 ```
+
+### La stessa persona, vista da tutte le sessioni
+
+`voices` raccoglie in una tabella quello che i singoli file non possono
+mostrare: **dove hai incontrato ogni persona**.
+
+```
+GLOBAL_001    51.3 min  in 19-42  20-44  21-44  22-44
+GLOBAL_004    33.0 min  in 19-42  20-44
+GLOBAL_018    17.7 min  in 21-44  22-44
+```
+
+Le colonne sono le sessioni, non i file: la stessa identità che compare
+in tre giornate diverse è **un interlocutore**, e senza questa vista il
+conteggio delle persone che hai incontrato è sbagliato per costruzione.
+
+Sotto, la parte che serve per decidere. La soglia 0,78 è un numero che
+divide due cose che non hanno una divisione netta, e le coppie che gli
+stanno addosso sono quelle che la macchina non può decidere:
+
+```
+Coppie entro 0,06 dalla soglia (6):
+  0.771  GLOBAL_004[20-44] x GLOBAL_018[21-44]
+  0.738  GLOBAL_006[19-42] x GLOBAL_013[20-44]
+```
+
+Sono le uniche che ti chiedono un giudizio. Ogni coppia sopra la soglia
+è già stata unita, e ogni coppia sotto è già stata tenuta separata: qui
+il numero non basta, e va detto tu. Sono anche le coppie da cui si impara
+— se sono due persone diverse che si somigliano, o la stessa persona
+che la diarizzazione ha spezzato, lo vedi in un colpo.
 
 **Il nome vive in un posto solo.** La fonte è
 `data/speakers_db.json` (locale, mai nel repo: sono dati biometrici).
@@ -422,8 +455,13 @@ decidere — è lì che serve un nome. La soglia di 0,78 sta sopra quella
 fascia e sotto la coppia certa: si può cambiare con
 `review_speakers.py threshold 0.70`, ma conviene aspettare più materiale
 prima, perché i centroidi diventano più affidabili con le ore accumulate.
-Oggi c'è una sola voce registrata, quindi la soglia non è ancora
-valutabile: servono almeno due persone che parlino nel registratore.
+
+`voices` dice ora se quella soglia regge. Su 16 campioni e 109 coppie
+**nessuna è sopra 0,78**, e sei sono entro 0,06 dalla linea: la soglia
+non ha mai unito niente per errore, ma non ha nemmeno mai unito niente
+per giusto. Finché non arrivano voci che si somiglino davvero, 0,78 resta
+una scelta prudente più che una soglia tarata — e le sei coppie in zona
+grigia sono la misura reale di quanto quella prudenza stia aspettando.
 
 Quando il registratore è collegato, tutto il ciclo è in un comando:
 
@@ -661,6 +699,80 @@ linea a ogni segmento, perché un LLM non chiede cosa non deve usare.
 
 ---
 
+## Correggere le parole: un modello di lingua al posto dell'acustica
+
+Whisper sbaglia le parole in modo prevedibile: fonemi scambiati, parole
+dialettali rese in italiano, nomi proprii storpiati. In una conversazione
+dell'2 ottobre: «Savot», «stegnavano a telefono», «matiala vera». Sono
+errori che si riconoscono dal contesto, e un modello di lingua li
+corregge senza fatica — nessun modello acustico li corregge, perché
+l'informazione che manca non è nel suono: è che «maiala vera» è una
+frase che esiste.
+
+```bash
+python correct_text.py                          # cosa verrebbe fatto
+python correct_text.py --dry --limit 5          # cinque correzioni, niente scritto
+python correct_text.py --consent                # scrive davvero
+python correct_text.py --consent --session 19-42-33
+```
+
+**Serve `--consent` perché è una decisione, non un dettaglio.** Ogni
+segmento mandate a un'API porta fuori dal portatile il testo di una
+conversazione personale. Tutto il resto di questa pipeline è costruito
+perché i dati non escano — i nomi reali non arrivano al corpus
+pubblico. Mandare il testo a un servizio esterno è una scelta diversa, e
+non la prende uno script per abitudine. Senza `--consent` il comando
+mostra cosa farebbe e si ferma.
+
+La chiave si chiama `GOOGLE_API_KEY` e va nell'ambiente:
+
+```bash
+export GOOGLE_API_KEY="..."
+pip install google-genai
+```
+
+### Il numero di parole non può cambiare
+
+È la regola che tiene la cosa onesta. Il modello può correggere,
+riscrivere, riorganizzare — ma non può aggiungere o togliere parole,
+e ogni correzione è annotata. Se il numero cambia, la risposta si
+scarta e si dice perché.
+
+Il motivo non è la pedanteria. Una riscrittura produce un testo che
+sembra *più buono* e che non è più quello che è stato detto: il modello,
+vedendo «stegnavano a telefono», può scrivere «segnavano al telefono» —
+probabilmente giusto — ma può anche scrivere «segnavano i telefoni»,
+che è inventato, e i due testi sono indistinguibili a chi li legge
+dopo. In un corpus che vuole misurare la propria voce, un testo
+inventato è **peggio** di un testo sbagliato: lo sbagliato almeno si
+riconosce.
+
+Perciò il risultato è affiancato, non sostitutivo. Ogni parola
+conserva originale, correzione e se è cambiata:
+
+```json
+{"i": 6, "raw": "matiala", "fixed": "maiala", "changed": true}
+```
+
+Senza il confronto fra le due forme uno dei due errori sparisce, e non
+sai quale. Con entrambi hai la misura vera della qualità della
+trascrizione: quanto sbaglia Whisper e quanto sbaglia il correttore.
+
+### Quello che il correttore non fa
+
+Non ricostruisce le frasi incomplete. Se un segmento sembra mozzato,
+corregge le parole che ci sono e lascia il resto com'è. I segmenti che
+non tornano — risposta illeggibile, parole non allineate, chiamata
+fallita — restano **grezzi**, e il file dice quali e perché: un
+segmento non corretto non è un errore, è un segmento di cui non ci si
+fida.
+
+Ogni giro registra un'impronta del testo, quindi un tentativo
+interrotto a metà non si paga due volte e non corregge due volte lo
+stesso testo.
+
+---
+
 `speaker_local` (ID della sessione) e `speaker_names` (nome umano se
 assegnato, **in locale**). La soglia di match è `match_threshold` in
 `core/config.py` (default 0.78): più alta = più conservativo. Sopra la
@@ -800,7 +912,8 @@ audio-to-text/
 ├── nightly.py              # ciclo notturno: importa, elabora, pubblica
 ├── sync_device.py          # import dal registratore + cancellazione sicura
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
-├── review_speakers.py      # chi è chi: nomi, merge, split, sync delle voci
+├── review_speakers.py      # chi è chi: nomi, merge, split, sync, matrice
+├── correct_text.py         # correzione delle parole con un LLM (serve --consent)
 ├── thermal_probe.py        # misura il riscaldamento durante una run
 ├── setup_env.sh            # installa dipendenze
 ├── setup_launchd.py        # scheduling notturno macOS
@@ -812,6 +925,9 @@ audio-to-text/
 │   ├── device.py           # rilevamento registratore e orario nei nomi file
 │   ├── speaker_db.py       # identità vocali persistenti cross-file
 │   ├── speaker_sync.py     # allineamento dei nomi al materiale già scritto
+│   ├── speakers_merge.py   # fusione dei cluster troppo brevi
+│   ├── voice_matrix.py     # somiglianza fra voci di sessioni diverse
+│   ├── text_correction.py  # correzione del testo con Gemini, affiancata
 │   └── corpus_db.py        # indice SQLite locale per le analisi
 ├── pipeline/
 │   ├── vad.py              # Voice Activity Detection

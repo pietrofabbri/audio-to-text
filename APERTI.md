@@ -541,6 +541,87 @@ risultato. Le quattro sessioni hanno 4/5/6/3 voci dove prima erano
 
 ---
 
+### 20. ~~Le parole sbagliate~~ — chiuso
+
+**Stato.** Chiuso. Su quattro ore di conversazione Whisper sbagliava
+parole in modo sistematico: «Savot», «stegnavano a telefono», «matiala
+vera», «Botanic». Non a caso — sono fonemi scambiati e parole dialettali
+rese in italiano, errori che si riconoscono dal contesto e che un
+modello di lingua corregge, mentre nessun modello acustico li corregge:
+l'informazione che manca non e' nel suono, e' che «maiala vera» e' una
+frase che esiste.
+
+**La regola che tiene la cosa onesta e' una sola: il numero di parole non
+puo' cambiare.** Il modello puo' correggere, riscrivere, riorganizzare,
+ma non aggiungere o togliere parole. Non e' pedanteria: una riscrittura
+produce un testo che sembra *piu' buono* e che non e' piu' quello detto,
+e i due sono indistinguibili a chi legge dopo. In un corpus che vuole
+misurare la propria voce un testo inventato e' peggio di un testo
+sbagliato, perche' lo sbagliato almeno si riconosce. Percio' l'elenco
+delle correzioni non puo' eccedere la lista delle parole, e una risposta
+che punta fuori dal testo viene scartata invece che applicata — anche
+perche' un modello che ha diviso diversamente il testo produce due
+elenchi uguali ma allineati in modo diverso, e applicare comunque
+sposterebbe ogni parola di un segmento su quella del successivo.
+
+**Perche' affiancato e non sostitutivo.** Ogni parola conserva originale,
+correzione e se e' cambiata. Senza il confronto uno dei due errori
+sparisce e non si sa quale; con entrambi si ha la misura vera della
+qualita' della trascrizione — quanto sbaglia Whisper e quanto sbaglia il
+correttore.
+
+**Perche' `--consent`.** Ogni segmento mandate a un'API porta fuori dal
+portatile il testo di una conversazione personale. Tutto il resto della
+pipeline e' costruito perché i dati non escano; mandare il testo a un
+servizio esterno e' una scelta diversa e non la prende uno script per
+abitudine. Senza `--consent` il comando mostra cosa farebbe e si ferma.
+
+**Tre difetti incontrati strada facendo, tutti veri.** Il flag per-parola
+diceva «cambiata» anche quando il testo non era cambiato, perche' la
+punteggiatura veniva gestita due volte: lo strumento di misura mentiva
+proprio nel caso che non accaderebbe mai, il meno interessante. E se il
+modello ripeteva la punteggiatura, «sera.» diventava «sera..». Poi una
+risposta JSON valida ma fatta di lista faceva fallire il chiamante su
+un `.get` che su una lista non esiste — crash, non scarto.
+
+**Verificato.** 15 test sulla correzione, 9 sulla matrice delle voci, 158
+in tutto su 11 suite. Il percorso di rete provato davvero: la chiamata
+a Gemini parte, la chiave finta fa fallire la chiamata, il segmento
+resta grezzo con il motivo dichiarato.
+
+---
+
+### 21. ~~Le voci viste una sessione alla volta~~ — chiuso
+
+**Stato.** Chiuso. Ogni file dice quante voci ha, ma nessuno dice **dove
+hai incontrato ogni persona**: l'informazione era sparsa in quattro
+sessioni e nessuno la metteva insieme. Il raggruppamento trasversale
+esiste (`review_speakers.py voices`) e mostra ogni voce con le sessioni in
+cui compare e i secondi totali.
+
+**Perche' conta piu' di quanto sembri.** Una persona incontrata in tre
+giornate diverse e' un interlocutore. Senza questa vista il numero delle
+persone che hai incontrato e' sbagliato per costruzione, ed e' lo stesso
+difetto della sovrasegmentazione, una scala piu' piccola.
+
+**Il dato che chiude il punto 10.** Su 16 campioni e 109 coppie nessuna e'
+sopra 0,78, e sei sono entro 0,06 dalla linea. La soglia non ha mai unito
+niente per errore — ma nemmeno mai unito niente per giusto. Finche' non
+arrivano voci che si somigliano davvero, 0,78 resta una scelta prudente
+piu' che una soglia tarata, e le sei coppie in zona grigia sono la misura
+reale di quanto quella prudenza stia aspettando.
+
+**Una coppia che non si confronta con se stessa.** Il confronto ha senso
+solo fra due osservazioni diverse: se lo stesso campione entrasse due
+volte avrebbe somiglianza 1.0 e finirebbe dritto sopra la soglia, e la
+matrice direbbe «questa persona e' sicuramente qualcun altro» guardandola
+allo specchio.
+
+**Verificato.** 9 test sulla matrice. `voices` sui dati veri: 9 voci,
+16 campioni, 109 coppie, 6 in zona grigia.
+
+---
+
 ## L'ordine in cui li farei
 
 Fatti: **2** (cache WAV), **3** (finestra unica), **4** (nomi),
@@ -553,9 +634,16 @@ e il carico termico.
    una notte vera. Se `unreliable` è sotto il 5% il flag è tarato
    bene; se è sopra il 30%, le soglie vanno alzate prima che il flag
    diventi rumore, che è il suo unico modo di morire.
-3. **10 — la soglia**, quando ci sarà la seconda voce.
+3. **10 — la soglia**, quando ci sarà la seconda voce. Le sei coppie in
+   zona grigia dicono quanto manca: finche' sono tutte sotto, la soglia
+   non e' tarata, e basta.
 4. **15 — il termico**, con `powermetrics` e una notte di misura.
 5. **8 — biometria.** Quando arriva l'hardware.
+
+Da fare prima dell'analisi sul testo: girare `correct_text.py` sulle
+quattro sessioni. Tutto quello che segue — conteggio delle parole,
+sentiment, sintesi — va fatto sul testo corretto, perche' sul testo
+grezzo il conteggio delle parole sbaglia.
 
 Il resto può aspettare che il sistema abbia girato qualche notte e
 accumulato dati su cui decidere.
