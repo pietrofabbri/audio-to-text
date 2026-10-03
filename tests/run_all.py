@@ -41,6 +41,8 @@ FAST = [
     ([sys.executable, str(HERE / "test_thermal.py")], "protezione termica"),
     ([sys.executable, str(HERE / "test_speaker_assignment.py")], "collegamento testo-voce"),
     ([sys.executable, str(HERE / "test_speakers_merge.py")], "fusione cluster deboli"),
+    ([sys.executable, str(HERE / "test_voice_matrix.py")], "matrice delle voci"),
+    ([sys.executable, str(HERE / "test_text_correction.py")], "correzione del testo"),
 ]
 
 

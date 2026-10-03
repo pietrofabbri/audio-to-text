@@ -417,6 +417,46 @@ def _speaking_seconds(segmenti):
     return speaking_seconds(segmenti)
 
 
+def cmd_voices(db: SpeakerDB, args) -> int:
+    """Matrice di somiglianza fra le voci, voce per voce.
+
+    Il DB delle voci tiene un solo numero per persona: il centroide, la
+    media di tutte le sessioni. E' il numero giusto per riconoscere e il
+    numero sbagliato per capire, perche' una media non e' una voce. Qui
+    invece si confrontano le voci come sono state udite in ciascuna
+    sessione, quindi si vede di quanto una persona cambia da un giorno
+    all'altro — e soprattutto quali coppie la soglia non riesce a
+    decidere.
+    """
+    import json
+
+    from core.config import OUTPUT_DIR
+    from core.voice_matrix import build_matrix, format_report, load_samples
+
+    campioni = load_samples(OUTPUT_DIR)
+    if not campioni:
+        print(f"Nessun campione vocale in {OUTPUT_DIR}. Serve almeno una "
+              "sessione con diarizzazione e identita' globali.")
+        return 1
+
+    rep = build_matrix(campioni, soglia=db.threshold)
+    print(format_report(rep, mostra_tutto=getattr(args, "tutto", False)))
+
+    out = getattr(args, "json", None)
+    if out:
+        Path(out).write_text(
+            json.dumps(rep.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"\nScritto: {out}")
+
+    zona = rep.zona_grigia()
+    if zona:
+        print(f"\n{zona and len(zona)} coppie aspettano una decisione tua. "
+              "Con `merge` o `split` le chiudi; senza, restano aperte.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd")
@@ -454,6 +494,16 @@ def main() -> int:
     c.add_argument("--threshold", type=float, default=None,
                    help="somiglianza minima per sciogliere un frammento")
 
+    v = sub.add_parser(
+        "voices",
+        help="matrice di somiglianza fra le voci, voce per voce e "
+             "sessione per sessione",
+    )
+    v.add_argument("--tutto", action="store_true",
+                   help="mostra tutte le coppie, non solo la zona grigia")
+    v.add_argument("--json", default=None,
+                   help="scrivi la matrice anche in JSON")
+
     y = sub.add_parser(
         "sync",
         help="allinea i nomi a corpus.db e alle sessioni già scritte",
@@ -478,7 +528,7 @@ def main() -> int:
     return {
         "list": cmd_list, "name": cmd_name, "merge": cmd_merge,
         "split": cmd_split, "threshold": cmd_threshold, "sync": cmd_sync,
-        "consolidate": cmd_consolidate,
+        "consolidate": cmd_consolidate, "voices": cmd_voices,
     }[cmd](db, args)
 
 
