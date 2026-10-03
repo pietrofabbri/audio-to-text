@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,11 @@ DEFAULT_DB_PATH = ROOT_DIR / "data" / "speakers_db.json"
 # avviene tra sessioni diverse (voce, rumore, distanza microfonica
 # variano) e non dentro un singolo file.
 DEFAULT_THRESHOLD = 0.78
+
+# Gli ID che non sono di questo formato vengono ignorati da `_next_id`:
+# un ID portato da un formato precedente deve contare come occupato,
+# altrimenti il numero successivo lo riutilizzerebbe.
+_GLOBAL_ID = re.compile(r"^GLOBAL_(\d+)$")
 
 
 def _now_iso() -> str:
@@ -328,16 +334,22 @@ class SpeakerDB:
         perdita di informazione, non una pulizia, e una voce senza
         contributi ma con un nome e' una persona che si ricorda ma che
         non ha ancora parlato in nessuna sessione.
+
+        La scansione guarda tutte le voci, non solo quelle che la
+        sessione toccava. Il motivo e' che una voce puo' essere gia'
+        vuota al momento della chiamata — perche' una sessione
+        precedente l'ha svuotata e la voce non aveva un nome — e in
+        quel caso il `continue` la lascerebbe nel DB per sempre. Il
+        sintomo e' una voce che `review_speakers.py list` continua a
+        mostrare con zero minuti, perche' nessuna sessione la genera
+        piu' e nessun codice la toglie.
         """
         vuoti = []
         for gid, rec in self._data["speakers"].items():
             sessions = rec.get("sessions", {})
-            tolti = [k for k, v in sessions.items()
-                     if v.get("stem") == session_stem]
-            for k in tolti:
+            for k in [k for k, v in sessions.items()
+                      if v.get("stem") == session_stem]:
                 del sessions[k]
-            if not tolti:
-                continue
             rec["total_seconds"] = round(
                 sum(s.get("seconds", 0) for s in sessions.values()), 2
             )
@@ -357,7 +369,7 @@ class SpeakerDB:
             del self._data["speakers"][gid]
             logger.info("  %s rimossa: nessun contributo e nessun nome", gid)
 
-        if vuoti or True:
+        if vuoti:
             self.save()
         return [g for g in vuoti if g not in self._data["speakers"]]
 
@@ -397,10 +409,27 @@ class SpeakerDB:
         return True
 
     def _next_id(self) -> str:
-        n = len(self._data["speakers"])
-        while f"GLOBAL_{n + 1:03d}" in self._data["speakers"]:
-            n += 1
-        return f"GLOBAL_{n + 1:03d}"
+        """Il primo ID libero dopo il piu' alto mai usato.
+
+        Contare le voci non basta, e il motivo e' che cosi' i numeri si
+        riassegnano. Un ID non e' un numero: e' il nome con cui una
+        persona e' citata in ogni sessione, in `corpus.db` e nella repo
+        del corpus. Se dopo una fusione il DB passa da dodici voci a
+        nove, `len()` restituirebbe 9 e la prossima voce nuova
+        prenderebbe GLOBAL_010, che era gia' stata qualcun altro: le
+        sessioni vecchie che citano GLOBAL_010 si troverebbero a
+        parlare di una persona diversa, senza che niente lo segnali.
+
+        Il numero resta progressivo e non riusato, che e' il prezzo:
+        dopo varie fusioni si hanno dei buchi (GLOBAL_004, poi
+        GLOBAL_018). E' il prezzo giusto, perche' un buco e' innocuo e
+        un ID riusato e' silenziosamente falso.
+        """
+        usati = [
+            int(m.group(1)) for gid in self._data["speakers"]
+            if (m := _GLOBAL_ID.match(gid))
+        ]
+        return f"GLOBAL_{(max(usati) + 1 if usati else 1):03d}"
 
     # ------------------------------------------------------------------
     # Assegnazione manuale dei nomi

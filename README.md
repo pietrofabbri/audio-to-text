@@ -406,6 +406,15 @@ solo sui frammenti. Ogni sessione scrive `speaker_merge.json` con cosa è
 stato fuso, perché fra sei mesi l'unica cosa che distingue «ha parlato
 poco» da «la fusione ha sbagliato» è quella traccia.
 
+Un dettaglio che non si vede ma conta: **`GLOBAL_0xx` non viene mai
+riusato.** Un identificatore è il nome con cui una persona è citata in
+ogni sessione, in `corpus.db` e sulla repo del corpus, quindi dopo un
+merge gli ID salgono e restano dei buchi (GLOBAL_004, poi GLOBAL_018).
+Un buco è innocuo; un numero riusato continuerebbe a citare una persona
+che non c'è più, senza che nulla lo segnali. Per lo stesso motivo
+`consolidate` conserva le identità che già ha: rieseguirlo non cambia
+niente, e quello è il motivo per cui si può ritentare senza paura.
+
 Su quattro registrazioni reali la separazione è netta: persone diverse
 stanno a 0,13–0,29 di coseno, e l'unica coppia unita automaticamente
 sta a 0,82. In mezzo, una fascia 0,53–0,67 dove la macchina non sa

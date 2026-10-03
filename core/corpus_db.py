@@ -614,7 +614,7 @@ class CorpusDB:
         self.conn.commit()
         return changed
 
-    def prune_speakers(self, keep_names: bool = False) -> int:
+    def prune_speakers(self) -> int:
         """Rimuove dalla tabella le voci che nessuna sessione cita piu'.
 
         La tabella `speakers` si riempie con `INSERT OR IGNORE` e non
@@ -624,13 +624,13 @@ class CorpusDB:
         frammento di lei, e il risultato e' sbagliato in un modo che non
         si vede.
 
-        Non cancella mai un nome: la fonte dei nomi e'
-        `data/speakers_db.json`, e questa tabella ne e' una copia. Se
-        qui c'e' un nome che al DB delle voci non c'e' piu', la copia
-        mente e va rimessa a NULL — altrimenti una voce che hai
-        cancellato un anno fa continua a comparire con il suo nome
-        nelle query. Per questo `keep_names`: senza, il nome sparisce
-        insieme alla voce che non esiste piu'.
+        Rimuove la riga, nome compreso, e non solleva obiezioni: qui non
+        c'e' nessuna informazione da conservare. I nomi appartengono a
+        `data/speakers_db.json`, che resta la fonte e non viene toccato;
+        questa tabella ne e' una copia, e una copia che parla di una
+        voce che non esiste piu' e' rumore. Se un nome serve ancora,
+        `review_speakers.py name` lo rimette, e questa volta nel posto
+        giusto.
 
         Returns:
             quante righe sono state rimosse.

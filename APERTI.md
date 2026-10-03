@@ -507,9 +507,37 @@ le voci assorbite, e `sync_speaker_names` non sapeva cancellare un nome
 che la fonte non ha piu': ci si era un «Pietro» che nessuno sapeva piu'
 da dove venisse.
 
+**Il seguito, trovato riguardando il lavoro di ieri.** Il comando che
+rifonde le sessioni vecchie non era idempotente: rieseguirlo assegnava
+numeri nuovi alle stesse persone e rietichettava l'intero corpus. Non
+era un errore di qualita' ma di stabilita', ed e' la proprieta' che
+qualunque comando di riparazione deve avere — se il giorno dopo lo
+riesegui per un motivo qualsiasi, tutte le sessioni passate cambiano
+interlocutore e nessuno sa perche'. Due cause, entrambe vere:
+
+  - `review_speakers.py consolidate` dimenticava e ricalcolava ogni
+    identita' da capo. Ora se un cluster conserva la sua etichetta e il
+    suo embedding somiglia abbastanza al centroide gia' salvato, lo
+    riappiglia alla stessa voce e non tocca niente. Solo quando la
+    fusione ha cambiato una voce cosi' tanto che non e' piu' la stessa
+    cerca davvero un'identita' nuova.
+  - `_next_id` contava le voci con `len()`. Dopo una fusione il
+    conteggio calava e la voce successiva prendeva un numero gia'
+    stato di qualcun altro. Ora conta il massimo mai usato: gli ID non
+    si riusano e i buchi sono il prezzo. Un buco e' innocuo; un ID
+    riusato e' silenziosamente falso.
+
+Una terza cosa e' venuta fuori strada e merita un nome a se': riappare
+anche in `forget_session`, che lasciava nel DB le voci gia' vuote
+perche' il suo `continue` le saltava. Il sintomo sarebbe stato
+`review_speakers.py list` che mostra per sempre una persona con zero
+minuti, senza che nessuna sessione la generi piu'.
+
 **Verificato sui dati veri.** 28 cluster locali in 16, 21 voci globali
-in 9. Le quattro sessioni hanno 4/5/6/3 voci dove prima erano
+in 9; `consolidate` rieseguito due volte d'a lo stesso identico
+risultato. Le quattro sessioni hanno 4/5/6/3 voci dove prima erano
 5/8/11/3. Il corpus pubblicato e' stato ricalcolato e ripubblicato.
+23 test sulla fusione, 130 in tutto su 9 suite.
 
 ---
 

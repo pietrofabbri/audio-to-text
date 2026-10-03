@@ -22,6 +22,7 @@ delle voci non torna mai indietro.
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -478,6 +479,197 @@ def il_nome_stale_viene_cancellato() -> None:
         )[0]["name"]
         require(nome == "Pietro",
                 f"e un nome che c'e' nella fonte deve arrivare, risulta {nome!r}")
+
+
+@check
+def la_voce_gia_vuota_viene_ripulita() -> None:
+    """Una voce senza contributi sparisce anche se la sessione non la toccava.
+
+    Il caso e' quello che si crea in due passate: una sessione svuota
+    la voce, e se in quel momento la voce non aveva un nome resta li.
+    Un secondo giro su un'altra sessione non la tocca piu', quindi
+    senza questa scansione `review_speakers.py list` la mostra per
+    sempre con zero minuti.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db = SpeakerDB(path=Path(tmp) / "db.json")
+        db.resolve("s1", {"A": {"embedding": _voce(1), "seconds": 60.0}})
+        db.resolve("s2", {"A": {"embedding": _voce(1), "seconds": 60.0}})
+        gid = next(iter(db._data["speakers"]))
+        db._data["speakers"][gid]["sessions"] = {}      # come se fosse vuota
+
+        rimosse = db.forget_session("s2")
+        require(rimosse == [gid],
+                f"la voce vuota doveva sparire, sono state rimosse {rimosse}")
+        require(not db._data["speakers"],
+                f"il DB doveva restare vuoto, contiene {db._data['speakers']}")
+
+
+@check
+def forget_su_una_sessione_ignota_non_fa_nulla() -> None:
+    """Dimenticare una sessione che non e' mai stata vista lascia tutto com'era.
+
+    Non e' paranoia: `consolidate` chiama `forget_session` per ogni
+    cartella che trova in output/, e una cartenza puo' essere un
+    tentativo abbandonato senza checkpoint.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db = SpeakerDB(path=Path(tmp) / "db.json")
+        db.resolve("s1", {"A": {"embedding": _voce(1), "seconds": 100.0}})
+        prima = json.dumps(db._data["speakers"], sort_keys=True)
+
+        db.forget_session("non_esiste")
+        require(json.dumps(db._data["speakers"], sort_keys=True) == prima,
+                "una sessione sconosciuta non deve toccare il DB")
+
+
+@check
+def gli_id_non_si_riusano_dopo_un_merge() -> None:
+    """Un ID liberato da un merge non torna mai in circolazione.
+
+    L'ID e' il nome con cui una persona e' citata in ogni sessione e
+    nella repo del corpus. `_next_id` contava le voci: dopo una fusione
+    il conteggio calava e la voce successiva prendeva un numero che
+    era gia' stato di qualcun altro, senza che niente lo segnalasse. Il
+    numero deve salire, e i buchi sono il prezzo.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db = SpeakerDB(path=Path(tmp) / "db.json")
+        for i, stem in enumerate(("s1", "s2", "s3")):
+            db.resolve(stem, {"L": {"embedding": _voce(i + 1),
+                                    "seconds": 100.0}})
+        create = sorted(db._data["speakers"])
+        require(create == ["GLOBAL_001", "GLOBAL_002", "GLOBAL_003"],
+                f"le prime tre devono essere 1, 2, 3: {create}")
+
+        db.merge_ids("GLOBAL_001", "GLOBAL_002")
+        nuova = db._next_id()
+        require(nuova == "GLOBAL_004",
+                f"dopo il merge la nuova voce deve essere GLOBAL_004, "
+                f"e' {nuova}: sta riusando GLOBAL_002 che era di qualcuno")
+
+
+@check
+def un_id_di_formato_strano_resta_occupato() -> None:
+    """Un ID che non segue il formato non viene contato, ma non viene riusato.
+
+    `GLOBAL_042` viene regolato dalla regola; `VECCHIO_001` no. Il
+    numero successivo deve comunque superare il massimo dei regolari,
+    altrimenti un ID importato da un formato precedente viene
+    riassegnato a una persona nuova.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db = SpeakerDB(path=Path(tmp) / "db.json")
+        db.resolve("s1", {"A": {"embedding": _voce(1), "seconds": 100.0}})
+        require(db._next_id() == "GLOBAL_002", "il conteggio parte da 1")
+        db._data["speakers"]["GLOBAL_042"] = {
+            "name": None, "centroid": [], "sessions": {},
+        }
+        require(db._next_id() == "GLOBAL_043",
+                f"GLOBAL_042 occupa il posto, la successiva deve essere "
+                f"GLOBAL_043, e' {db._next_id()}")
+
+
+# ---------------------------------------------------------------------------
+# Il comando che rifonde deve poter essere ritentato
+# ---------------------------------------------------------------------------
+
+def _consolidate_su(tmp: Path, volte: int = 1) -> dict[str, float]:
+    """Esegue `consolidate` in un albero finto e ritorna i secondi per voce."""
+    import os
+
+    # Il modulo, non l'istanza. `core/__init__.py` fa
+    # `from .config import config`, quindi `core.config` come attributo
+    # e' l'istanza PipelineConfig e non il modulo: `reload()` su
+    # quello solleva TypeError. `sys.modules` conserva l'unico
+    # riferimento vero al modulo.
+    import sys as _sys
+    config_mod = _sys.modules["core.config"]
+    import review_speakers as rs
+
+    radice = tmp / "root"
+    out = radice / "output"
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Due sessioni con lo stesso parlato: la stessa voce deve prendere
+    # la stessa identita' nelle due.
+    for nome, (v1, v2) in (
+        ("2026-01-01_10-00-00", (_voce(1), _voce(4))),
+        ("2026-01-01_11-00-00", (_voce(1), _voce(7))),
+    ):
+        d = out / nome
+        d.mkdir()
+        segmenti = [
+            {"speaker": "A", "start": 0.0, "end": 600.0},
+            {"speaker": "B", "start": 600.0, "end": 400.0},
+        ]
+        (d / f"{nome}.checkpoint.json").write_text(json.dumps({
+            "stem": nome,
+            "file": f"input/{nome}.mp3",
+            "stages": {s: {"done": True} for s in (
+                "ffmpeg", "vad", "transcription", "diarization", "prosody")},
+            "diarization_segments": segmenti,
+            "speaker_embeddings": {"A": v1, "B": v2},
+            "speaker_global_map": {},
+            "chunks": [],
+        }), encoding="utf-8")
+
+    class _A:
+        dry_run = False
+        min_seconds = None
+        threshold = None
+
+    # `A2T_ROOT_DIR` e' la stessa leva che usa il test end-to-end: e'
+    # cio' che permette a un test di girare sulla catena vera senza
+    # scrivere nel database delle voci di produzione.
+    os.environ["A2T_ROOT_DIR"] = str(radice)
+    import importlib
+    try:
+        importlib.reload(_sys.modules["core.config"])
+        importlib.reload(_sys.modules["core.speakers_merge"])
+        importlib.reload(rs)
+        db = rs.SpeakerDB(path=radice / "data" / "speakers_db.json")
+        for _ in range(volte):
+            rs.cmd_consolidate(db, _A())
+        return {g: r.get("total_seconds", 0.0)
+                for g, r in db._data["speakers"].items()}
+    finally:
+        os.environ.pop("A2T_ROOT_DIR", None)
+        importlib.reload(_sys.modules["core.config"])
+
+
+@check
+def consolidate_rifatto_non_cambia_nulla() -> None:
+    """Un comando di riparazione deve essere idempotente.
+
+    Senza, ogni esecuzione assegnava nuovi ID alle stesse voci e
+    rietichettava l'intero corpus: il giorno in cui si fosse rieseguito
+    per un motivo qualsiasi, tutte le sessioni passate avrebbero
+    cambiato interlocutore, e nessuno avrebbe saputo perche'.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        una = _consolidate_su(Path(tmp) / "a")
+        due = _consolidate_su(Path(tmp) / "b", volte=2)
+        require(una and set(una) == set(due),
+                f"gli ID dopo due giri devono essere gli stessi: "
+                f"{sorted(una)} contro {sorted(due)}")
+        require(una == due,
+                f"e anche i secondi: {una} contro {due}")
+
+
+@check
+def consolidate_collega_le_stesse_voci() -> None:
+    """La stessa voce in due sessioni diverse prende la stessa identita'."""
+    with tempfile.TemporaryDirectory() as tmp:
+        sec = _consolidate_su(Path(tmp) / "c")
+        # Voce 1 in entrambe le sessioni, voci 4 e 7 distinte: si
+        # aspettano tre identita', non quattro.
+        require(len(sec) == 3,
+                f"tre voci distinte su due sessioni, ne sono nate {len(sec)}: "
+                f"{sec}")
+        require(sorted(sec.values(), reverse=True)[0] == 1200.0,
+                f"la voce in comune deve avere 2x600 secondi, ha "
+                f"{sorted(sec.values(), reverse=True)[0]}")
 
 
 def main() -> int:

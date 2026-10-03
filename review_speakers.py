@@ -156,32 +156,14 @@ def cmd_merge(db: SpeakerDB, args) -> int:
     materiale.
     """
     keep, drop = args.gid, args.into
-    if keep not in db._data["speakers"] or drop not in db._data["speakers"]:
-        print("Una delle due voci non esiste", file=sys.stderr)
-        return 1
-    if keep == drop:
-        print("Stessa voce", file=sys.stderr)
+    if not db.merge_ids(keep, drop):
+        if keep == drop:
+            print("Stessa voce", file=sys.stderr)
+        else:
+            print("Una delle due voci non esiste", file=sys.stderr)
         return 1
 
-    src = db._data["speakers"].pop(drop)
     dst = db._data["speakers"][keep]
-    for k, v in src.get("sessions", {}).items():
-        dst.setdefault("sessions", {}).setdefault(k, v)
-        dst["sessions"][k]["seconds"] = (
-            dst["sessions"][k].get("seconds", 0) + v.get("seconds", 0)
-        )
-    dst["total_seconds"] = sum(
-        s.get("seconds", 0) for s in dst.get("sessions", {}).values()
-    )
-    dst["sessions_count"] = len({s.get("stem") for s in dst.get("sessions", {}).values()})
-    if dst.get("first_seen") and src.get("first_seen"):
-        dst["first_seen"] = min(dst["first_seen"], src["first_seen"])
-    if dst.get("last_seen") and src.get("last_seen"):
-        dst["last_seen"] = max(dst["last_seen"], src["last_seen"])
-    if not dst.get("name") and src.get("name"):
-        dst["name"] = src["name"]
-
-    db.save()
     print(f"{drop} unita in {keep} "
           f"({dst['total_seconds']/60:.1f} min, {dst['sessions_count']} sessioni)")
 
@@ -331,12 +313,55 @@ def cmd_consolidate(db: SpeakerDB, args) -> int:
 
     rinessi = []
     for d, ck_file, dati, nuovi, nuovi_emb, rep in piani:
-        # `dati` serve solo per il percorso del file audio, che il
-        # checkpoint usa per sapere di quale sessione si tratta.
+        # `dati` serve per il percorso del file audio e per la mappa
+        # globale vecchia, che serve a conservare le identita'.
         stem = d.name
         audio = Path(dati.get("file") or (d / f"{stem}.wav"))
         ck = Checkpoint(audio, OUTPUT_DIR, stem=stem)
 
+        vecchia = dati.get("speaker_global_map") or {}
+
+        # Un cluster che conserva la sua etichetta locale e' la stessa
+        # voce di prima, e la sua identita' globale va conservata.
+        # Ricalcolarla da zero non darebbe un risultato diverso ma un
+        # ID diverso, e un ID diverso rietichetta l'intero corpus a ogni
+        # esecuzione del comando: `consolidate` rieseguito due volte deve
+        # dare lo stesso identico risultato, altrimenti non e' una
+        # riparazione ma un rumore che cambia da solo.
+        #
+        # La somiglianza fra l'embedding nuovo e il centroide salvato
+        # dice se sono la stessa voce, che e' l'unica cosa che conta.
+        riusata: dict[str, str] = {}
+        for locale, emb in nuovi_emb.items():
+            gid = vecchia.get(locale)
+            if not gid or gid not in db._data["speakers"]:
+                continue
+            sim = cosine_similarity(
+                emb, db._data["speakers"][gid].get("centroid"))
+            if sim >= db.threshold:
+                riusata[locale] = gid
+
+        if riusata and len(riusata) == len(nuovi_emb):
+            # Tutte le voci si riappartiscono a quelle che esistono
+            # gia': non c'e' niente da ricalcolare, si aggiornano solo
+            # i secondi, che la fusione puo' aver cambiato.
+            sec = _speaking_seconds(nuovi)
+            for locale, gid in riusata.items():
+                db._register(gid, stem, locale, to_vector(nuovi_emb[locale]),
+                             sec.get(locale, 0.0))
+            db.save()
+            if riusata != vecchia:
+                ck.save_diarization(nuovi, nuovi_emb, riusata)
+            rinessi.append(stem)
+            if rep.changed:
+                _write_merge_report(d, rep)
+            print(f"  {stem}: {rep.clusters_after} voci, identita' gia' corrette")
+            continue
+
+        # Qualcosa non si riappiglia: si parte da zero per quella
+        # sessione. E' il caso in cui la fusione ha cambiato una voce
+        # cosi' tanto che non e' piu' la stessa, ed e' corretto che
+        # debba cercarsi un'identita' nuova.
         db.forget_session(stem)
 
         ck.save_diarization(nuovi, nuovi_emb, None)
