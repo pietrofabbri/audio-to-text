@@ -38,6 +38,7 @@ FAST = [
     ([sys.executable, str(HERE / "test_nightly.py")], "piano notturno"),
     ([sys.executable, str(HERE / "test_publish.py")], "pubblicazione e privacy"),
     ([sys.executable, str(HERE / "test_prosody_workers.py")], "prosodia in parallelo"),
+    ([sys.executable, str(HERE / "test_thermal.py")], "protezione termica"),
 ]
 
 

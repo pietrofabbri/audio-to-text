@@ -130,6 +130,36 @@ class Checkpoint:
             return
         self._data["stages"][stage] = {"done": False}
         logger.info("Stadio %s azzerato (l'input a monte è cambiato)", stage)
+        # Salva subito: azzerare uno stadio e poi morire prima del primo
+        # chunk lascerebbe su disco uno stato che mente — dice che lo
+        # stadio è da fare, ma i dati del vecchio ci sono ancora.
+        self.save()
+
+    def invalidate_asr(self, reason: str = "") -> None:
+        """Dichiara il testo da rifare, conservando tutto il resto.
+
+        Serve quando cambia qualcosa che riguarda **cosa viene scritto**
+        e non **su cosa si scrive**: un modello diverso, un prompt di
+        contesto, una soglia di deduplica. Il VAD non cambia — i confini
+        dei chunk sono un fatto dell'audio — e la diarizzazione no: i
+        turni di voce hanno tempi, non testo. Ricalcolarli costerebbe
+        minuti di CPU per ottenere lo stesso identico risultato, e la
+        CPU è la risorsa che fa scaldare la macchina.
+
+        Il confronto denoise invece va rifatto: è stato deciso ascoltando
+        due trascrizioni, e se il testo cambia la decisione cambia con
+        lui (denoise_decision.json resta sul disco come traccia di
+        quello che era stato deciso).
+        """
+        for stage in ("transcription", "denoise"):
+            if stage in self._data["stages"]:
+                self._data["stages"][stage] = {"done": False}
+        self._data["chunks"] = []
+        self.save()
+        logger.info(
+            "Trascrizione da rifare%s. VAD e diarizzazione conservati.",
+            f" ({reason})" if reason else "",
+        )
 
     def all_done(self, required: tuple[str, ...] | None = None) -> bool:
         """True se tutti gli stadi obbligatori sono completati.

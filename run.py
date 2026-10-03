@@ -465,6 +465,16 @@ def process_file(audio_path: Path, cfg, args, stem: str | None = None) -> bool:
         logger.info("Già completato, saltato: %s", audio_path.name)
         return False
 
+    # Rifare il testo di una sessione già elaborata, tenendo tutto il
+    # resto. Serve quando è cambiato qualcosa che riguarda il testo e
+    # non l'audio: un modello diverso, il prompt di contesto, una soglia.
+    # Il VAD e la diarizzazione restano, perché sono fatti dell'audio e
+    # rifarli darebbe lo stesso identico risultato spendendo minuti di CPU
+    # — la CPU che è anche la ragione per cui questo progetto ha una
+    # protezione termica.
+    if getattr(args, "retranscribe", False) and ck.chunks_done_count() > 0:
+        ck.invalidate_asr(reason="richiesto con --retranscribe")
+
     logger.info("=" * 60)
     logger.info("Inizio: %s", audio_path.name)
     logger.info("=" * 60)
@@ -818,6 +828,19 @@ Esempi:
         "--max-hours", type=float, default=None,
         help="Tempo massimo di esecuzione in ore (utile per slot notturno)",
     )
+    p.add_argument(
+        "--retranscribe", action="store_true",
+        help="Rifai la trascrizione anche se il file e' gia' stato "
+             "elaborato, conservando VAD e diarizzazione. Serve dopo un "
+             "cambiamento di modello, di prompt o di soglia",
+    )
+    p.add_argument(
+        "--cooldown-sec", type=float, default=None,
+        help="Pausa di respiro fra un file e il successivo. Senza questo "
+             "argomento la pausa e' proporzionale a quanto si e' lavorato e "
+             "si allunga da sola se il chip rallenta (core/thermal.py); "
+             "un numero esplicito diventa il minimo. 0 = nessuna pausa",
+    )
 
     return p.parse_args()
 
@@ -870,7 +893,24 @@ def main() -> int:
     completed = 0
     failed = 0
 
+    # Pausa di raffreddamento fra un file e l'altro. Il ciclo di notte lo
+    # fa gia' sync_device; questo e' il ciclo manuale (`run.py input/ --all`
+    # o un file alla volta), che e' quello con cui si esaminano i file di
+    # prova: anche li, quattro ore di fila non vanno bene a nessuno.
+    from core.config import thermal_policy
+    from core.thermal import ThermalGovernor
+    gov = ThermalGovernor(thermal_policy(args.cooldown_sec))
+
     for i, audio_path in enumerate(files):
+        if i > 0 and gov.last_cooldown_sec > 0:
+            # Si controlla il tempo una volta sola, prima di iniziare: se
+            # e' gia' scaduto il budget della notte, la pausa non serve a
+            # niente e si torna subito al giro che lo interrompe.
+            if cfg.max_runtime_sec <= 0 or (
+                time.time() - t_global + gov.last_cooldown_sec < cfg.max_runtime_sec
+            ):
+                gov.rest(should_stop=lambda: _shutdown_requested)
+
         if _shutdown_requested:
             logger.info("Shutdown: interrotto prima di %s", audio_path.name)
             break
@@ -886,6 +926,7 @@ def main() -> int:
                 break
 
         logger.info("File %d/%d: %s", i + 1, len(files), audio_path.name)
+        t_file = time.time()
         try:
             ok = process_file(audio_path, cfg, args)
             if ok:
@@ -893,6 +934,12 @@ def main() -> int:
         except Exception as exc:
             logger.error("Errore su %s: %s", audio_path.name, exc, exc_info=True)
             failed += 1
+
+        # Quanto ha davvero costato questo file, e quanto costa rispetto
+        # ai precedenti: e' l'unico segnale di riscaldamento disponibile
+        # senza permessi, e decide la prossima pausa.
+        from core.media import probe_duration
+        gov.note_work(time.time() - t_file, audio_sec=probe_duration(audio_path) or 0.0)
 
     elapsed_total = time.time() - t_global
     logger.info(

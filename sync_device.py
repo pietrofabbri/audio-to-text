@@ -49,6 +49,8 @@ from core.device import (  # noqa: E402
 )
 from core.corpus_db import CorpusDB  # noqa: E402
 from core.cost import estimate_seconds  # noqa: E402
+from core.thermal import ThermalGovernor  # noqa: E402
+from core.media import probe_duration as _probe_duration  # noqa: E402
 
 logger = logging.getLogger("sync_device")
 
@@ -441,14 +443,22 @@ def cmd_pull(args) -> int:
     # fra un mese. Chi preferisce la coda rapida passi --cooldown-sec 0.
     cooldown = max(0.0, float(getattr(args, "cooldown_sec", 0.0) or 0.0))
     if cooldown:
-        logger.info("Pausa di respiro fra un file e il successo: %.0fs", cooldown)
+        logger.info("Pausa di respiro fra un file e il successo: almeno %.0fs", cooldown)
+
+    # ...e non solo quella: la pausa vera e' proporzionale a quanto si e'
+    # appena lavorato, e si allunga da sola se il chip rallenta. Il
+    # minimo qui sopra resta il pavimento, quindi --cooldown-sec continua
+    # a significare la stessa cosa di prima (core/thermal.py).
+    from core.config import thermal_policy
+    gov = ThermalGovernor(thermal_policy(cooldown))
 
     for i, f in enumerate(files, 1):
         # La pausa va PRIMA del controllo di budget: il tempo di respiro
         # è tempo passato, e se non lo si conta il budget si consuma
         # mentre la macchina è ferma a guardare.
-        if cooldown and i > 1:
-            budget.sleep(cooldown)
+        pause = max(cooldown, gov.last_cooldown_sec)
+        if pause > 0 and i > 1:
+            gov.rest(sleeper=budget.sleep)
 
         # La finestra si controlla PRIMA di iniziare un file, non
         # durante: un file iniziato e non finito costerebbe il suo tempo
@@ -554,6 +564,10 @@ def cmd_pull(args) -> int:
             logger.error("  elaborazione fallita: %s: %s", type(exc).__name__, exc)
             ok = False
         elapsed = time.time() - t0
+        # Il chip appena ha finito un blocco di lavoro: e' l'unico momento
+        # in cui la pausa puo' essere calcolata su quello che ha davvero
+        # costato, e su quello che costa rispetto ai file precedenti.
+        gov.note_work(elapsed, audio_sec=_probe_duration(f) or 0.0)
 
         if not ok:
             logger.error("  pipeline non completata: il file resta sul device")
@@ -799,27 +813,6 @@ def _measured_speech_ratio() -> float | None:
         if isinstance(r, (int, float)) and 0 < r <= 1:
             ratios.append(float(r))
     return (sum(ratios) / len(ratios)) if ratios else None
-
-
-def _probe_duration(path: Path) -> float | None:
-    """Durata del file in secondi, letta dai metadati con ffprobe.
-
-    Non si decodifica l'audio: su 18 file da un'ora la lettura dei
-    metadati costa meno di un secondo, il decoding un'ora.
-    """
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        return None
-    try:
-        out = subprocess.run(
-            [ffprobe, "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=60,
-        ).stdout.strip()
-        value = float(out)
-        return value if value > 0 else None
-    except (ValueError, OSError, subprocess.SubprocessError):
-        return None
 
 
 def _is_not_audio(f: Path) -> bool:

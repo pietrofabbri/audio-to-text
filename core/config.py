@@ -41,7 +41,42 @@ NIGHT_START_MINUTE = 0
 NIGHT_WINDOW_SEC   = 4 * 3600      # 02:00 → 06:00
 NIGHT_NICE         = 10            # priorità sotto la normale
 NIGHT_THREADS      = 4             # i core performance: vedi core/cost.py
-NIGHT_COOLDOWN_SEC = 90            # pausa di respiro fra un file e il successivo
+NIGHT_COOLDOWN_SEC = 90            # pausa minima di respiro fra un file e il successivo
+
+# La pausa minima qui sopra è un pavimento, non la regola. Novanta
+# secondi dopo un file di venti secondi sono sbagliati per costruzione,
+# e novanta secondi dopo un file da quindici minuti non bastano: quello
+# che tiene la macchina calda non è un file, è la sequenza.
+#
+# Qui sotto c'è la parte che guarda quanto si è davvero lavorato, e che
+# si allunga da sola. Il default e' proporzionale (un quarto del tempo
+# lavorato) con un tetto di dieci minuti, e quando il tempo per secondo
+# di audio peggiora rispetto ai file precedenti la pausa si raddoppia:
+# quello e' il segnale che il chip ha gia' abbassato la frequenza, e
+# si puo' leggere senza permessi speciali (vedi core/thermal.py).
+THERMAL_WORK_RATIO      = 0.25      # un quarto del tempo lavorato
+THERMAL_MAX_SEC         = 600.0     # tetto: oltre, il riposo costa piu' che protegga
+THERMAL_SLOWDOWN_FACTOR = 1.25      # oltre il +25% di costo per secondo di audio
+THERMAL_SLOWDOWN_MULT   = 2.0       # quanto si allunga la pausa in quel caso
+THERMAL_SHORT_JOB_SEC   = 120.0     # sotto questo la regola proporzionale non ha senso
+
+
+def thermal_policy(cooldown_sec: float | None = None):
+    """Costruisce la politica di pausa termica.
+
+    `cooldown_sec` è il pavimento: se qualcuno ha passato un numero
+    esplicito sulla riga di comando, quello vince, perché è una scelta
+    fatta a mano e va rispettata. Se non c'è, si usa il minimo notturno.
+    """
+    from core.thermal import ThermalPolicy
+    return ThermalPolicy(
+        min_sec=(cooldown_sec if cooldown_sec is not None else NIGHT_COOLDOWN_SEC),
+        max_sec=THERMAL_MAX_SEC,
+        work_ratio=THERMAL_WORK_RATIO,
+        slowdown_threshold=THERMAL_SLOWDOWN_FACTOR,
+        slowdown_multiplier=THERMAL_SLOWDOWN_MULT,
+        short_job_sec=THERMAL_SHORT_JOB_SEC,
+    )
 
 # Passate diurne: processo leggero in background, tre volte al giorno.
 # Non sono un secondo ciclo completo: sono lo stesso ciclo con un budget
@@ -103,6 +138,33 @@ class ASRConfig:
     # Soglia no-speech per scartare chunk silenzioso residuo dopo VAD
     # (0.0–1.0; 0.6 è conservativo, abbassa se perdi parlato)
     no_speech_threshold: float = 0.6
+
+    # Quanto testo già trascritto si passa al chunk successivo come
+    # contesto, in caratteri. 0 = nessun contesto.
+    #
+    # Il perché è semplice: il VAD spezza l'audio in finestre da 29
+    # secondi e ogni finestra viene trascritta da sola, senza sapere
+    # cosa sia stato detto prima. Su una conversazione con nomi di
+    # persona, cognomi, localita' e titoli di film, quello significa che
+    # ogni nome viene riscritto a ogni frase e non torna mai uguale:
+    # «Miyazaki» diventa «Miyasky» e poi «Miazaki» nello stesso file, e
+    # il corpus che ne esce non è interrogabile per persona.
+    #
+    # Il contesto glielo risolve senza riattivare la condizionatura
+    # continua, che è la cosa che genera i loop di ripetizione: qui si
+    # passa il testo come prompt iniziale del chunk, il modello lo usa e
+    # basta. Costo: qualche decina di millisecondi per chunk.
+    context_prompt_chars: int = 400
+
+    # Istruzioni di stile che precedono il contesto. Non dicono al
+    # modello cosa scrivere: dicono in che lingua e con che
+    # punteggiatura. Senza, Whisper sbaglia i due punti, unisce le
+    # frasi e perdi le frasi concatenate di cui sopra.
+    style_prompt: str = (
+        "Trascrizione di una conversazione in italiano parlato, con "
+        "interlocutori diversi e sovrapposizioni di voce. Frasi brevi, "
+        "punteggiatura completa, mai unire due frasi in una."
+    )
 
     # Disabilita la condizionatura sul testo precedente per evitare
     # hallucination loop su audio lungo

@@ -171,6 +171,16 @@ class Transcriber:
         wav_array = _load_wav(wav_path)
         sr = 16_000
 
+        # Il testo di quanto già trascritto, in ordine di tempo: è il
+        # contesto che passa ai chunk successivi. Si parte da quello
+        # già nel checkpoint, così una ripresa a metà non si ritrova
+        # all'inizio del file a fare le cose come se non avesse letto
+        # niente (che sarebbe anche un altro modo per sbagliare i nomi).
+        done_text = [
+            c.get("text", "") for c in
+            sorted(checkpoint.get_all_chunks(), key=lambda c: c.get("idx", 0))
+        ]
+
         for i, chunk in enumerate(pending):
             idx   = chunk["idx"]
             start = chunk["start"]
@@ -180,7 +190,10 @@ class Transcriber:
             audio_slice = _slice_audio(wav_array, start, end, sr)
 
             t0 = time.time()
-            result = self._transcribe_slice(audio_slice, start, end, idx)
+            result = self._transcribe_slice(
+                audio_slice, start, end, idx,
+                initial_prompt=self._context_prompt(done_text),
+            )
             elapsed = time.time() - t0
 
             rtf = (end - start) / elapsed if elapsed > 0 else 0
@@ -225,7 +238,8 @@ class Transcriber:
     # ------------------------------------------------------------------
 
     def _transcribe_slice_mlx(
-        self, audio: np.ndarray, start: float, end: float, idx: int
+        self, audio: np.ndarray, start: float, end: float, idx: int,
+        initial_prompt: str | None = None,
     ) -> dict[str, Any]:
         import mlx_whisper
 
@@ -240,6 +254,7 @@ class Transcriber:
             no_speech_threshold=self.cfg.no_speech_threshold,
             # Temperatura fissa = nessun fallback speculativo
             temperature=0.0,
+            initial_prompt=initial_prompt,
             verbose=False,
         )
 
@@ -279,7 +294,8 @@ class Transcriber:
     # ------------------------------------------------------------------
 
     def _transcribe_slice_faster(
-        self, audio: np.ndarray, start: float, end: float, idx: int
+        self, audio: np.ndarray, start: float, end: float, idx: int,
+        initial_prompt: str | None = None,
     ) -> dict[str, Any]:
         # I timestamp di parola sono ciò che rende il corpus utilizzabile
         # (KWIC, allineamento con la prosodia, sync biometrico), ma sono
@@ -295,6 +311,7 @@ class Transcriber:
         try:
             return self._transcribe_slice_faster_impl(
                 audio, start, end, idx, word_timestamps=True,
+                initial_prompt=initial_prompt,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -304,11 +321,13 @@ class Transcriber:
             )
             return self._transcribe_slice_faster_impl(
                 audio, start, end, idx, word_timestamps=False,
+                initial_prompt=initial_prompt,
             )
 
     def _transcribe_slice_faster_impl(
         self, audio: np.ndarray, start: float, end: float, idx: int,
         word_timestamps: bool = True,
+        initial_prompt: str | None = None,
     ) -> dict[str, Any]:
         segments_iter, info = self._model.transcribe(
             audio,
@@ -318,6 +337,10 @@ class Transcriber:
             no_speech_threshold=self.cfg.no_speech_threshold,
             no_repeat_ngram_size=getattr(self.cfg, "no_repeat_ngram_size", 0),
             temperature=0.0,
+            # Il contesto di quanto detto finora. Non è la condizionazione
+            # continua (che è spenta per via dei loop): è solo il testo
+            # che apre il chunk, che è ciò che tiene i nomi coerenti.
+            initial_prompt=initial_prompt,
             vad_filter=False,  # VAD già fatto a monte
         )
 
@@ -349,13 +372,39 @@ class Transcriber:
             duration_sec=end - start,
         )
 
+    def _context_prompt(self, done_text: list[str]) -> str | None:
+        """Il testo da mettere davanti al chunk, in caratteri.
+
+        Il contesto non è il testo del chunk precedente e basta: sono
+        gli ultimi `context_prompt_chars` caratteri di tutto quello che
+        è stato detto finora, più le istruzioni di stile. Il prompt si
+        ricostruisce a ogni chunk perché ricostruirlo una volta sola
+        darebbe a tutti i chunk lo stesso contesto, che è esattamente
+        ciò che non serve.
+        """
+        chars = int(getattr(self.cfg, "context_prompt_chars", 0) or 0)
+        if chars <= 0:
+            return None
+        tail = " ".join(t for t in done_text if t).strip()
+        if tail:
+            tail = tail[-chars:]
+        style = (getattr(self.cfg, "style_prompt", "") or "").strip()
+        if style and tail:
+            return f"{style}\n\n{tail}"
+        return style or tail or None
+
     def _transcribe_slice(
-        self, audio: np.ndarray, start: float, end: float, idx: int
+        self, audio: np.ndarray, start: float, end: float, idx: int,
+        initial_prompt: str | None = None,
     ) -> dict[str, Any]:
         if self._backend == "mlx":
-            return self._transcribe_slice_mlx(audio, start, end, idx)
+            return self._transcribe_slice_mlx(
+                audio, start, end, idx, initial_prompt=initial_prompt,
+            )
         else:
-            return self._transcribe_slice_faster(audio, start, end, idx)
+            return self._transcribe_slice_faster(
+                audio, start, end, idx, initial_prompt=initial_prompt,
+            )
 
 
 # ---------------------------------------------------------------------------
