@@ -58,28 +58,22 @@ logger = logging.getLogger(__name__)
 # riapplicare alla fine. E' tutto quello che separa «sera.» da «sera».
 PUNTEGGIATURA = " \t\n.,;:!?()[]{}\"'«»…—-"
 
-# Il modello e' cambiato perche' quello di prima non e' piu'
-# utilizzabile da chi non l'ha mai usato: Google ha limitato l'accesso a
-# 2.5 riservandolo agli account che lo avevano gia' chiamato in passato.
-# Per un nuovo account la chiamata si ferma con un errore che non dice
-# nulla, quindi conviene partire da quello attuale.
+# Il modello e' cambiato due volte, e per due motivi diversi.
 #
-# Fra i due, 3.8 e' il piu' capace e 3.5 Flash-Lite il piu' economico.
-# Per un lavoro in cui il guasto da evitare e' la riscrittura — il
-# modello che corregge tutto perche' crede di poter migliorare il testo —
-# la capacita' conta piu' del centesimo. Per una passata sulle quattro
-# sessioni intere si puo' scegliere il leggero:
-#     python correct_text.py --consent --model gemini-3.5-flash-lite
-MODELLO = "gemini-3.8-flash"
+# Prima `gemini-2.5-flash`: Google ha limitato l'accesso alla famiglia
+# 2.5 riservandolo agli account che l'avevano gia' chiamato in passato,
+# quindi per un account nuovo la richiesta si ferma con un errore che
+# non dice nulla.
+#
+# Poi `gemini-3.8-flash`, che e' il piu' capace ma al momento risponde
+# `503 high demand` a ogni tentativo. Il default deve essere il modello
+# che funziona, non quello che sarebbe migliore: un batch notturno che
+# scarta tutti i segmenti e' peggio di uno che corregge un po' meno.
+MODELLO = "gemini-3.5-flash-lite"
 
-# Modelli noti, per quando quello scelto non esiste piu'. Non e' una
-# lista ufficiale: sono quelli che hanno funzionato quando questo
-# modulo e' stato scritto, e servono a dare un errore utile invece di
-# un codice HTTP.
 MODELLI_NOTI = {
-    "gemini-3.8-flash": "il piu' capace, scelta predefinita",
-    "gemini-3.5-flash-lite": "il piu' economico, per le passate lunghe",
-    "gemini-3.7-flash": "generazione precedente",
+    "gemini-3.5-flash-lite": "scelta predefinita: risponde regolarmente",
+    "gemini-3.8-flash": "piu' capace, ma spesso in 503 per domanda alta",
 }
 
 ISTRUZIONI = """\
@@ -90,7 +84,7 @@ Il testo che ti do e' la trascrizione automatica di un registratore. \
 Sbaglia le parole in modo prevedibile: fonemi scambiati, parole dialettali \
 rese in italiano, nomi proprii storpiati.
 
-Correggi il testo nel modo piu' probabile, ma con tre vincoli duri:
+Correggi il testo nel modo piu' probabile, ma con quattro vincoli duri:
 
 1. NON aggiungere e NON togliere parole. Il numero di parole deve \
 restare identico. Se una frase ti sembra incompleta, correggi le \
@@ -98,7 +92,14 @@ parole che ci sono e lascia stare: non ricostruire il pensiero.
 2. Non cambiare il registro ne il contenuto. Una conversazione fra \
 amici resta una conversazione fra amici, con i suoi «boh» e i suoi \
 «tipo».
-3. Se una parola e' gia' plausibile ma non sei sicuro che sia quella \
+3. ATTENZIONE, perche' e' l'errore piu' facile da commettere: il testo \
+viene da una registrazione vera e chi parla e' una persona viva. Una \
+parola che ti sembra storta ma che e' pronunciabile — un dialettalismo, \
+un intercalare, una forma che si sentirebbe davvero a voce — e' quasi \
+certamente quello che e' stato detto, e va lasciata. Non e' un errore \
+della trascrizione: e' una persona che parla come parla. Cambiarla in \
+italiano piu' corretto significa inventare.
+4. Se una parola e' gia' plausibile ma non sei sicuro che sia quella \
 giusta, lasciala. Un intervento a caso peggiora il testo.
 
 Per ogni parola del testo originale scrivi una riga JSON con:
@@ -274,6 +275,14 @@ def _estrai_json(testo: str) -> dict[str, Any] | None:
     if testo.startswith("```"):
         testo = re.sub(r"^```[a-zA-Z]*\n?", "", testo)
         testo = re.sub(r"\n?```$", "", testo).strip()
+    # Le virgole finali sono il caso piu' comune di risposta che sembra
+    # JSON e non lo e'. I modelli le scrivono per abitudine di elenco
+    # Markdown, e `json.loads` le rifiuta: succedeva davvero, e il
+    # segmento veniva scartato con la correzione gia' fatta e pagata
+    # dentro. Una virgola prima di `}` o `]` non e' mai JSON valido,
+    # quindi toglierla non può cambiare il significato di un JSON che
+    # era valido — la trasformazione e' sicura per costruzione.
+    testo = re.sub(r",(\s*[}\]])", r"\1", testo)
     for candidato in (testo, _solo_oggetto(testo)):
         if candidato is None:
             continue
@@ -292,7 +301,7 @@ def _estrai_json(testo: str) -> dict[str, Any] | None:
 def _solo_oggetto(testo: str) -> str | None:
     """Il primo {...} di un testo che potrebbe avere altro attorno."""
     m = re.search(r"\{.*\}", testo, re.S)
-    return m.group(0) if m else None
+    return re.sub(r",(\s*[}\]])", r"\1", m.group(0)) if m else None
 
 
 def _applica(originale: str, correzioni: list[dict]) -> tuple[str, list[WordFix]] | None:
@@ -347,6 +356,45 @@ def _applica(originale: str, correzioni: list[dict]) -> tuple[str, list[WordFix]
         WordFix(indice=i, originale=parole[i], proposta=out[i])
         for i in range(len(parole))
     ]
+
+
+def _motivo(exc: Exception) -> str:
+    """Il pezzo di errore che dice perche' si e' fallito, in breve."""
+    testo = str(exc)
+    for segno in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+                  "overloaded", "high demand", "quota"):
+        if segno.lower() in testo.lower():
+            return segno
+    return "errore"
+
+
+def _piano(exc: Exception) -> float:
+    """Secondi minimi da aspettare, secondo il tipo di errore.
+
+    Una richiesta che il server dichiara «temporaneamente non
+    disponibile» o «troppe richieste» ha bisogno di secondi, non di
+    frazioni: il batch seriale di notte fa poche chiamate al secondo,
+    quindi non e' il volume il problema, e riprovare subito non porta
+    da nessuna parte.
+    """
+    testo = str(exc).lower()
+    if "429" in testo or "resource_exhausted" in testo or "quota" in testo:
+        return 30.0
+    if ("503" in testo or "unavailable" in testo
+            or "overloaded" in testo or "high demand" in testo):
+        return 15.0
+    return 0.0
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """Quanto ha detto il server di aspettare, se lo ha detto.
+
+    Il nome del campo cambia (`Retry-After`, `retryAfter`, `retry-after`)
+    e può arrivare come intestazione o dentro il corpo dell'errore:
+    il punto interrogativo copre il separatore che ci mette in mezzo.
+    """
+    m = re.search(r"retry.?after[\"':=\s]+(\d+)", str(exc), re.I)
+    return float(m.group(1)) if m else None
 
 
 def _modello_mancante(exc: Exception) -> bool:
@@ -439,7 +487,16 @@ class Correttore:
                 risp = client.models.generate_content(
                     model=self.modello,
                     contents=prompt,
-                    config={"response_mime_type": "application/json"},
+                    # Temperatura 0: due passate sullo stesso testo
+                    # devono dare la stessa risposta. Senza, la stessa
+                    # parola veniva corretta in modo diverso a ogni
+                    # giro — «disastrati» e poi «distratti» — e una
+                    # correzione che cambia da una passata all'altra non
+                    # e' una correzione, e' un tiro a dadi. Su un
+                    # corpus che si vuole interrogare, il risultato
+                    # deve essere riproducibile.
+                    config={"response_mime_type": "application/json",
+                            "temperature": 0},
                 )
                 break
             except Exception as exc:  # noqa: BLE001
@@ -470,11 +527,18 @@ class Correttore:
                         f"disponibile per questo account.\n  "
                         f"{elenco}{scelta}"
                     ) from exc
-                # Backoff: un rate limit di notte non e' un errore da
-                # far fallire il batch, e' una ragione per aspettare.
-                attesa = self.pausa * (2 ** tentativo)
-                logger.warning("Chiamata fallita (%s), riprovo fra %.1fs",
-                               type(exc).__name__, attesa)
+                # Backoff. Un rate limit o un 503 non si risolvono
+                # riproendo subito: il server sta dicendo che ora non
+                # puo', e rimandare di mezzo secondo serve solo a
+                # farsi respingere di nuovo, consumando quota. Si
+                # aspetta un minimo di qualche secondo, e se il
+                # server ha indicato quanto, si ascolta lui.
+                attesa = max(self.pausa * (2 ** tentativo), _piano(exc))
+                indicato = _retry_after(exc)
+                if indicato:
+                    attesa = max(attesa, indicato)
+                logger.warning("Chiamata fallita (%s: %s), riprovo fra %.1fs",
+                               type(exc).__name__, _motivo(exc), attesa)
                 time.sleep(attesa)
         else:
             return SegmentResult(

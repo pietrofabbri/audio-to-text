@@ -659,6 +659,61 @@ allo specchio.
 **Verificato.** 9 test sulla matrice. `voices` sui dati veri: 9 voci,
 16 campioni, 109 coppie, 6 in zona grigia.
 
+### 22. ~~Il correttore: cosa fa davvero~~ — chiuso, con una riserva
+
+**Stato.** Chiuso sul lato meccanico, con una riserta aperta su quello
+che non si puo' delegare a un modello. Provato con una chiave vera su
+segmenti veri, non più con una chiave finta: e li' sono usciti tre
+difetti che i test offline non potevano vedere.
+
+**Le virgole finali facevano perdere il lavoro gia' pagato.** Il modello
+rispondeva JSON correttissimo ma con una virgola prima di ogni `}`, e
+`json.loads` lo rifiuta: il segmento finiva tra gli scarti **con la
+correzione dentro**. Quattro chiamate buttate e una voce che l'analisi
+non avrebbe mai visto. La correzione e' sicura per costruzione — una
+virgola prima di `}` o `]` non e' mai JSON valido, quindi toglierla non
+puo' cambiare il significato di un JSON che era valido.
+
+**Il backoff era troppo corto per gli errori che importano.** Mezzo
+secondo, poi uno: è la scala giusta per un errore di sintassi, non per
+un `503 UNAVAILABLE` o un `429`. Riprovare cosi' serve solo a farsi
+respingere di nuovo consumando quota. Ora un 503 aspetta almeno
+quindici secondi, un 429 trenta, e se il server ha scritto quanto
+aspettare si ascolta lui. Il batch seriale non è il problema: fa poche
+chiamate al secondo.
+
+**Il modello predefinito non rispondeva.** `3.8-flash` ha dato 503 a
+ogni tentativo; `3.5-flash-lite` ha risposto regolarmente. Il default
+deve essere il modello che funziona, non quello che sarebbe migliore.
+
+**La riserva, che è la cosa che conta.** Il correttore riscrive le
+parole dialettali. Su `Cominciatemi ragazzi, siamo drastisovati` ha
+proposto «Camminate» e poi, a una seconda esecuzione, «Diamoci» —
+nessuna delle due è piu' difendibile dell'originale. Una regola esplicita
+nel prompt («una parola pronunciabile che sembra storta e' quasi
+certamente quello che è stato detto») non l'ha fermato: è una
+limitazione del modello, non un difetto di istruzione.
+
+Il danno è limitato e per costruzione: il numero di parole non cambia,
+l'originale resta in `text_raw` e ogni parola affiancata nel file. Ma
+**non è ancora pronto per una passata automatica sui 429 segmenti**, e il
+motivo è che non si può distinguere un errore di riconoscimento da una
+parola che suona stretta solo perché è dialettale — non c'è un
+dizionario che lo sappia. Il filtro più solido sarebbe non far correggere
+le parole che Whisper aveva già capito con sicurezza, e per farlo
+servirebbe la probabilità **per parola**, che oggi non si salva: esiste
+solo quella per segmento.
+
+Quel che funziona, e va detto: `drastisovati` → «disastrati»,
+`monopolito` → «monopolio», `steam` → «stesso». Sono correzioni che
+nessun modello acustico avrebbe fatto. Solo che non sono distinguibili,
+a occhio, dalle invenzioni.
+
+**Verificato.** Temperatura 0, perché due passate sullo stesso testo
+davano risultati diversi e una correzione che cambia da una passata
+all'altra non è una correzione: ora è riproducibile. 22 test sulla
+correzione, 175 in tutto su 11 suite.
+
 ---
 
 ## L'ordine in cui li farei

@@ -36,7 +36,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.text_correction import (  # noqa: E402
     Correttore, SegmentResult, WordFix, _applica, _coda, _estrai_json,
-    _modello_mancante, correggi_segmenti, scrivi_varianti,
+    _modello_mancante, _piano, _retry_after, correggi_segmenti, scrivi_varianti,
 )
 from core.text_correction import MODELLO  # noqa: E402
 
@@ -68,10 +68,12 @@ class _ModelloFinto:
     def __init__(self, risposte) -> None:
         self._risposte = list(risposte)
         self.chiamate = 0
+        self.configs = []
         self.models = self
 
     def generate_content(self, model=None, contents=None, config=None):
         self.chiamate += 1
+        self.configs.append(config or {})
         if not self._risposte:
             raise AssertionError("il modello finto ha ricevuto troppe chiamate")
         prossima = self._risposte.pop(0)
@@ -254,6 +256,18 @@ def percorso_completo() -> None:
     require(r.testo_originale == orig, "l'originale resta intatto")
     require(r.n_cambiate == 2, f"2 correzioni, risulta {r.n_cambiate}")
     require(c._client.chiamate == 1, "una sola chiamata per un segmento")
+
+    # Il modello viene interrogato a temperatura zero. Non e' un
+    # dettaglio: la stessa parola veniva corretta in modo diverso a
+    # ogni giro — «disastrati» e poi «distratti» — e una correzione che
+    # cambia da una passata all'altra non e' una correzione, e' un tiro
+    # a dadi. Su un corpus che si vuole interrogare, il risultato deve
+    # essere riproducibile.
+    config = c._client.configs[0]
+    require(config.get("temperature") == 0,
+            f"la temperatura deve essere 0, e' {config.get('temperature')!r}")
+    require(config.get("response_mime_type") == "application/json",
+            f"serve la risposta in JSON, e' {config!r}")
 
 
 def risposta_illeggibile_scartata() -> None:
@@ -635,7 +649,77 @@ def modello_non_disponibile() -> None:
     require(c._client.chiamate == 3, "deve aver riprovato")
 
 
+def virgole_finali_nel_json() -> None:
+    """Il JSON con le virgole finali è JSON: va letto, non scartato.
+
+    Questo è successo davvero, con una risposta vera. Il modello
+    scriveva il JSON correttissimo ma con una virgola prima di ogni
+    `}`, `json.loads` lo rifiutava e il segmento finiva tra gli scarti:
+    la correzione c'era, ed era stata pagata. Quattro chiamate perse
+    per niente, e una voce che l'analisi non avrebbe mai visto.
+
+    La trasformazione è sicura per costruzione: una virgola prima di
+    `}` o `]` non è mai JSON valido, quindi toglierla non può cambiare
+    il significato di un JSON che era valido.
+    """
+    grezzo = ('{\n  "correzioni": [\n'
+              '    {"i": 0, "a": "Cominciatemi", "b": "Cominciatemi",},\n'
+              '  ],\n}')
+    atteso = {"correzioni": [{"i": 0, "a": "Cominciatemi",
+                             "b": "Cominciatemi"}]}
+    require(_estrai_json(grezzo) == atteso,
+            f"non letto: {_estrai_json(grezzo)!r}")
+
+    # Una virgola DENTRO una stringa non è una virgola finale: qui la
+    # parola «così, no» deve arrivare intatta, perché è il testo che
+    # si sta correggendo.
+    dentro = '{"correzioni": [{"i": 1, "a": "cosi, no", "b": "x",}]}'
+    got = _estrai_json(dentro)
+    require(got == {"correzioni": [{"i": 1, "a": "cosi, no", "b": "x"}]}, got)
+
+    # E il JSON senza virgole finali deve restare com'era.
+    pulito = '{"correzioni": [{"i": 1, "a": "x", "b": "y"}]}'
+    require(_estrai_json(pulito) == {"correzioni": [{"i": 1, "a": "x", "b": "y"}]},
+            "il JSON valido non deve essere toccato")
+
+
+def il_backoff_ascolta_il_server() -> None:
+    """Un 503 o un 429 aspettano secondi, non mezzo secondo.
+
+    Il batch seriale fa poche chiamate al secondo: non è il volume il
+    problema, è che il server sta dicendo «non ora». Riprovare dopo
+    mezzo secondo serve solo a farsi respingere di nuovo, e consuma
+    quota per niente — la risposta è identica ma più tardi.
+
+    Un permesso negato invece non si risolve aspettando: nessun piano.
+    """
+    for testo, atteso in [
+        ("429 RESOURCE_EXHAUSTED quota exceeded", 30.0),
+        ("RESOURCE_EXHAUSTED", 30.0),
+        ("503 UNAVAILABLE: high demand", 15.0),
+        ("overloaded", 15.0),
+        ("400 INVALID_ARGUMENT: bad key", 0.0),
+        ("PERMISSION_DENIED", 0.0),
+    ]:
+        got = _piano(Exception(testo))
+        require(got == atteso, f"{testo} -> {got}, atteso {atteso}")
+
+    # Se il server dice quanto aspettare, si ascolta lui.
+    for testo, atteso in [
+        ('{"status":"RESOURCE_EXHAUSTED","retryAfter": "42s"}', 42.0),
+        ("Retry-After: 12", 12.0),
+        ("retry-after=7", 7.0),
+        ("nessun indicazione", None),
+    ]:
+        got = _retry_after(Exception(testo))
+        require(got == atteso, f"{testo} -> {got}, atteso {atteso}")
+
+
 CHECKS = [
+    ("il JSON con virgole finali viene letto, non scartato",
+     virgole_finali_nel_json),
+    ("il backoff ascolta il server e aspetta secondi",
+     il_backoff_ascolta_il_server),
     ("il commento in coda viene spiegato, non ignorato",
      commento_in_coda_rinomato),
     ("un modello non più disponibile si ferma subito",

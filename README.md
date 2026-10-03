@@ -743,8 +743,11 @@ mostra cosa farebbe e si ferma.
    automaticamente un progetto Google Cloud di default.
 2. Clicca **Create API key**. Comparirà una finestra che chiede in quale
    progetto metterla: lascia il default, se non ne hai altri.
-3. Comparirà una chiave che comincia per `AIza`. **Copiala subito**:
-   Google la mostra una volta sola e non si può rivedere dopo.
+3. Comparirà una chiave. **Copiala subito**: Google la mostra una volta
+   sola e non si può rivedere dopo. Può cominciare per `AIza` (chiave
+   standard) o per `AQ.` (authorization key, legata a un account di
+   servizio: è quella che Google crea per impostazione predefinita dal
+   maggio 2026). Va bene qualsiasi delle due.
 4. Mettila nell'ambiente — su macOS con zsh:
 
    ```bash
@@ -765,12 +768,34 @@ pip install google-genai
 Vale anche `GEMINI_API_KEY`; se sono entrambe presenti vince
 `GOOGLE_API_KEY`.
 
-> **Il modello conta.** Il default è `gemini-3.8-flash`. I modelli
-> `2.5` sono ormai accessibili solo agli account che li avevano già
-> usati in passato, quindi per un account nuovo la chiamata si ferma con
-> un errore che non spiega nulla — è successo, ed è il motivo per cui
-> l'errore adesso nomina i modelli che funzionano. Per una passata
-> lunga: `--model gemini-3.5-flash-lite`.
+> **Il modello conta.** Il default è `gemini-3.5-flash-lite`, non il più
+> capace: `3.8-flash` al momento risponde `503 high demand` a ogni
+> tentativo, e un batch notturno che scarta tutti i segmenti è peggio di
+> uno che corregge un po' meno. I modelli `2.5` sono accessibili solo
+> agli account che li avevano già usati in passato. Se un modello non è
+> disponibile l'errore si ferma subito e nomina quelli che funzionano,
+> invece di consumare i tentativi su una richiesta che non può riuscire.
+
+### Quanto è affidabile — misurato, non dichiarato
+
+Su segmenti veri, con chiave vera:
+
+| | |
+|---|---|
+| **Correzioni giuste** | `drastisovati` → disastrati, `monopolito` → monopolio, `steam` → stesso |
+| **Correzioni inventate** | `Cominciatemi` → «Camminate», poi → «Diamoci» |
+| **Segmenti senza ritocco** | 3 su 6, il modello è cauto |
+
+Il difetto è che riscrive le parole dialettali, e non si distingue a
+occhio un errore di riconoscimento da una parola che suona stretta
+solo perché è dialettale. Il limite strutturale è che oggi non si salva
+la probabilità **per parola** (c'è solo quella per segmento): senza, non
+c'è modo di dire a priori se Whisper aveva già capito.
+
+Per questo **non conviene ancora una passata automatica su tutte le
+sessioni**: meglio `--dry` su una sessione, guardare, e poi decidere.
+Gli originali restano sempre accanto ai corretti, in `text_raw` e in
+`text_correction.json`.
 
 ### Il numero di parole non può cambiare
 
