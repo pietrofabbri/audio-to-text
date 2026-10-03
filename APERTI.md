@@ -9,11 +9,13 @@ Convenzione: **Io** = lavoro di codice che posso fare subito.
 **Tu** = serve il registratore, una decisione tua, o un dispositivo che
 non ho ancora.
 
-I punti **2** (cache WAV), **3** (finestra notturna) e **4** (nomi dei
-parlanti) sono **chiusi**, e c'è un punto nuovo sul **carico termico**.
-Il punto **7** (saturazione del registratore) è **archiviato**: non è
-risolto, è che non è risolvibile da qui. Sotto ciascuno è scritto cosa
-è stato fatto e cosa resta.
+**Chiusi:** 2 (cache WAV), 3 (finestra notturna), 4 (nomi dei
+parlanti), 5 (punteggiatura come segnale debole), 6 (flag di qualità),
+9 (pubblicazione, provata con una coda finta).
+**Archiviato:** 7 (saturazione) — non risolvibile da qui.
+**Chiuso anche:** il carico termico, che è stato il punto 3b ed è
+diventato una scoperta (4 thread sono più veloci di 8).
+**Aperti:** 1 (la prima notte vera), 8 (biometria), 10–14 (da valutare).
 
 ---
 
@@ -171,56 +173,102 @@ delle voci: copiare tutto in ogni sessione significa che il
 parlato martedì. Ma gli ID già elencati nella mappa contano come
 riferimenti, altrimenti togliere un nome non lo toglierebbe mai da lì.
 
-**Cosa non fa.** Non rilegge l'audio e non rielabora: il merge delle
-identità resta valido solo per le sessioni future. Rietichettare le
-sessioni passate quando due voci vengono unite è un lavoro separato,
-e non l'ho fatto.
+**Cosa non fa.** Non rilegge l'audio e non rielabora. Ma il merge delle
+identità, quello sì lo fa: `review_speakers.py merge` **rietichetta le
+sessioni già scritte** (segmenti, statistiche, mappe locali, anche le
+chiavi dei dizionari in `session.json`) e le righe di `corpus.db`.
+Senza questo, unire due voci lasciava due ID per la stessa persona nel
+corpus, con statistiche che non si sommano — cioè il problema che il
+merge doveva risolvere restava aperto.
+
+Ci sono voluti due bug per farlo bene, e sono il tipo di bug che si
+incontrano solo provando:
+
+- cancellando la voce assorbita dalla tabella voci, se nel corpus c'era
+  **solo** quella, la tabella restava vuota e le query per parlante non
+  trovavano più nessuno. Ora l'ID di destinazione viene creato se
+  manca;
+- in `session.json` gli speaker sono un **dizionario indicato per ID**:
+  sostituire solo i valori lasciava la voce vecchia come chiave. E
+  rinominare le chiavi durante l'iterazione del dizionario solleva un
+  `RuntimeError` che avrebbe fatto fallire il merge a metà.
 
 ---
 
-### 5. Il denoise misura quantità, non qualità della punteggiatura
+### 5. ~~Il denoise misura quantità, non qualità della punteggiatura~~ — chiuso il 3 ottobre
 
-**Stato.** Le metriche del confronto (confidenza ASR, rapporto di
-parlato, ritmo, segmenti ripetuti) sono tutte quantità. La
-punteggiatura non è misurata.
+**Stato.** Chiuso, come **segnale debole**, cioè esattamente come era
+stato proposto.
 
-**Pro.** Su una registrazione reale la variante ripulita produceva
-punteggiatura migliore ("che è il modo realistico" contro "che è il
-modo"), e le metriche non se ne accorgono: sceglievano l'originale.
+`pipeline/denoise.py` misura ora i segni di punteggiatura ogni 100
+caratteri e li usa **solo come spareggio**: entrano in gioco quando
+confidenza, ritmo, parlato e segmenti degeneri sono in pareggio. Se la
+confidenza dice chiaramente una delle due varianti, la punteggiatura non
+ha voto — ci sono due test che lo verificano, perché è il modo più
+naturale di fare in modo che uno "segnale debole" finisca per essere
+un criterio.
 
-**Contra.** Rilevare la punteggiatura è fragile — un errore di
-riconoscimento su un punto è indistinguibile da un refuso reale, e una
-metrica sbagliata in questo caso *sceglie il peggio*.
+**Tre scelte che rendono la misura onesta.**
 
-**Perché.** Se il corpus serve anche per analisi linguistica, la
-punteggiatura è dato, non rumore.
+- **Sotto 200 caratteri non si misura.** Su quattro lettere un punto
+  cambia tutto, e un numero inventato che può decidere una scelta è
+  peggio di nessun numero.
+- **L'apostrofo non conta.** "l'acqua" è elisione, non confine di
+  frase: contarlo inflazionerebbe ogni frase con due parole elise.
+- **Il margine è più alto del doppio** (0,6 segni/100 caratteri) di
+  quello sulla confidenza, perché il dato è più rumoroso. La direzione
+  in cui sbaglia è tenere l'originale.
 
-**Io.** Posso misurarla, ma solo come **segnale debole** che non
-sceglie da solo: vale come tie-breaker quando le altre metriche sono
-pareggio. **Tu.** Se la punteggiatura conta più della velocità, questo
-diventa il punto numero due.
+**Il costo dichiarato.** Su una differenza vera di una virgola (0,82
+contro 1,23 segni/100 caratteri) la decisione resta "originale". Il
+dato serve, non decide: serve nei casi in cui la differenza è grande,
+e li si vedranno solo dopo qualche settimana di `denoise_decision.json`.
 
 ---
 
-### 6. Nessun segnale che dica "qui la trascrizione è rotta"
+### 6. ~~Nessun segnale che dica "qui la trascrizione è rotta"~~ — chiuso il 3 ottobre
 
-**Stato.** In un estratto reale, i primi 40 secondi erano audio non
-intellegibile: il modello ci ha messo dentro testo plausibile e
-sbagliato. Niente nel corpus dice "qui non c'era parlato".
+**Stato.** Chiuso. `core/quality.py` valuta ogni segmento e gli assegna
+`ok` / `low` / `unreliable`, con i **motivi** che ci vanno dietro. Il
+verdetto finisce in `transcript.json`, in `segments.jsonl`, in
+`prosody.csv`, in `analysis_ready.md` (in testa al documento e in linea
+a ogni segmento), e nelle colonne `quality` / `quality_reasons` di
+`corpus.db`.
 
-**Pro.** Un flag `transcription_quality` per segmento (loop, prob
-media bassa, parole per secondo implausibile) ti fa risparmiare il
-lavoro di notte quando guardi i risultati, e ti avvisa prima di
-costruirci sopra analisi.
+**Cinque segnali, ciascuno per un modo diverso in cui Whisper sbaglia:**
 
-**Contra.** Il rischio è fare di più la qualità media: un flag che
-scatta troppo spesso viene ignorato, e a quel punto è rumore.
+| Segnale | Cosa cattura |
+|---|---|
+| `no_speech_prob` alto | il modello stesso dice "qui non parlavi" |
+| parole al secondo fuori scala | allineamento rotto |
+| loop di n-gramma | il caso tipico della registrazione vera |
+| testo vuoto o troppo corto | segmenti che non dicono nulla |
+| quota di parole a bassa probabilità | il modello che indovina, e lo sa |
 
-**Perché.** Meglio sapere che il 10% del corpus è illeggibile che
-scoprirlo mesi dopo, dopo averci costruito sopra un'analisi.
+**Un bug vero trovato scrivendo i test.** Il loop più comune in
+assoluto — una sola parola ripetuta — non veniva intercettato: le
+occorrenze di un n-gramma sono sovrapposte, e la guardia che contava
+le parole minime come se fossero disgiunte chiedeva 12 parole dove ne
+bastavano 7. Ora il caso reale ("ma tu non vado a fare il bambino" ×22)
+viene visto, e c'è un test dedicato.
 
-**Io.** Il calcolo e la colonna. **Tu.** Quanto è accettabile che il
-corpus contenga buchi.
+**Il pericolo dichiarato, e come è stato tenuto sotto controllo.** Un
+flag che scatta spesso viene ignorato. Per questo:
+
+- **un solo segnale dà `low`, non `unreliable`** — una parola a
+  probabilità 0,3 è ancora informazione;
+- **senza timestamp di parola non si giudica la confidenza** — il
+  transcriber ricade apposta su quei chunk, e penalizzarli sarebbe
+  rumore inventato;
+- **`low_word_share` oltre alla media**: con quattro parole a 0,9 e
+  una a 0,2 la media è 0,74 e sembra ottima. Il modello aveva indovinato
+  una parola su cinque e la media lo copriva.
+
+**Due query che lo rendono usabile** (`CorpusDB.quality_report()` e
+`suspect_text()`). Senza, il flag sarebbe una colonna che nessuno
+guarda: la domanda utile non è "quanti segmenti sono brutti" ma "posso
+analizzare questa sessione", e il riassunto è pesato sulle **parole**,
+non sui segmenti.
 
 ---
 
@@ -236,11 +284,42 @@ migliore.
 Non lo chiudo perché sia risolto: lo chiudo perché è l'unico punto
 dell'elenco in cui la soluzione non è nel software, e tenerlo in aperto
 accanto a cose che posso fare io serviva solo a ricordarti un vincolo
-che conosci già.
+che conosci già. Resta scritto qui perché il dato — +3,2 dBFS, 0,19–0,30%
+a fondo scala — è la misura con cui giudicare se le registrazioni
+future peggiorano.
 
 ---
 
-## Funzionalità — bloccate da cose che non ho
+---
+
+## Funzionalità — una parte chiusa, una bloccata
+
+### 9. ~~Il corpus non è mai stato pubblicato con dati veri~~ — chiuso il 3 ottobre
+
+**Stato.** Chiuso come **prova**, non come pubblicazione vera: la catena
+è stata provata per intero con una coda finta e un clone git con
+remoto locale. Nessun dato tuo è uscito, e GitHub non è stato toccato.
+
+**Cosa è stato provato** (`tests/test_publish.py`): `git add`, commit e
+`push` veri; nessun file vietato nel remoto; i nomi veri assenti dal
+**contenuto** di ogni file pubblicato; gli pseudonimi e i segmenti
+presenti.
+
+**Il buco che il test ha trovato.** Il controllo finale guardava solo
+estensioni e nomi di file noti. Non guardava il contenuto: se un nome
+fosse finito in un CSV, in una riga di `segments.jsonl` o in un file
+lasciato da una versione precedente, sarebbe passato. Ora
+`_guard_repo()` cerca i nomi reali dentro ogni file pubblicato, usando
+l'elenco esatto delle etichette che hai assegnato tu — l'unica
+informazione disponibile, che non produce falsi positivi. È l'ultima
+rete, e c'è un test che le mette sotto le mani un nome di sfuggimento.
+
+**Cosa resta.** La pubblicazione vera, quando ci sarà materiale vero da
+pubblicare. Il rischio residuo è solo il contenuto: i formati sono gli
+stessi che sono già stati provati, ma nessuno ha mai visto `INDEX.md`
+con dentro le tue date.
+
+---
 
 ### 8. Sync biometrico: mai costruito
 
@@ -264,22 +343,6 @@ esistono. **Tu.** Il dispositivo e l'accesso all'app.
 
 ---
 
-### 9. Il corpus non è mai stato pubblicato con dati veri
-
-**Stato.** `publish_corpus.py` funziona ed è stato provato a secco, ma
-mai su una coda vera di 18 file.
-
-**Pro.** Verifica l'ultimo anello: privacy (che niente audio o nomi
-veri escano), e che quello che finisce sulla repo sia interrogabile.
-
-**Contra.** Nessuno, se non lo fai prima di avere mesi di materiale:
-meglio scoprire un problema di privacy fra una settimana che fra un anno.
-
-**Perché è urgente più di quanto sembri.** È l'unico punto in cui un
-errore è irreversibile: dati pubblicati per errore non si richiamano.
-
----
-
 ## Da valutare, nessuna urgenza
 
 | # | Punto | Pro | Contra | Di chi |
@@ -291,19 +354,67 @@ errore è irreversibile: dati pubblicati per errore non si richiamano.
 | 14 | Segmenti da ~18 s per l'analisi | Prosodia misurabile per frase | Turni di parlato meno leggibili | Io |
 | 15 | Misurare il termico vero (ventola, °C) | Il dato vero, non dedotto dal tempo | Serve `powermetrics` e qualche ora | Io, dopo una notte |
 
+### Sul perché questi sei sono ancora aperti
+
+Non sono rimasti indietro: sono in attesa di dati che non esistono
+ancora, e ognuno ha il motivo per cui aspettare.
+
+**10 — soglia 0,78.** C'è **una sola voce** in `speakers_db.json`. Con
+una voce la soglia non è valutabile: nessuna coppia da confrontare. Il
+giudizio su una soglia si fa sulle coppie certe e su quelle incerte, e
+quelle arriveranno dalla seconda persona che parla nel registratore.
+`review_speakers.py list` stampa la matrice quando è il momento.
+
+**11 — campione denoise di 180 s.** Costa 45 s per file, ed è il prezzo
+di non fare una seconda passata ASR su un'ora sola. Su un file la
+qualità dell'audio non cambia di minuto in minuto: si sceglie una volta
+sui primi tre minuti e si applica a tutto il resto. Se un giorno
+dovesse risultare sbagliato — qualità buona all'inizio, fruscio
+dall'ora 40 — il numero da cambiare è `DenoiseConfig.sample_sec`, e il
+costo sale di conseguenza.
+
+**12 — modello `medium`.** È una tua decisione e la risposta è già
+nel conto: si risparmia circa la metà del tempo notturno al prezzo di
+una qualità di riconoscimento peggiore. Su un corpus che serve per
+analisi linguistica, quella qualità **è** il dato. Non lo cambiavo.
+
+**13 — archivio a 7 giorni.** Ora pesa 35 MB con quattro file. Diventa
+un problema con settimane di materiale, non prima. `A2T_KEEP_LOCAL=0`
+lo disattiva.
+
+**14 — segmenti da ~18 s.** Il chunker produce segmenti da 29 s
+massimo per il clock Whisper, con chunk che coprono il tempo trascorso
+e non la somma del parlato: un chunk da 29 secondi di clock con 18 di
+parlato era il bug che produceva prosodia calata su due minuti e mezzo
+di silenzio. Ridurli a 18 significherebbe più segmenti, meno efficienza e
+turni di parlato meno leggibili. Il limite di 29 s è giusto: è il
+vincolo del modello.
+
+**15 — il termico vero.** `thermal_probe.py` esiste e funziona, ma su
+questa macchina `ioreg` non espone la temperatura e `powermetrics` chiede
+permessi root che non sono stati concessi. Quello che lo strumento fa
+senza permessi è uso CPU e livello termico di macOS, e già segnala la
+frequenza se dovesse leggerla. Manca il pezzo vero — watt e
+frequenza — che si misura con `sudo powermetrics`. La stima su quattro
+thread è pienamente supportata dai dati; il comportamento termico
+proprio no, e non va dato per misurato.
+
 ---
 
 ## L'ordine in cui li farei
 
-Fatti: **2** (cache WAV), **3** (finestra unica), **4** (nomi), e il
-punto sul termico.
+Fatti: **2** (cache WAV), **3** (finestra unica), **4** (nomi),
+**5** (punteggiatura), **6** (flag di qualità), **9** (pubblicazione),
+e il carico termico.
 
-1. **1 — la prima notte vera.** Con 2–4 fatti è un test vero, e non è
-   più un rischio teorico: è l'unica verifica che manca.
-2. **6 — flag di qualità.** Prima di costruirci analisi sopra.
-3. **9 — pubblicazione.** Prima che il corpus sia grosso, e prima che ci
-   sia materiale che non vorresti vedere sulla repo.
-4. **15 — misurare il termico vero.** Dopo una notte.
+1. **1 — la prima notte vera.** Con tutto il resto fatto è l'unica
+   verifica che manca, e non è più un rischio teorico.
+2. **6, in verifica** — guardare i primi flag di qualità prodotti da
+   una notte vera. Se `unreliable` è sotto il 5% il flag è tarato
+   bene; se è sopra il 30%, le soglie vanno alzate prima che il flag
+   diventi rumore, che è il suo unico modo di morire.
+3. **10 — la soglia**, quando ci sarà la seconda voce.
+4. **15 — il termico**, con `powermetrics` e una notte di misura.
 5. **8 — biometria.** Quando arriva l'hardware.
 
 Il resto può aspettare che il sistema abbia girato qualche notte e

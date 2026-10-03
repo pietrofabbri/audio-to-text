@@ -360,6 +360,192 @@ def test_fallback_stem_is_unique_per_file(tmp: Path) -> None:
 
 
 # -------------------------------------------------------------------
+# Punteggiatura: segnale debole nel confronto denoise
+# -------------------------------------------------------------------
+
+# Testo lungo a sufficienza perché la punteggiatura sia misurabile
+# (sotto MIN_PUNCT_CHARS il rapporto è un numero inventato) e con un
+# ritmo plausibile, così il confronto non parte già da "entrambe
+# degradate" per motivi che non hanno niente a che fare con la prova.
+_TESTO = (
+    "oggi abbiamo parlato a lungo del progetto nuovo e di come organizzare "
+    "il lavoro della settimana prossima con tutto il team, perche i numeri "
+    "non tornano e nessuno capisce bene chi debba muoversi per primo, "
+    "e allora se ne parla ancora per un'ora intera"
+)
+
+
+def _chunk(testo: str, prob: float = 0.9) -> dict:
+    return {"text": testo, "words": [{"word": w, "prob": prob}
+                                     for w in testo.split()]}
+
+
+def _variante(nome: str, testo: str) -> "object":
+    from pipeline.denoise import score_variant
+    return score_variant(nome, [_chunk(testo)],
+                         {"speech_duration_sec": 30, "total_duration_sec": 100})
+
+
+def test_punctuation_is_measured_only_on_long_text(tmp: Path) -> None:
+    """Sotto una certa lunghezza il rapporto è un numero inventato, e un
+    numero inventato che può decidere una scelta è peggio di nessun
+    numero: su quattro lettere, un punto cambia tutto."""
+    corto = _variante("original", "va bene")
+    assert corto.punctuation_per_100ch == 0.0, corto.punctuation_per_100ch
+
+    lungo = _variante("original", _TESTO)
+    assert lungo.punctuation_per_100ch > 0.0, lungo.punctuation_per_100ch
+
+
+def test_punctuation_breaks_a_tie(tmp: Path) -> None:
+    """Il caso per cui esiste: tutte le metriche quantitative in pari, e
+    la punteggiatura dice quale delle due è il testo vero."""
+    from pipeline.denoise import compare
+    # Stessa confidenza, testo identico salvo i segni di fine frase:
+    # è esattamente "che è il modo realistico" contro "che è il modo".
+    originale = _variante("original", _TESTO)
+    ripulita = _variante("denoised", _TESTO + ".")
+    assert abs(originale.asr_confidence - ripulita.asr_confidence) < 1e-9
+
+    d = compare(originale, ripulita)
+    # La differenza (una virgola in piu') non basta: sotto il margine si
+    # tiene l'originale, e va detto perche' il dato e' rumoroso.
+    assert d["winner"] == "original", d["reasons"]
+    assert "punteggio" in " ".join(d["reasons"]).lower() or "spareggio" in " ".join(d["reasons"])
+
+
+def test_punctuation_never_overrides_confidence(tmp: Path) -> None:
+    """Il suo campo è esattamente questo: spareggio. Con la confidenza
+    che dice chiaramente una delle due, la punteggiatura non ha voto.
+
+    Nota sui nomi: `compare()` tiene le varianti in un dizionario
+    indicato per nome, quindi le due si devono chiamare per forza
+    "original" e "denoised". E i numeri sono impostati a mano: le
+    metriche derivate da un testo finto non hanno niente a che fare con
+    quello che si sta provando qui.
+    """
+    from pipeline.denoise import compare
+
+    # Più punteggiatura ma confidenza peggiore: vince l'originale.
+    originale = _variante("original", _TESTO)
+    ripulita = _variante("denoised", _TESTO + ". " + _TESTO)
+    ripulita.asr_confidence = originale.asr_confidence - 0.30
+    ripulita.words_per_sec = originale.words_per_sec
+    d = compare(originale, ripulita)
+    assert d["winner"] == "original", d["reasons"]
+    assert "confidenza" in " ".join(d["reasons"]).lower(), d["reasons"]
+
+    # Caso opposto: confidenza migliore, punteggiatura peggiore.
+    originale2 = _variante("original", _TESTO + ". " + _TESTO)
+    migliore = _variante("denoised", _TESTO)
+    migliore.asr_confidence = originale2.asr_confidence + 0.30
+    migliore.words_per_sec = originale2.words_per_sec
+    d2 = compare(originale2, migliore)
+    assert d2["winner"] == "denoised", d2["reasons"]
+
+
+def test_apostrophe_is_not_punctuation(tmp: Path) -> None:
+    """L'apostrofo italiano è elisione ("l'acqua"), non confine di
+    frase. Contarlo inflazionerebbe il numero di ogni frase con due
+    parole elise.
+
+    Il confronto è sul NUMERO di segni, non sul rapporto per 100
+    caratteri: togliere tre apostrofi cambia anche la lunghezza del
+    testo, quindi il rapporto cambierebbe anche se l'apostrofo fosse
+    contato correttamente. Il numero è la misura che risponde alla
+    domanda.
+    """
+    base = _TESTO + " e l'acqua e un'altra ora"
+    senza = base.replace("'", "")
+    assert base.count("'") == 3, base.count("'")
+
+    from pipeline.denoise import _PUNCT_RE  # noqa: PLC0415
+    assert len(_PUNCT_RE.findall(base)) == len(_PUNCT_RE.findall(senza)), (
+        "l'apostrofo non deve essere contato come punteggiatura")
+
+    # E la conseguenza sui numeri che finiscono nella decisione.
+    con_apo = _variante("original", base)
+    no_apo = _variante("original", senza)
+    n_seg = len(_PUNCT_RE.findall(base))
+    atteso = 100.0 * n_seg / len(base)
+    assert abs(con_apo.punctuation_per_100ch - atteso) < 0.01, (
+        con_apo.punctuation_per_100ch, atteso)
+
+
+def test_merge_relabels_written_sessions(tmp: Path) -> None:
+    """Unire due identità senza rietichettare le sessioni già scritte
+    lascia due ID per la stessa persona nel corpus, con statistiche che
+    non si sommano. È esattamente il problema che il merge doveva
+    risolvere, quindi il merge non è finito senza questo passaggio.
+    """
+    import importlib
+    from core.speaker_db import SpeakerDB
+
+    root = tmp / "root"
+    job = root / "output" / "s1"
+    job.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "meta": {"stem": "s1", "speakers": ["GLOBAL_003"],
+                 "speaker_names": {}},
+        "segments": [{"idx": 0, "speaker": "GLOBAL_003", "text": "ciao"}],
+    }
+    (job / "transcript.json").write_text(json.dumps(doc, ensure_ascii=False),
+                                         encoding="utf-8")
+    (job / "session.json").write_text(json.dumps({
+        "stem": "s1",
+        "speakers": {"GLOBAL_003": {"segments_count": 1}},
+        "speaker_names": {},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    corpus_path = root / "data" / "corpus.db"
+    corpus_path.parent.mkdir(parents=True, exist_ok=True)
+    with CorpusDB(corpus_path) as cdb:
+        cdb.ingest_session("s1", json.loads((job / "transcript.json").read_text()), {})
+        sync = importlib.import_module("core.speaker_sync")
+        # output_dir esplicito: il default è la cartella di produzione,
+        # e un test che ci scrive sopra sarebbe peggio di un test che
+        # non gira.
+        rep = sync.relabel_sessions({"GLOBAL_003": "GLOBAL_001"},
+                                    output_dir=root / "output", corpus_db=cdb)
+        rimasti = cdb.query("SELECT DISTINCT speaker FROM segments")
+        voci = cdb.query("SELECT global_id FROM speakers")
+
+    assert rep["sessions"] >= 1, rep
+    assert [r["speaker"] for r in rimasti] == ["GLOBAL_001"], [dict(r) for r in rimasti]
+
+    tr = json.loads((job / "transcript.json").read_text(encoding="utf-8"))
+    assert tr["meta"]["speakers"] == ["GLOBAL_001"], tr["meta"]["speakers"]
+    assert tr["segments"][0]["speaker"] == "GLOBAL_001", tr["segments"]
+    assert "GLOBAL_003" not in json.dumps(tr), "resta un riferimento al vecchio ID"
+
+    sess = json.loads((job / "session.json").read_text(encoding="utf-8"))
+    assert list(sess["speakers"]) == ["GLOBAL_001"], sess["speakers"]
+
+    # L'ID assorbito sparisce dalla tabella voci: lasciarlo significa
+    # che la prossima sessione lo ricrea da capo.
+    assert [r["global_id"] for r in voci] == ["GLOBAL_001"], [dict(r) for r in voci]
+
+
+def test_relabel_dry_run_changes_nothing(tmp: Path) -> None:
+    """In simulazione si conta ma non si scrive: un merge andato a
+    metto su una sessione reale non si ri-fa da capo."""
+    import importlib
+    root = tmp / "root"
+    job = root / "output" / "s1"
+    job.mkdir(parents=True, exist_ok=True)
+    originale = {"meta": {"speakers": ["GLOBAL_003"]}, "segments": []}
+    (job / "transcript.json").write_text(json.dumps(originale), encoding="utf-8")
+    before = (job / "transcript.json").read_text(encoding="utf-8")
+
+    sync = importlib.import_module("core.speaker_sync")
+    rep = sync.relabel_sessions({"GLOBAL_003": "GLOBAL_001"},
+                                output_dir=root / "output", dry_run=True)
+    assert rep["substitutions"] >= 1, "il dry-run deve contare"
+    assert (job / "transcript.json").read_text(encoding="utf-8") == before, \
+        "il dry-run non deve scrivere"
+
+
+# -------------------------------------------------------------------
 # Cache WAV: la pulizia non deve rompere la ripresa
 # -------------------------------------------------------------------
 

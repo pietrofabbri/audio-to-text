@@ -25,10 +25,15 @@ import csv
 import json
 import logging
 import re
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.quality import score_segment, summarize as summarize_quality  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +212,15 @@ class Assembler:
                 "no_speech_prob":   chunk.get("no_speech_prob", 0.0),
             }
 
+            # Il verdetto di qualità viaggia con il segmento invece che
+            # in un file separato: un flag che si può dimenticare di
+            # consultare è un flag che non serve. I motivi stanno in
+            # `quality.reasons` perché una soglia cambiata si deve
+            # poter riqualificare senza rileggere l'audio.
+            quality = score_segment(seg)
+            seg["quality"] = quality["level"]
+            seg["quality_reasons"] = quality["reasons"]
+
             # Word-level timestamps (opzionale)
             if self.cfg.include_word_timestamps and chunk.get("words"):
                 seg["words"] = chunk["words"]
@@ -269,6 +283,7 @@ class Assembler:
                 "speaker_stats":       speaker_stats,
                 "speaker_global_map":  speaker_global_map or {},
                 "denoise_winner":      denoise_winner,
+                "quality":             summarize_quality(final_segments),
             },
             "segments": final_segments,
         }
@@ -376,7 +391,7 @@ def _write_csv(segments: list[dict], path: Path) -> None:
     fieldnames = [
         "idx", "start", "end", "duration_sec",
         "speaker", "text_preview", "word_count",
-        "no_speech_prob",
+        "no_speech_prob", "quality", "quality_reasons",
     ] + prosody_keys
 
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -393,6 +408,11 @@ def _write_csv(segments: list[dict], path: Path) -> None:
                 "text_preview": seg["text"][:60].replace("\n", " "),
                 "word_count":   len(seg["text"].split()),
                 "no_speech_prob": seg.get("no_speech_prob", 0.0),
+                # Il flag di qualità sta anche nel CSV: è il formato che
+                # si apre per guardare i risultati, e un dato che si
+                # trova solo nel JSON non viene visto da nessuno.
+                "quality":      seg.get("quality", ""),
+                "quality_reasons": ";".join(seg.get("quality_reasons", [])),
             }
             for k in prosody_keys:
                 row[k] = pros.get(k, "")
@@ -661,7 +681,26 @@ def _write_analysis_md(
         f"({meta.get('speech_ratio', 0):.0%})",
         f"- **Parole totali:** {meta.get('total_words', 0):,}",
         f"- **Segmenti:** {meta.get('segments_count', 0)}",
-        "",
+    ]
+
+    # La qualità in testa al documento, non in coda. Chi dà questo file
+    # a un LLM deve sapere prima di leggerlo che una parte del testo
+    # non è affidabile: un modello non chiede, e usa anche i segmenti
+    # che il flag dice di ignorare.
+    q = meta.get("quality") or {}
+    if q.get("segments"):
+        lines += [
+            f"- **Qualità trascrizione:** {q['ok']}/{q['segments']} segmenti "
+            f"affidabili, {q['low']} scarsi, {q['unreliable']} inaffidabili "
+            f"({q['low_or_worse_share']:.0%} delle parole)",
+            "> I segmenti marcati `low` o `unreliable` in `segments.jsonl` "
+            "> contengono testo che il modello ha indovinato, ripetuto o "
+            "> attribuito a audio che non conteneva parlato. Vanno letti, "
+            "> non pesati come dati.",
+            "",
+        ]
+
+    lines += [
         "### Speaker",
         "",
     ]
@@ -708,7 +747,13 @@ def _write_analysis_md(
             part_start = seg["start"]
             part_num  += 1
 
-        buffer.append(f"**[{speaker}]** [{ts}] {text}")
+        # Il flag va in riga, non solo in testa al file: un LLM che legge
+        # questa riga deve poter capire li che quel testo non è un dato
+        # senza dover tornare a cercare un elenco separato.
+        mark = ""
+        if seg.get("quality") in ("low", "unreliable"):
+            mark = f" ⚠_{seg['quality']}_"
+        buffer.append(f"**[{speaker}]** [{ts}]{mark} {text}")
         word_count += n_words
         part_last   = seg["end"]
 

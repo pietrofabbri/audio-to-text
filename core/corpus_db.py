@@ -33,6 +33,7 @@ import logging
 import re
 import sqlite3
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -58,6 +59,13 @@ PROSODY_COLUMNS = (
     "intensity_mean_db", "intensity_max_db", "voiced_fraction",
     "jitter_local", "shimmer_local", "speech_rate_syl_per_sec", "pause_ratio",
 )
+
+# Le colonne di qualità. Non sono prosodia e non sono linguistica: sono
+# l'avvertenza che il testo accanto potrebbe non essere il testo che è
+# stato detto. Senza, un segmento inventato dal modello entra nelle
+# statistiche indistinguibile da uno vero — e in un corpus che vuole
+# misurare la propria voce è il tipo di errore che non si vede.
+QUALITY_COLUMNS = ("quality", "quality_reasons")
 
 # Punteggiatura da togliere per la forma normalizzata. La forma originale
 # resta in tokens.word: in italiano la maiuscola dopo un punto ("Parlare")
@@ -114,6 +122,8 @@ CREATE TABLE IF NOT EXISTS segments (
     text          TEXT,
     n_words       INTEGER,
     {prosody_cols},
+    quality       TEXT,      -- ok | low | unreliable, vedi core/quality.py
+    quality_reasons TEXT,
     UNIQUE(stem, idx)
 );
 
@@ -226,11 +236,36 @@ class CorpusDB:
     def _init_schema(self) -> None:
         prosody_cols = ",\n    ".join(f"{c} REAL" for c in PROSODY_COLUMNS)
         self.conn.executescript(SCHEMA.format(prosody_cols=prosody_cols))
+        self._migrate()
         self.conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
         )
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Aggiunge le colonne mancanti a un database gia' esistente.
+
+        `CREATE TABLE IF NOT EXISTS` non aggiorna una tabella che c'e'
+        gia': senza questo, un database creato prima di una colonna
+        nuova la ignora silenziosamente e ogni scrittura notturna va a
+        finire in una colonna che non c'e'. Il sintomo sarebbe una
+        query che restituisce sempre NULL, che e' il modo piu' silenzioso
+        in cui un database mente.
+
+        SQLite ha `ALTER TABLE ... ADD COLUMN` per sempre, quindi qui si
+        aggiunge e non si ricrea: i dati gia' dentro restano.
+        """
+        wanted = {"segments": {
+            "quality": "TEXT",
+            "quality_reasons": "TEXT",
+        }}
+        for table, cols in wanted.items():
+            have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, typ in cols.items():
+                if name not in have:
+                    logger.info("Migrazione: aggiungo %s.%s", table, name)
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
     def close(self) -> None:
         self.conn.close()
@@ -321,8 +356,10 @@ class CorpusDB:
         # --- segmenti + prosodia ----------------------------------------
         # 8 colonne fisse (stem, idx, speaker, start, end, durata, testo,
         # n_words) più le 12 feature prosodiche
-        seg_placeholders = ", ".join(["?"] * (8 + len(PROSODY_COLUMNS)))
+        seg_placeholders = ", ".join(["?"] * (8 + len(PROSODY_COLUMNS)
+                                             + len(QUALITY_COLUMNS)))
         prosody_names = ", ".join(PROSODY_COLUMNS)
+        quality_names = ", ".join(QUALITY_COLUMNS)
         n_seg = 0
         for s in segments:
             pros = s.get("prosody", {}) or {}
@@ -334,10 +371,14 @@ class CorpusDB:
                 ),
                 s.get("text"),
                 len((s.get("text") or "").split()),
-            ] + [pros.get(c) for c in PROSODY_COLUMNS]
+            ] + [pros.get(c) for c in PROSODY_COLUMNS] + [
+                s.get("quality"),
+                ";".join(s.get("quality_reasons") or []) or None,
+            ]
             self.conn.execute(
                 f"INSERT OR REPLACE INTO segments "
-                f"(stem, idx, speaker, start_sec, end_sec, duration_sec, text, n_words, {prosody_names}) "
+                f"(stem, idx, speaker, start_sec, end_sec, duration_sec, text, n_words, "
+                f"{prosody_names}, {quality_names}) "
                 f"VALUES ({seg_placeholders})",
                 row,
             )
@@ -499,12 +540,131 @@ class CorpusDB:
         self.conn.commit()
         return changed
 
+    def relabel_speakers(self, renames: dict[str, str], dry_run: bool = False) -> int:
+        """Rietichetta gli ID nelle tabelle del corpus dopo un merge.
+
+        Unire due identità vocali senza questo passaggio lascia il
+        database con due voci per la stessa persona: le statistiche non
+        si sommano e un'analisi «per persona» divide in due chi è uno.
+
+        Returns:
+            quante righe sono cambiate. In simulazione sono contate ma
+            non scritte.
+        """
+        if not renames:
+            return 0
+        changed = 0
+        for old, new in renames.items():
+            if old == new:
+                continue
+            if dry_run:
+                changed += self.conn.execute(
+                    "SELECT COUNT(*) c FROM segments WHERE speaker = ?", (old,)
+                ).fetchone()["c"]
+                continue
+            for table in ("segments", "tokens"):
+                if not self._has_table(table):
+                    continue
+                cur = self.conn.execute(
+                    f"UPDATE {table} SET speaker = ? WHERE speaker = ?", (new, old)
+                )
+                changed += max(0, cur.rowcount or 0)
+        if not dry_run:
+            # La tabella speakers: la voce assorbita sparisce. Ma
+            # l'ID che la assorbe deve esistere, altrimenti — cioè se
+            # nel corpus c'era solo la voce che viene unita e non
+            # quella che la conserva — cancellando l'unica riga si
+            # lascia la tabella vuota e le query per parlante non
+            # trovano più nessuno. Il nome, se c'era, segue: è
+            # un'informazione che non si butta via con l'ID vecchio.
+            for old, new in renames.items():
+                nome = self.conn.execute(
+                    "SELECT name FROM speakers WHERE global_id = ?", (old,)
+                ).fetchone()
+                if nome is not None and self.conn.execute(
+                    "SELECT 1 FROM speakers WHERE global_id = ?", (new,)
+                ).fetchone() is None:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO speakers(global_id, name) VALUES(?, ?)",
+                        (new, nome["name"]),
+                    )
+                self.conn.execute("DELETE FROM speakers WHERE global_id = ?", (old,))
+            self.conn.commit()
+        return changed
+
+    def _has_table(self, name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------
 
     def query(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         return list(self.conn.execute(sql, tuple(params)))
+
+    def quality_report(self, stem: str | None = None) -> list[dict[str, Any]]:
+        """Quanto materiale è poco affidabile, per sessione.
+
+        È la query che rende il flag utile: senza, il `quality` è una
+        colonna che nessuno guarda. I motivi sono aggregati perche' la
+        domanda utile non è "quanti segmenti sono brutti" ma "quante
+        parole ho perso e perche'" — e la seconda è l'unica che si
+        puo' correggere (un loop si blocca, una probilita bassa no).
+        """
+        where = "WHERE stem = ?" if stem else ""
+        params = (stem,) if stem else ()
+        rows = self.conn.execute(
+            f"SELECT stem, quality, quality_reasons, n_words FROM segments {where}",
+            params,
+        )
+        per_stem: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            s = per_stem.setdefault(r["stem"], {
+                "stem": r["stem"], "segments": 0, "words": 0,
+                "suspect_segments": 0, "suspect_words": 0,
+                "reasons": Counter(),
+            })
+            s["segments"] += 1
+            s["words"] += r["n_words"] or 0
+            if r["quality"] in ("low", "unreliable"):
+                s["suspect_segments"] += 1
+                s["suspect_words"] += r["n_words"] or 0
+                for reason in (r["quality_reasons"] or "").split(";"):
+                    if reason:
+                        # Si tiene solo la parte prima dei due punti:
+                        # "no_speech:0.72" e "no_speech:0.81" sono lo
+                        # stesso motivo, e contarne due maschererebbe
+                        # un motivo raro vicino a uno frequente.
+                        s["reasons"][reason.split(":")[0]] += 1
+        for s in per_stem.values():
+            s["suspect_share"] = (
+                round(s["suspect_words"] / s["words"], 3) if s["words"] else 0.0
+            )
+            s["reasons"] = dict(s["reasons"].most_common())
+        return sorted(per_stem.values(),
+                      key=lambda s: s["suspect_share"], reverse=True)
+
+    def suspect_text(self, limit: int = 50) -> list[sqlite3.Row]:
+        """I segmenti peggiori del corpus, per revisione a mano.
+
+        Pensata per il momento in cui si guarda un risultato e ci si
+        chiede se è reale: un elenco dei peggiori, non una media. La
+        media di un corpus in cui il 5% è inventato sembra quasi uguale
+        a quella di un corpus pulito, ed è per questo che il flag
+        serve: la differenza si vede solo scendendo al singolo segmento.
+        """
+        return self.query(
+            "SELECT stem, idx, speaker, start_sec, end_sec, quality, "
+            "quality_reasons, text FROM segments "
+            "WHERE quality IN ('low','unreliable') "
+            "ORDER BY CASE quality WHEN 'unreliable' THEN 0 ELSE 1 END, n_words "
+            "LIMIT ?",
+            (limit,),
+        )
 
     def daily(self, limit: int = 30) -> list[sqlite3.Row]:
         return self.query(

@@ -13,7 +13,8 @@ Pipeline locale per trascrizione, diarizzazione speaker e analisi prosodia di fi
 3. **ASR** — trascrive con word-level timestamps (faster-whisper `large-v3-turbo`, CPU INT8)
 4. **Diarizzazione** — assegna ogni parola a uno speaker (`SPEAKER_00`, `SPEAKER_01`, ...) e lo collega a un'identità vocale stabile fra file diversi
 5. **Prosodia** — estrae F0, intensità, jitter, shimmer, velocità del parlato per ogni segmento
-6. **Corpus** — SQLite locale + repo privata, interrogabili per parola, per parlante, per giorno
+6. **Qualità** — dice quali segmenti il modello ha indovinato, ripetuto o attribuito ad audio che non conteneva parlato
+7. **Corpus** — SQLite locale + repo privata, interrogabili per parola, per parlante, per giorno
 
 **Tempi misurati su M1 Pro (16 GB), registrazioni vere:**
 - Un file da 1h con 65% di parlato costa **~16 minuti**
@@ -34,7 +35,9 @@ efficiency e insieme ai primi fanno contesa, non lavoro. Il tetto è in
 alzarlo.
 
 **Cosa non va ancora:** la lista dei punti aperti, con pro, contro e
-responsabilità, è in [`APERTI.md`](APERTI.md).
+responsabilità, è in [`APERTI.md`](APERTI.md). I punti 2, 3, 4, 5, 6 e
+9 sono chiusi; restano la prima notte vera, la soglia speaker (manca la
+seconda voce) e la biometria (manca l'hardware).
 
 ---
 
@@ -227,6 +230,21 @@ e il successivo. Quella costa davvero (~13 file a notte invece di ~15),
 ed è dichiarata in `core/config.py` (`NIGHT_COOLDOWN_SEC`) con il flag
 `--cooldown-sec 0` per disattivarla.
 
+Il riscaldamento vero — watt, frequenza, ventola — è un'altra misura, e
+c'è uno strumento per farla:
+
+```bash
+python thermal_probe.py                 # 60s di ascolto, uso CPU e livello termico
+python thermal_probe.py --seconds 600   # 10 minuti
+python thermal_probe.py --run           # baseline, poi la pipeline vera, e confronta
+```
+
+Su questa macchina `ioreg` non espone la temperatura e `powermetrics` chiede
+permessi root: lo strumento funziona lo stesso e **dichiara cosa non ha
+potuto misurare**, perché una temperatura non disponibile travestita da
+zero farebbe pensare che la macchina sia fredda quando non lo è. La
+lettura di watt e frequenza richiede `sudo powermetrics`.
+
 ### Il resto dei costi
 
 Su questo Mac, misurati sul campione reale da 97,8 s (non stimati):
@@ -346,10 +364,16 @@ python review_speakers.py sync --dry-run       # cosa cambierebbe
 **Il nome vive in un posto solo.** La fonte è
 `data/speakers_db.json` (locale, mai nel repo: sono dati biometrici).
 Tutto il resto ne è una copia derivata — `corpus.db`, `session.json`,
-`transcript.json` — e `name` e `merge` la riallineano da soli dopo ogni
-cambio. Prima un rename valeva solo da quel momento in poi, e le
-sessioni vecchie continuavano a dire `GLOBAL_001`: un rename che sembra
-non essere successo.
+`transcript.json` — e `name`, `merge` e `sync` la riallineano da soli.
+Prima un rename valeva solo da quel momento in poi, e le sessioni vecchie
+continuavano a dire `GLOBAL_001`: un rename che sembra non essere
+successo.
+
+Il **merge** fa di più: rietichetta anche le sessioni già scritte
+(segmenti, statistiche, chiavi delle mappe) e le righe di `corpus.db`.
+Senza, unire due voci lasciava due ID per la stessa persona nel corpus,
+con statistiche che non si sommano — il problema che il merge doveva
+risolvere restava aperto.
 
 Su quattro registrazioni reali la separazione è netta: persone diverse
 stanno a 0,13–0,29 di coseno, e l'unica coppia unita automaticamente
@@ -358,6 +382,8 @@ decidere — è lì che serve un nome. La soglia di 0,78 sta sopra quella
 fascia e sotto la coppia certa: si può cambiare con
 `review_speakers.py threshold 0.70`, ma conviene aspettare più materiale
 prima, perché i centroidi diventano più affidabili con le ore accumulate.
+Oggi c'è una sola voce registrata, quindi la soglia non è ancora
+valutabile: servono almeno due persone che parlino nel registratore.
 
 Quando il registratore è collegato, tutto il ciclo è in un comando:
 
@@ -440,6 +466,21 @@ il minormale. La scelta e i numeri che l'hanno prodotta finiscono in
 `denoise_decision.json`: le soglie si possono ritoccare vedendo i dati
 reali invece di indovinarli.
 
+**La punteggiatura è un segnale debole, ed è come spareggio.** Su una
+registrazione reale la variante ripulita produceva «che è il modo
+realistico» contro «che è il modo», e tutte le metriche quantitative
+erano in pari: la scelta finiva sull'originale. Ora i segni di
+punteggiatura ogni 100 caratteri entrano **solo quando le altre metriche
+sono in pareggio**. Se la confidenza dice chiaramente una delle due, la
+punteggiatura non ha voto.
+
+Tre scelte che rendono la misura onesta: sotto 200 caratteri non si
+misura (su quattro lettere un punto cambia tutto, e un numero inventato
+che decide è peggio di nessun numero); l'apostrofo italiano non conta
+(«l'acqua» è elisione, non confine di frase); il margine è 0,6 segni
+ogni 100 caratteri, il doppio di quello sulla confidenza, perché il dato
+è più rumoroso e la direzione in cui sbaglia è tenere l'originale.
+
 `afftdn` è già in ffmpeg, quindi nessuna dipendenza nuova. Se il fruscio
 diventa cattivo (ventola, traffico) il passo successivo è DeepFilterNet,
 non un modello dentro ffmpeg.
@@ -470,6 +511,14 @@ Sulla repo, per default, vengono sostituiti dagli pseudonimi: un accesso
 alla repo non dà l'identità. `--with-names` li pubblica, ed è una
 decisione che va presa **a ogni push**, non un'impostazione da
 dimenticare: pubblicare nomi veri non si richiama.
+
+Il controllo finale non guarda solo le estensioni: cerca i nomi reali
+**dentro il contenuto** di ogni file pubblicato, usando l'elenco delle
+etichette che hai assegnato tu. È l'ultima rete — se un nome finisce in
+un CSV o in un file lasciato da una versione precedente, il push si
+ferma invece di pubblicare. La catena intera è provata in
+[`tests/test_publish.py`](tests/test_publish.py) con una coda finta e un
+clone git con remoto locale: nessun dato tuo esce dai test.
 
 **`core/corpus_db.py`** tiene un SQLite **locale** che fa ciò che git
 non sa fare: aggregare mesi di dati in una query. Lo schema è pensato
@@ -531,7 +580,39 @@ db.set_name("GLOBAL_001", "Pietro")   # etichetta manuale
 print(db.profiles())                  # ore parlate, sessioni, date
 ```
 
-Nei file di output i segmenti riportano `speaker` (ID globale),
+### Qualità della trascrizione: cosa non è detto
+
+Un estratto reale di 40 secondi di audio non intellegibile era finito
+nel corpus come frasi plausibili e sbagliate — non parole a caso, ma
+italiano che si può leggere. Niente lo segnalava. Ora ogni segmento ha
+un verdetto in `core/quality.py`:
+
+| Segnale | Cosa cattura |
+|---|---|
+| `no_speech_prob` alto | il modello stesso dice «qui non parlavi» |
+| parole al secondo fuori scala | allineamento rotto |
+| loop di n-gramma | il caso tipico della registrazione vera |
+| testo vuoto o troppo corto | segmenti che non dicono nulla |
+| troppe parole a bassa probabilità | il modello che indovina, e lo sa |
+
+I tre livelli sono `ok`, `low`, `unreliable`, e **un solo segnale dà
+`low`**: una parola a probabilità 0,3 è ancora informazione, e un flag
+che scatta spesso viene ignorato.
+
+```python
+from core.corpus_db import CorpusDB
+with CorpusDB() as db:
+    print(db.quality_report())    # quanto materiale è inaffidabile, per sessione
+    for r in db.suspect_text(20): # i segmenti peggiori, da rivedere a mano
+        print(r["stem"], r["start_sec"], r["quality_reasons"], r["text"][:60])
+```
+
+Il flag compare in `transcript.json`, in `segments.jsonl`, in
+`prosody.csv` e in `analysis_ready.md` — in testa al documento e in
+linea a ogni segmento, perché un LLM non chiede cosa non deve usare.
+
+---
+
 `speaker_local` (ID della sessione) e `speaker_names` (nome umano se
 assegnato, **in locale**). La soglia di match è `match_threshold` in
 `core/config.py` (default 0.78): più alta = più conservativo. Sopra la
@@ -548,12 +629,17 @@ restituire pseudonimi per voci che da settimane hanno un nome.
 
 ```bash
 python tests/test_speaker_db.py        # matching cross-file delle voci
+python tests/test_quality.py           # flag di qualità della trascrizione
 python tests/test_device_pipeline.py   # device, denoise, corpus, archivio, cache WAV, nomi
 python tests/test_nightly.py           # piano notturno, finestra, carico termico
+python tests/test_publish.py           # pubblicazione e controllo privacy
 ```
 
 Girano tutti con embedding e file sintetici: nessun modello, nessun
-audio, nessuna rete, pochi secondi.
+audio, nessuna rete, pochi secondi. `test_publish.py` crea un clone git
+vero con un **remoto locale** in una directory temporanea, quindi
+`git add`, commit e push vengono eseguiti per davvero senza toccare
+GitHub né `corpus_repo/`.
 
 ### Esempio transcript.txt
 
@@ -666,15 +752,18 @@ audio-to-text/
 ├── nightly.py              # ciclo notturno: importa, elabora, pubblica
 ├── sync_device.py          # import dal registratore + cancellazione sicura
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
-├── review_speakers.py      # chi è chi: nomi, merge, split delle voci
+├── review_speakers.py      # chi è chi: nomi, merge, split, sync delle voci
+├── thermal_probe.py        # misura il riscaldamento durante una run
 ├── setup_env.sh            # installa dipendenze
 ├── setup_launchd.py        # scheduling notturno macOS
 ├── core/
-│   ├── config.py           # tutti i parametri
+│   ├── config.py           # tutti i parametri, compresa la pianificazione
 │   ├── cost.py             # modello di costo della pipeline (tarato su misure)
+│   ├── quality.py          # qualità della trascrizione, per segmento
 │   ├── checkpoint.py       # persistenza stato per ripresa
 │   ├── device.py           # rilevamento registratore e orario nei nomi file
 │   ├── speaker_db.py       # identità vocali persistenti cross-file
+│   ├── speaker_sync.py     # allineamento dei nomi al materiale già scritto
 │   └── corpus_db.py        # indice SQLite locale per le analisi
 ├── pipeline/
 │   ├── vad.py              # Voice Activity Detection
@@ -687,7 +776,9 @@ audio-to-text/
 │   ├── run_all.py          # un comando per eseguire tutto
 │   ├── make_fake_device.py # crea un registratore finto, con voce vera
 │   ├── test_e2e.py         # ciclo completo su device finto
-│   └── test_nightly.py     # piano, budget, coda
+│   ├── test_quality.py     # flag di qualità della trascrizione
+│   ├── test_publish.py     # pubblicazione e controllo privacy
+│   └── test_nightly.py     # piano, budget, coda, finestra, carico termico
 ├── input/                  # metti qui i file audio/video
 ├── output/                 # risultati
 ├── archive/                # originali in attesa di purga (7 giorni)

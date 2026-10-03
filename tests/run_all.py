@@ -33,8 +33,10 @@ ROOT = HERE.parent
 # (comando, etichetta, serve il modello)
 FAST = [
     ([sys.executable, str(HERE / "test_speaker_db.py")], "speaker_db"),
+    ([sys.executable, str(HERE / "test_quality.py")], "qualita' trascrizione"),
     ([sys.executable, str(HERE / "test_device_pipeline.py")], "device/denoise/corpus"),
     ([sys.executable, str(HERE / "test_nightly.py")], "piano notturno"),
+    ([sys.executable, str(HERE / "test_publish.py")], "pubblicazione e privacy"),
 ]
 
 

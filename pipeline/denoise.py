@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -138,6 +139,13 @@ class QualityScore:
     # verrebbe scartata perché non si sa, non perché sia rotta.
     has_vad_stats: bool = False
 
+    # Segni di punteggiatura per 100 caratteri di testo. La punteggiatura
+    # non si misura bene — un punto riconosciuto male e' indistinguibile
+    # da un refuso — ma la sua ASSENZA e' un segnale forte: un modello
+    # che sta inventando parole sul rumore non mette punteggiatura,
+    # perche' non sa dove dovrebbe andare.
+    punctuation_per_100ch: float = 0.0
+
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -148,6 +156,23 @@ class QualityScore:
 # rotta. Va qui fuori dal dataclass: dentro, insieme ai campi, non è un
 # campo ma un'istruzione che spezza la classe.
 DEGENERATE_RATIO_LIMIT = 0.3
+
+# Sotto questo numero di caratteri la punteggiatura non si misura: il
+# rapporto su trenta lettere e' un numero inventato, e un numero
+# inventato che decide una scelta e' peggio di nessun numero.
+MIN_PUNCT_CHARS = 200
+
+# Differenza minima di punteggiatura perché questa possa decidere un
+# pareggio. Piu' alta del margine sulla confidenza, perche' il dato e'
+# piu' rumoroso: preferisce l'originale in caso di dubbio, che e' la
+# direzione giusta in cui sbagliare.
+PUNCT_TIEBREAK_MARGIN = 0.6
+
+# Segni che contano come confine di frase o di pausa. Le virgolette e
+# l'apostrofo sono esclusi di proposito: l'apostrofo italiano e' un
+# segno di elisione ("l'acqua") e conta come lettera, non come
+# punteggiatura.
+_PUNCT_RE = re.compile(r"[.,;:!?…]")
 
 
 def score_variant(
@@ -220,6 +245,17 @@ def score_variant(
 
     if s.segments_count:
         s.degenerate_ratio = s.degenerate_segments / s.segments_count
+
+    # --- punteggiatura ---------------------------------------------------
+    # Solo come segnale debole: entra nel confronto come spareggio, mai
+    # come criterio. Il motivo e' che questo numero non distingue "il
+    # testo e' migliore" da "il modello ha indovinato il confine fra una
+    # frase e l'altra", che e' esattamente il caso in cui la punteggiatura
+    # e' piu' probabile di essere sbagliata.
+    testo_totale = " ".join((c.get("text") or "") for c in asr_chunks)
+    n_chr = len(testo_totale)
+    if n_chr >= MIN_PUNCT_CHARS:
+        s.punctuation_per_100ch = 100.0 * len(_PUNCT_RE.findall(testo_totale)) / n_chr
 
     return s
 
@@ -296,10 +332,31 @@ def compare(original: QualityScore, denoised: QualityScore) -> dict[str, Any]:
             winner = "original"
             reasons.append(f"confidenza ASR peggiore di {gain:+.3f}")
         else:
-            winner = "original"
-            reasons.append(
-                f"differenza non significativa ({gain:+.3f}): si tiene l'originale"
-            )
+            # Pareggio sulla confidenza. Qui entra la punteggiatura,
+            # che è l'unico dato rimasto: su una registrazione reale la
+            # variante ripulita produceva "che è il modo realistico"
+            # contro "che è il modo", e tutte le metriche quantitative
+            # erano in pari e sceglievano l'originale.
+            #
+            # È uno spareggio, non un criterio: se le due punteggiatura
+            # sono vicine si tiene l'originale come in ogni altro
+            # pareggio. E se i dati non ci sono — testo troppo corto per
+            # misurare — non si decide niente su questa base.
+            p_o = original.punctuation_per_100ch
+            p_d = denoised.punctuation_per_100ch
+            dp = p_d - p_o
+            if dp > PUNCT_TIEBREAK_MARGIN:
+                winner = "denoised"
+                reasons.append(
+                    f"confidenza in pari ({gain:+.3f}), ma più punteggiatura "
+                    f"({p_d:.1f} contro {p_o:.1f} segni ogni 100 caratteri)"
+                )
+            else:
+                winner = "original"
+                reasons.append(
+                    f"differenza non significativa ({gain:+.3f}) e punteggiatura "
+                    f"spareggio ({p_d:.1f} contro {p_o:.1f}): si tiene l'originale"
+                )
 
     return {
         "winner": winner,
@@ -308,6 +365,7 @@ def compare(original: QualityScore, denoised: QualityScore) -> dict[str, Any]:
         "original": original.as_dict(),
         "denoised": denoised.as_dict(),
         "switch_margin": SWITCH_MARGIN,
+        "punct_tiebreak_margin": PUNCT_TIEBREAK_MARGIN,
     }
 
 

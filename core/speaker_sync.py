@@ -76,6 +76,112 @@ def _write_if_changed(path: Path, data: dict[str, Any]) -> bool:
     return True
 
 
+def _rewrite_ids(node: Any, renames: dict[str, str]) -> int:
+    """Sostituisce gli ID globali in tutto il documento. Ritorna quante
+    sostituzioni ha fatto.
+
+    Serve per il merge. Unire GLOBAL_003 in GLOBAL_001 non basta nel
+    database delle voci: le sessioni gia' scritte citano ancora
+    GLOBAL_003 nei segmenti, nelle statistiche per speaker e nelle
+    mappe locali. E il corpus diventa incoerente: due ID per la stessa
+    persona, con statistiche che non si sommano e un'analisi per
+    persona che non funziona — che è esattamente la ragione per cui
+    si fa un merge a mano.
+
+    La sostituzione è su tutto l'albero, non sui campi noti: se domani
+    un formato nuovo che cita un ID in un posto che oggi non conosco,
+    viene rietichettato lo stesso invece di restare indietro. Il costo
+    è che il documento viene visitato per intero, che per una sessione
+    sono poche migliaia di nodi e non un problema.
+    """
+    n = 0
+    if isinstance(node, dict):
+        # Le chiavi si rinominano per prime, in una copia: farlo durante
+        # l'iterazione solleva "dictionary keys changed during
+        # iteration", che è il modo più innocuo di ricordare che in
+        # Python si itera su una copia ma si modifica l'originale.
+        for k in [k for k in node if isinstance(k, str) and k in renames]:
+            node[renames[k]] = node.pop(k)
+            n += 1
+        for k, v in node.items():
+            if isinstance(v, str):
+                if v in renames:
+                    node[k] = renames[v]
+                    n += 1
+                continue
+            n += _rewrite_ids(v, renames)
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            if isinstance(item, str):
+                if item in renames:
+                    node[i] = renames[item]
+                    n += 1
+            else:
+                n += _rewrite_ids(item, renames)
+    return n
+
+
+def relabel_sessions(
+    renames: dict[str, str],
+    output_dir: Path | None = None,
+    corpus_db: CorpusDB | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Rietichetta le sessioni già scritte dopo un merge di identità.
+
+    Args:
+        renames: {vecchio_id: nuovo_id}, es. {"GLOBAL_003": "GLOBAL_001"}.
+
+    Returns:
+        quante sessioni e quanti segmenti sono stati rietichettati.
+    """
+    out_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+    report = {"sessions": 0, "substitutions": 0, "db_segments": 0,
+              "dry_run": bool(dry_run)}
+
+    if out_dir.is_dir():
+        for job in sorted(p for p in out_dir.iterdir() if p.is_dir()):
+            touched = False
+            for fname in ("session.json", "transcript.json"):
+                f = job / fname
+                if not f.exists():
+                    continue
+                try:
+                    doc = json.loads(f.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    logger.warning("Non leggibile, lo salto: %s", f)
+                    continue
+                n = _count_ids(doc, renames)
+                if not n:
+                    continue
+                report["sessions"] += 1
+                report["substitutions"] += n
+                if not dry_run:
+                    _rewrite_ids(doc, renames)
+                    _write_if_changed(f, doc)
+                    touched = True
+            _ = touched
+
+    # Anche il database: `speaker_global_map` e le colonne speaker dei
+    # segmenti e dei token citano l'ID vecchio, e senza questa passata
+    # corpus.db continuerebbe a tenere due voci per la stessa persona.
+    if corpus_db is not None:
+        report["db_segments"] = corpus_db.relabel_speakers(renames, dry_run=dry_run)
+
+    return report
+
+
+def _count_ids(node: Any, renames: dict[str, str]) -> int:
+    if isinstance(node, dict):
+        return (sum(1 for k in node if isinstance(k, str) and k in renames)
+                + sum(_count_ids(v, renames) for v in node.values()))
+    if isinstance(node, list):
+        return sum(_count_ids(v, renames) for v in node)
+    if isinstance(node, str):
+        return 1 if node in renames else 0
+    return 0
+
+
 def _sync_session_file(path: Path, names: dict[str, str]) -> bool:
     """Allinea la mappa `speaker_names` di un singolo file di sessione.
 

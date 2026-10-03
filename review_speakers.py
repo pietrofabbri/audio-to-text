@@ -184,12 +184,42 @@ def cmd_merge(db: SpeakerDB, args) -> int:
     db.save()
     print(f"{drop} unita in {keep} "
           f"({dst['total_seconds']/60:.1f} min, {dst['sessions_count']} sessioni)")
-    # Le sessioni che citavano il vecchio ID continuano a citarlo: sono
-    # dati già scritti e non si rietichettano da sole. Si dice, e si
-    # lascia il comando a chi lo vuole.
-    print("Attenzione: le sessioni gia' scritte che citano "
-          f"{drop} non vengono rietichettate.")
+
+    # Il merge non è finito finché le sessioni già scritte non lo
+    # sanno. Unire gli embedding senza rietichettare i segmenti lascia
+    # due ID per la stessa persona nel corpus, con statistiche che non
+    # si sommano — cioè esattamente il problema che il merge doveva
+    # risolvere.
+    _relabel({drop: keep}, args)
     return cmd_sync(db, args, quiet=False)
+
+
+def _relabel(renames: dict[str, str], args) -> None:
+    from core.corpus_db import CorpusDB
+    from core.speaker_sync import relabel_sessions
+
+    dry = getattr(args, "dry_run", False)
+    try:
+        with CorpusDB() as cdb:
+            rep = relabel_sessions(renames, corpus_db=cdb, dry_run=dry)
+    except Exception as exc:  # noqa: BLE001
+        # Il merge è già salvato nel DB delle voci: fallire qui non lo
+        # annulla, e segnalarlo è più utile che far fallire il comando.
+        print(f"Rietichettamento non riuscito ({type(exc).__name__}: {exc}). "
+              "Le sessioni vecchie citano ancora il vecchio ID: "
+              "python review_speakers.py sync --dry-run per vedere cosa resta",
+              file=sys.stderr)
+        return
+
+    if rep["substitutions"] or rep["db_segments"]:
+        print(f"Rietichettate {rep['sessions']} sessioni "
+              f"({rep['substitutions']} riferimenti) e {rep['db_segments']} "
+              f"righe in corpus.db")
+        if not dry and rep["sessions"]:
+            print("Se hai gia' pubblicato il corpus, rilancia: "
+                  "python publish_corpus.py push")
+    else:
+        print("Nessuna sessione citava l'ID vecchio: niente da rietichettare")
 
 
 def cmd_split(db: SpeakerDB, args) -> int:
@@ -236,9 +266,12 @@ def main() -> int:
     m = sub.add_parser("merge", help="unisce due voci: sono la stessa persona")
     m.add_argument("gid")
     m.add_argument("into")
+    m.add_argument("--dry-run", action="store_true",
+                   help="mostra cosa verrebbe rietichettato")
 
-    s = sub.add_parser("split", help="stacca una voce erroneamente unita")
+    s = sub.add_parser("split", help="stacca una voce erroneosamente unita")
     s.add_argument("gid")
+    s.add_argument("--dry-run", action="store_true")
 
     t = sub.add_parser("threshold", help="cambia la soglia di somiglianza")
     t.add_argument("value", type=float)
