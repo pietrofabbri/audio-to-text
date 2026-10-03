@@ -42,6 +42,42 @@ _SR = 16_000
 # Worker (eseguito in processo separato)
 # ---------------------------------------------------------------------------
 
+_WORKER_WAV: dict[str, Any] = {}
+
+
+def _init_prosody_worker(wav_path_str: str, sr: int, cfg_dict: dict) -> None:
+    """Carica l'audio una volta per worker, all'avvio della pool.
+
+    E' tutto qui il punto. Prima l'audio finiva dentro ogni singolo task
+    (pool.map con una tupla per segmento), e con lo start method "spawn"
+    ogni task viene serializzato e spedito attraverso una pipe: 230 MB
+    di WAV moltiplicati per 126 segmenti fanno 29 GB di trasferimento
+    per una sola ora di registrazione. La prosodia si fermava e non
+    ripartiva, senza errori nel log: semplicemente non finiva piu'.
+
+    Il commento che c'era prima diceva «condiviso tramite copy-on-write»,
+    ma con spawn non si eredita la memoria del padre: il copy-on-write e'
+    una proprieta' di fork, e fork qui non si puo' usare (nel padre e' gia'
+    caricato PyTorch, e fork dopo altri thread e' il modo classico di
+    prendere un deadlock). La condivisione va fatta per conto nostro:
+    ogni worker legge il file una volta e basta.
+    """
+    import soundfile as sf
+    audio, file_sr = sf.read(wav_path_str, dtype="float32", always_2d=False)
+    if file_sr != sr:
+        raise ValueError(f"WAV deve essere {sr}Hz, trovato {file_sr}Hz")
+    _WORKER_WAV["wav"] = audio
+    _WORKER_WAV["sr"] = sr
+    _WORKER_WAV["cfg"] = cfg_dict
+
+
+def _analyze_segment_shared(seg: dict[str, Any]) -> dict[str, Any]:
+    """Analizza un segmento con l'audio gia' caricato dal worker."""
+    return _analyze_segment_worker(
+        (seg, _WORKER_WAV["wav"], _WORKER_WAV["sr"], _WORKER_WAV["cfg"])
+    )
+
+
 def _analyze_segment_worker(args: tuple) -> dict[str, Any]:
     """
     Funzione top-level necessaria per multiprocessing (non può essere un metodo).
@@ -238,8 +274,10 @@ class ProsodyAnalyzer:
         # Verifica disponibilità Parselmouth
         _check_parselmouth()
 
-        # Carica WAV una sola volta in memoria (condiviso tra worker via copy-on-write)
-        wav_array = _load_wav(wav_path)
+        # Nel percorso sequenziale l'audio si carica qui, una volta sola.
+        # In quello parallelo si carica in ogni worker, una volta sola
+        # ciascuno: vedi _init_prosody_worker.
+        wav_array = None
 
         cfg_dict = {
             "min_segment_duration": self.cfg.min_segment_duration,
@@ -254,17 +292,27 @@ class ProsodyAnalyzer:
             "extract_voiced_fraction": self.cfg.extract_voiced_fraction,
         }
 
+        num_workers = min(self.cfg.num_workers, len(segments), mp.cpu_count())
+
+        # Usa multiprocessing solo se vale la pena:
+        # almeno 20 segmenti, perche' su un file corto il costo di avviare
+        # i worker supera quello di analizzare tutto in fila.
+        use_mp = num_workers > 1 and len(segments) >= 20
+
+        # L'audio si carica qui solo se serve a questo processo. In
+        # parallelo non serve a niente nel padre (non lo vedono, i worker)
+        # e caricarlo significherebbe tenerlo in memoria due volte: una
+        # copia per worker si fa caricare a loro, nel loro inizializzatore.
+        wav_array = None if use_mp else _load_wav(wav_path)
+
         args_list = [
             (seg, wav_array, _SR, cfg_dict)
             for seg in segments
         ]
-
-        num_workers = min(self.cfg.num_workers, len(segments), mp.cpu_count())
-
-        # Usa multiprocessing solo se vale la pena:
-        # - almeno 20 segmenti (overhead spawn > beneficio su file corti)
-        # - nessun segnale di shutdown pendente
-        use_mp = num_workers > 1 and len(segments) >= 20
+        # Quello che viaggia verso i worker: i soli segmenti. L'audio non
+        # passa di qui, e questa e' la riga dove il difetto sarebbe
+        # stato evidente (vedi tests/test_prosody_workers.py).
+        parallel_payload = list(segments)
 
         if use_mp:
             logger.info(
@@ -272,9 +320,15 @@ class ProsodyAnalyzer:
                 len(segments), num_workers,
             )
             ctx = mp.get_context("spawn")
-            with ctx.Pool(processes=num_workers) as pool:
+            with ctx.Pool(
+                processes=num_workers,
+                initializer=_init_prosody_worker,
+                initargs=(str(wav_path), _SR, cfg_dict),
+            ) as pool:
                 try:
-                    results = pool.map(_analyze_segment_worker, args_list)
+                    results = pool.map(
+                        _analyze_segment_shared, parallel_payload,
+                    )
                 except KeyboardInterrupt:
                     logger.warning("Prosodia interrotta — termino worker pool")
                     pool.terminate()
