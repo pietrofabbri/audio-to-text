@@ -180,7 +180,31 @@ def main() -> int:
                     help="secondi fra una chiamata e l'altra")
     ap.add_argument("--out-dir", default=str(OUTPUT_DIR),
                     help="cartella delle sessioni")
-    args = ap.parse_args()
+    args, avanzi = ap.parse_known_args()
+
+    # Le righe con un commento in coda si copiano dal README, e in zsh
+    # il `#` non e' un commento interattivo: il finale arriva qui come
+    # argomento e argparse risponde «unrecognized arguments», che non
+    # dice nulla di utile. Meglio nominarlo.
+    if avanzi:
+        if avanzi[0].startswith("#"):
+            # Il comando suggerito ricostruito **senza** il commento: se
+            # contenesse ancora il `#`, chi lo copia per provare
+            # riceverebbe lo stesso errore, e il suggerimento sarebbe
+            # un modo per non uscirne.
+            pulito = [a for a in sys.argv[1:] if not a.startswith("#")]
+            raise SystemExit(
+                f"\n  Il '#' finale e' arrivato come argomento.\n"
+                f"  In zsh, nei comandi interattivi, '#' non e' un commento\n"
+                f"  se INTERACTIVE_COMMENTS non e' impostato.\n\n"
+                f"  Questo funziona:\n"
+                f"    {Path(sys.argv[0]).name} {' '.join(pulito)}\n\n"
+                f"  Oppure, una volta sola in ~/.zshrc:\n"
+                f"    setopt interactive_comments\n"
+                f"  e da li' in avanti i commenti in coda si potranno copiare\n"
+                f"  dalle righe del README.\n"
+            )
+        ap.error("argomenti sconosciuti: " + " ".join(avanzi))
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     out_dir = Path(args.out_dir)

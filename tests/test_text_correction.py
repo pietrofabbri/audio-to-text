@@ -527,7 +527,52 @@ def _estrai_json_accetta_i_modi() -> None:
                 f"non doveva essere riconosciuto: {cattivo[:30]!r}")
 
 
+def commento_in_coda_rinomato() -> None:
+    """Un `#` arrivato come argomento va detto, non lasciato a argparse.
+
+    Le righe di questo file e del README hanno un commento in coda, e
+    vengono copiate. In bash il `#` viene ignorato; in zsh, nei comandi
+    interattivi, no — arriva come argomento e argparse risponde
+    «unrecognized arguments», che non dice nulla di utile. Il caso si
+    ripresentera' ogni volta che qualcuno copia una riga, quindi il
+    programma deve saperlo spiegare.
+
+    Il comando che suggerisce non deve contenere il `#`: altrimenti il
+    suggerimento sarebbe un modo per non uscire dall'errore.
+    """
+    import subprocess
+
+    testo = ("Il '#' finale e' arrivato come argomento")
+    r = subprocess.run(
+        [sys.executable, str(HERE / ".." / "correct_text.py"),
+         "--dry", "--limit", "5", "# cinque correzioni"],
+        capture_output=True, text=True, cwd=str(ROOT), timeout=120)
+    uscita = (r.stdout or "") + (r.stderr or "")
+    require(r.returncode != 0, "un argomento in più deve far fallire")
+    require(testo in uscita,
+            f"deve spiegare la causa, dice: {uscita[-400:]!r}")
+    require("zsh" in uscita and "interactive_comments" in uscita,
+            f"deve dire come si risolve, dice: {uscita[-400:]!r}")
+
+    # La riga suggerita deve essere eseguibile cosi' com'e'.
+    suggerita = [l.strip() for l in uscita.splitlines()
+                 if l.strip().startswith("correct_text.py")]
+    require(suggerita, f"deve suggerire il comando, dice: {uscita[-400:]!r}")
+    require("#" not in suggerita[0],
+            f"il comando suggerito non deve contenere '#': {suggerita[0]!r}")
+
+    # E un argomento davvero sbagliato continua a dare errore normale.
+    r2 = subprocess.run(
+        [sys.executable, str(HERE / ".." / "correct_text.py"), "--limiti", "5"],
+        capture_output=True, text=True, cwd=str(ROOT), timeout=120)
+    require(r2.returncode != 0, "un flag inesistente deve far fallire")
+    require("limiti" in (r2.stdout or "") + (r2.stderr or ""),
+            "l'errore normale deve nominare il flag sbagliato")
+
+
 CHECKS = [
+    ("il commento in coda viene spiegato, non ignorato",
+     commento_in_coda_rinomato),
     ("il testo non cambia se il modello non cambia niente", testo_immutato),
     ("si correggono solo le parole giuste", correzione_solo_delle_parole_giuste),
     ("il numero di parole non puo' cambiare", numero_di_parole_invariabile),

@@ -716,6 +716,18 @@ python correct_text.py --consent                # scrive davvero
 python correct_text.py --consent --session 19-42-33
 ```
 
+> **Se sei in zsh e ricevi `unrecognized arguments`**, il `#` finale è
+> arrivato come argomento: in zsh, nei comandi interattivi, `#` non è un
+> commento se `INTERACTIVE_COMMENTS` non è impostato. Metti il commento
+> nella riga precedente, oppure una volta sola in `~/.zshrc`:
+>
+> ```bash
+> setopt interactive_comments
+> ```
+>
+> Da lì in avanti le righe con il commento in coda si potranno copiare
+> così come sono — com'è in `bash`.
+
 **Serve `--consent` perché è una decisione, non un dettaglio.** Ogni
 segmento mandate a un'API porta fuori dal portatile il testo di una
 conversazione personale. Tutto il resto di questa pipeline è costruito
