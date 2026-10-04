@@ -311,7 +311,10 @@ manifest:
 | `15-48-56` | 84% | 1.004 s | 1.180 s | +18% |
 | `17-03-01` | 35% | 716 s | 727 s | +1% |
 | `18-07-13` | 61% | 845 s | 958 s | +13% |
-| **totale** | | **4.843 s** | **5.487 s** | **+13%** |
+| **totale** | | **4.843 s** | **5.486 s** | **+13%** |
+
+Il totale è la somma esatta, non quella delle righe già arrotondate:
+4.843,1 s contro 5.485,8 s, che fa +13,3%.
 
 Il modello sbaglia **sempre per eccesso**, dal +1% al +22%: è la
 direzione giusta in cui sbagliare, perché la stima finisce per dire che
