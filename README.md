@@ -294,11 +294,36 @@ Finestra notturna 02:00–06:00 (4h) più tre passate diurne brevi
 Il costo **non** è una costante per secondo di audio: caricare i modelli
 e fare il campione per il confronto denoise si pagano una volta per
 file, mentre l'ASR paga solo sul parlato. Per questo il modello di costo
-sta in [`core/cost.py`](core/cost.py) e separa le due cose. È tarato
-sulle registrazioni vere e prevede il tempo entro l'1% della misura.
+sta in [`core/cost.py`](core/cost.py) e separa le due cose.
 
 Su quattro registrazioni reali del registratore (209 minuti, 3 parlanti,
 SNR 18–30 dB) il rapporto di parlato misurato è **65%**.
+
+**Verifica su un campione indipendente, il 4 ottobre.** Sei file da un'ora
+interi, presi da un registratore USB vero, con i tempi reali presi dal
+manifest:
+
+| Sessione | Parlato | Tempo reale | Previsto | Errore |
+|---|---|---|---|---|
+| `12-07-22` | 20% | 482 s | 586 s | +22% |
+| `13-30-39` | 44% | 762 s | 809 s | +6% |
+| `14-43-16` | 89% | 1.035 s | 1.227 s | +19% |
+| `15-48-56` | 84% | 1.004 s | 1.180 s | +18% |
+| `17-03-01` | 35% | 716 s | 727 s | +1% |
+| `18-07-13` | 61% | 845 s | 958 s | +13% |
+| **totale** | | **4.843 s** | **5.487 s** | **+13%** |
+
+Il modello sbaglia **sempre per eccesso**, dal +1% al +22%: è la
+direzione giusta in cui sbagliare, perché la stima finisce per dire che
+serve più tempo di quanto ne serva, e la notte non finisce mai a metà.
+Non è però «entro l'1%», che era la taratura sulle quattro registrazioni
+del 2 ottobre: su un secondo campione la deviazione tipica è del 13%.
+
+Il tempo, fra l'altro, **non segue la durata ma il parlato**: fra il file
+con 1.434 parole e quello con 6.492 la durata è la stessa e il tempo va
+da 482 s a 1.035 s. Per questo il modello ha un termine per l'audio e uno
+per il parlato, e per questo la coda impara dai file già fatti invece di
+fidarsi di una tabella.
 
 | Parlato | Costo per file da 1h | Notte (4h) | + diurno | Totale/giorno vs 18 |
 |---|---|---|---|---|
@@ -1199,7 +1224,7 @@ python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
 
-208 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
+209 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
 di attesa sono registrati e confrontati, non dormiti. Prima che fosse
 così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
 per un totale di quasi tre minuti — senza verificare nulla che non

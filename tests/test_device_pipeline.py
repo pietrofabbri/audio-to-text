@@ -1475,6 +1475,36 @@ def _hash_rotto(sd, path: Path, rotto: bool):
     return vero
 
 
+def test_il_rtf_dichiarato_copre_il_caso_peggiore_misurato(tmp: Path) -> None:
+    """La stima di partenza deve stare SOPRA il caso peggiore misurato.
+
+    Se sta accanto, o peggio sotto, la coda inizia un file che non finisce
+    dentro la finestra: il tempo di notte e' sprecato e il file si rifa'
+    da capo. Il margine c'e' apposta, e questa e' la misura che lo
+    protegge.
+
+    I sei valori vengono dal manifest della notte del 4 ottobre: sei file
+    da un'ora da un registratore USB vero, tempi presi da
+    logs/device_manifest.jsonl. Non sono un'opinione e non si possono
+    aggiornare da soli: se la macchina cambia, vanno rimesi e questo
+    test va aggiornato con loro.
+    """
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    misurati = [0.134, 0.199, 0.212, 0.238, 0.279, 0.287]
+    peggiore = max(misurati)
+    # DEFAULT_RTF e' una property: va letta su un'istanza, non sulla classe
+    stimato = sd._Budget(0).DEFAULT_RTF
+    assert stimato >= peggiore, (
+        f"la stima {stimato:.3f} sta sotto il caso peggiore "
+        f"misurato {peggiore:.3f}: la notte inizierebbe un file che non finisce")
+
+    # e resta sotto un ordine di grandezza, altrimenti non si inizia
+    # piu' nulla e la stima e' solo un altro modo di non lavorare
+    assert stimato < 1.0, stimato
+
+
 def _righe_manifest(sd) -> list[dict]:
     return [json.loads(x) for x in
             sd.MANIFEST_PATH.read_text(encoding="utf-8").splitlines() if x]

@@ -302,11 +302,52 @@ flag che scatta spesso viene ignorato. Per questo:
   una a 0,2 la media è 0,74 e sembra ottima. Il modello aveva indovinato
   una parola su cinque e la media lo copriva.
 
-**Due query che lo rendono usabile** (`CorpusDB.quality_report()` e
+**Due query che lo rendono usibile** (`CorpusDB.quality_report()` e
 `suspect_text()`). Senza, il flag sarebbe una colonna che nessuno
 guarda: la domanda utile non è "quanti segmenti sono brutti" ma "posso
 analizzare questa sessione", e il riassunto è pesato sulle **parole**,
 non sui segmenti.
+
+**Taratura, misurata l'8 ottobre su undici sessioni (1.060 segmenti).**
+Era la verifica che mancava, e l'aveva rimandata esplicitamente: «se
+`unreliable` è sotto il 5% il flag è tarato bene; se è sopra il 30%, le
+soglie vanno alzate».
+
+| | segmenti | ok | low | unreliable |
+|---|---|---|---|---|
+| tutte le sessioni | 1.060 | 999 | 9 | **52 (4,9%)** |
+
+**4,9%: le soglie restano.** Non vanno alzate, ed è una conclusione
+nascosta dentro una domanda che sembrava dovesse dare una risposta
+sbagliata.
+
+Il numero aggregato dice poco, perché la varianza fra sessioni è enorme
+(da 0,0% a 28,6%). Il dato che decide è **perché** scattano: 45 dei 45
+segmenti segnalati per `ritmo_fuori_scala`, e per 35 di questi il testo
+sono cinque parole o meno dentro una finestra di 25 secondi. La
+tentazione era concludere che il flag fosse un falso positivo — finestre
+lunghe con testo breve, come «Grazie a tutti.» che compare 11 volte.
+
+**Era sbagliato, e i timestamp per parola lo smentiscono.** Dentro
+quelle finestre i conteggi tornano esatti («3/3», «6/6»): dentro ci sono
+solo le parole del segmento, nessuna in più, quindi non è padding. E la
+probabilità che Whisper dà a quelle parole **crolla**:
+
+| | parole | probabilità mediana | sotto 0,90 | sotto 0,60 |
+|---|---|---|---|---|
+| finestre sospette | 160 | **0,636** | 73,1% | **45,0%** |
+| segmenti normali | 36.781 | 0,960 | 38,7% | 15,9% |
+
+E i casi peggiori sono parlanti: `per(0.04)`, `i(0.05)`, `dove(0.14)`,
+`Vivo!(0.51)`. Non è che il modello abbia sentito bene e sia stato
+etichettato a torto: è che lì il modello **non sentiva niente** e ha
+scritto lo stesso. Il flag sta trovando il difetto vero.
+
+Un dato che è uscito e che nessuno aveva chiesto: **l'RTF segue il
+parlato, non la durata**. Fra il file con 1.434 parole e quello con 6.492
+la durata è la stessa (un'ora) e il tempo va da 482 s a 1.035 s. Una
+stima che dia lo stesso costo a due file da un'ora sbaglia sempre, e
+sbaglia di più proprio sul file peggiore.
 
 ---
 
@@ -790,7 +831,7 @@ quello che si scrive.
 
 **42 test** sulla correzione (4 sul percorso completo, 2 sul
 backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
-`asr_prob`, **208 in tutto su 11 suite**.
+`asr_prob`, **209 in tutto su 11 suite**.
 
 La prima passata asciutta con chiave vera ha mostrato una cosa che i
 test non potevano: su quattro segmenti il modello ha proposto quattro
@@ -807,21 +848,27 @@ sulle righe, non sulle pagine.
 
 ## L'ordine in cui li farei
 
-Fatti: **2** (cache WAV), **3** (finestra unica), **4** (nomi),
-**5** (punteggiatura), **6** (flag di qualità), **9** (pubblicazione),
-e il carico termico.
+Fatti: **1** (prima notte vera), **2** (cache WAV), **3** (finestra
+unica), **4** (nomi), **5** (punteggiatura), **6** (flag di qualità,
+tarati), **9** (pubblicazione), e il carico termico.
 
-1. **1 — la prima notte vera.** Con tutto il resto fatto è l'unica
-   verifica che manca, e non è più un rischio teorico.
-2. **6, in verifica** — guardare i primi flag di qualità prodotti da
-   una notte vera. Se `unreliable` è sotto il 5% il flag è tarato
-   bene; se è sopra il 30%, le soglie vanno alzate prima che il flag
-   diventi rumore, che è il suo unico modo di morire.
+1. ~~**1 — la prima notte vera.**~~ Fatta il 4 ottobre su un
+   registratore USB vero: 6 file su 7 passati per la catena intera, e il
+   settimo ha fatto trovare il difetto del file troncato.
+2. ~~**6 — taratura dei flag.**~~ Fatta l'8 ottobre su 1.060 segmenti:
+   `unreliable` al 4,9%, sotto il 5%, e i timestamp per parola hanno
+   mostrato che i segmenti segnalati sono davvero peggiori
+   (probabilità mediana 0,636 contro 0,960). Le soglie **non** si alzano.
 3. **10 — la soglia**, quando ci sarà la seconda voce. Le sei coppie in
    zona grigia dicono quanto manca: finche' sono tutte sotto, la soglia
    non e' tarata, e basta.
 4. **15 — il termico**, con `powermetrics` e una notte di misura.
 5. **8 — biometria.** Quando arriva l'hardware.
+
+Aggiunto dopo: la stima di costo della coda non può prevedere la
+densità di parlato, e non è una cosa che si può correggere prima di
+trascrivere. Va almeno detto dove la coda va a finire quando i file non
+sono tutti uguali.
 
 Da fare prima dell'analisi sul testo: girare `correct_text.py` sulle
 quattro sessioni. Tutto quello che segue — conteggio delle parole,

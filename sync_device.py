@@ -830,11 +830,32 @@ class _Budget:
     stima dichiarata come tale.
     """
 
-    # RTF complessivo della pipeline (elaborazione / audio), misurato
-    # su questo Mac: 74s per 97,8s di audio = 0,76.
-    # RTF di partenza, quando non c'è ancora nessun file elaborato da
-    # cui imparare. Corrisponde a un file da un'ora con il 65% di
-    # parlato, cioè la situazione misurata sulle registrazioni vere.
+    # RTF complessivo della pipeline (elaborazione / audio), misurato su
+    # questo Mac il 4 ottobre su sei file da un'ora interi, presi da un
+    # registratore USB vero:
+    #
+    #   parole   tempo    RTF
+    #    1.434   482 s   0,134
+    #    2.628   716 s   0,199
+    #    3.649   762 s   0,212
+    #    4.376   845 s   0,238
+    #    5.590  1.004 s  0,279
+    #    6.492  1.035 s  0,287
+    #
+    # totale 4.844 s per 21.145 s di audio: **0,229**.
+    #
+    # Il numero non e' il 0,76 che c'era scritto qui prima: quello veniva
+    # da un estratto di 97,8 secondi, dove la parte fissa (caricamento
+    # modello, VAD, diarizzazione) pesa su un'ora di file che non c'e'.
+    #
+    # C'e' un'altra cosa che questi numeri dicono e che la stima non puo'
+    # sapere: **l'RTF segue il parlato, non la durata**. Fra il file con
+    # 1.434 parole e quello con 6.492 la durata e' la stessa e il tempo
+    # raddoppia. Un modello che desse lo stesso costo a due file da un
+    # ora sbaglierebbe sempre, e sbaglierebbe di piu' proprio sul file
+    # peggiore. Non e' correggibile qui — il numero di parole si conosce
+    # solo dopo aver trascritto — ma e' il motivo per cui la stima si
+    # impara dai file della run invece di fidarsi di una tabella.
     MEASURED_RTF = 0.27
 
     # Margine applicato alla stima per la decisione "inizio questo
