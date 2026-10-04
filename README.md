@@ -638,7 +638,7 @@ output/registrazione/
 ├── prosody.csv          # metadati prosodici in formato tabulare
 ├── session.json         # metadata sessione, durate, statistiche per speaker
 ├── segments.jsonl       # un segmento per riga (JSONL) — ingest LLM/analisi
-├── tokens.jsonl         # una parola per riga con timestamp — KWIC, n-grammi
+├── tokens.jsonl         # una parola per riga: timestamp, asr_prob, prosodia — KWIC, n-grammi
 ├── wordfreq.csv         # frequenze parole per speaker
 ├── analysis_ready.md    # testo chunked pronto per un LLM
 ├── speaker_profiles.json# profilo aggregato delle voci globali (senza vettori)
@@ -786,16 +786,75 @@ Su segmenti veri, con chiave vera:
 | **Correzioni inventate** | `Cominciatemi` → «Camminate», poi → «Diamoci» |
 | **Segmenti senza ritocco** | 3 su 6, il modello è cauto |
 
-Il difetto è che riscrive le parole dialettali, e non si distingue a
-occhio un errore di riconoscimento da una parola che suona stretta
-solo perché è dialettale. Il limite strutturale è che oggi non si salva
-la probabilità **per parola** (c'è solo quella per segmento): senza, non
-c'è modo di dire a priori se Whisper aveva già capito.
+Il difetto è che riscrive le parole dialettali, e a occhio non si
+distingue un errore di riconoscimento da una parola che suona stretta
+solo perché è dialettale.
 
-Per questo **non conviene ancora una passata automatica su tutte le
-sessioni**: meglio `--dry` su una sessione, guardare, e poi decidere.
-Gli originali restano sempre accanto ai corretti, in `text_raw` e in
-`text_correction.json`.
+La risposta è la probabilità **per parola**, che Whisper calcola già e
+che non era mai arrivata al correttore: ora la trovi in `tokens.jsonl`
+(`asr_prob`) e nel checkpoint. Sopra una soglia il modello acustico ha
+detto che sa cosa sta sentendo, e lì il giudizio che conta non è più
+quello del modello di lingua. È il filtro `--soglia-prob`, descritto
+sotto.
+
+Per questo una passata automatica **con il filtro acceso** è ragionevole
+sulle quattro sessioni vere. Gli originali restano sempre accanto ai
+corretti, in `text_raw` e in `text_correction.json`, quindi ogni
+decisione resta reversibile.
+
+### Non si riscrive quello che Whisper aveva già capito
+
+Il difetto più fastidioso del correttore non è che sbagli poche parole:
+è che non distingue un errore di riconoscimento da una parola che
+suona stretta solo perché è dialettale. Un prompt con una regola
+esplicita — «una parola pronunciabile che sembra storta è quasi
+certamente quello che è stato detto» — non lo ferma: è una limitazione
+del modello, non dell'istruzione.
+
+Ma non tutte quelle parole sono uguali, e la differenza non sta nel
+testo: sta in quello che il modello acustico ne aveva capito. Su
+`Cominciatemi ragazzi, siamo drastisovati`:
+
+| parola | `asr_prob` | cosa significa |
+|---|---|---|
+| `drastisovati` | 0.41 | Whisper non sapeva cosa fosse: correggibile |
+| `monopolito` | 0.70 | incerto: correggibile |
+| `steam` | 0.14 | quasi inaudibile: correggibile |
+| `Cominciatemi` | 0.63 | udito, solo che stretto: **protetto** |
+
+Sopra `--soglia-prob` la parola non si tocca, per quanto il modello di
+lingua insista. Il default è **0.90**, che su 16.865 parole reali
+protegge **9.063 (53,7%)** e lascia le altre 7.802 correggibili.
+
+```bash
+python correct_text.py --consent --soglia-prob 0.90
+python correct_text.py --consent --soglia-prob 0    # filtro spento
+```
+
+**È una difesa, non una garanzia.** Nel caso qui sopra la soglia non
+avrebbe salvato `Cominciatemi` (0.63): quel caso è stato risolto
+togliendo le parole già certe, non aggiungendo un filtro. Quello che il
+filtro fa è togliere di mezzo le parole su cui il modello di lingua si
+butta a riscrivere il dialettalismo, e mettere accanto al testo il
+numero che ha deciso — così il giudizio si può rifare con dati, non a
+intuito.
+
+Ogni parola bloccata resta nel file con la sua probabilità:
+
+```json
+{"i": 0, "raw": "Cominciatemi", "fixed": "Cominciatemi",
+ "changed": false, "prob": 0.98, "blocked": true}
+```
+
+e il riepilogo della sessione conta le due cose per separate:
+
+```json
+{"words_proposed": 137, "words_changed": 61, "words_blocked": 76}
+```
+
+Se `words_blocked` è zero su una notte intera, o la soglia è troppo
+alta o le probabilità non ci sono: le due cose si confondono, ed è
+per questo il numero è nel riepilogo.
 
 ### Il numero di parole non può cambiare
 

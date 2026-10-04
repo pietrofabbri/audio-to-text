@@ -33,6 +33,12 @@ Senza il confronto uno dei due sparisce e non si sa quale.
 Ogni segmento scarta e' dichiarato nel file con il motivo. Un segmento
 non corretto non e' un errore: e' un segmento di cui non ci si fida, e
 la differenza conta perche' il testo che resta e' il testo detto.
+
+E non si riscrive tutto quello che il modello propone. Whisper sa con
+quanta probabilita' ha udito ogni singola parola, e sopra una soglia
+quel numero e' un giudizio piu' forte di quello di un modello di
+lingua: quando il modello acustico era sicuro, la parola non si tocca.
+Il filtro e' `--soglia-prob`, metti 0 per disattarlo.
 """
 
 from __future__ import annotations
@@ -49,7 +55,7 @@ sys.path.insert(0, str(HERE))
 
 from core.config import OUTPUT_DIR  # noqa: E402
 from core.text_correction import (  # noqa: E402
-    MODELLO, Correttore, scrivi_varianti,
+    MODELLO, SOGLIA_PROB, Correttore, allinea_probabilita, scrivi_varianti,
 )
 
 logger = logging.getLogger("correct_text")
@@ -83,6 +89,40 @@ def _leggi_sessione(d: Path) -> list[dict]:
     return out
 
 
+def _leggi_probabilita(d: Path) -> dict[int, list[float | None]]:
+    """La probabilita' di Whisper per ogni parola, segmento per segmento.
+
+    Va letta dal checkpoint e non da `segments.jsonl`: e' li' che Whisper
+    scrive la probabilita' di ogni parola, e `segments.jsonl` la omette
+    di proposito per non portare dentro ogni riga un elenco di parole.
+    Il checkpoint e' il posto dove il dato e' nato, ed e' l'unico che
+    esiste anche quando la trascrizione e' gia' stata scritta.
+
+    Se il checkpoint manca — una sessione processata da una versione
+    vecchia, o i file di lavoro spostati — si torna con una tabella
+    vuota e il filtro non fa niente, che e' il comportamento giusto:
+    meglio correggere senza rete di protezione che fingersi che ci sia.
+    """
+    path = d / f"{d.name}.checkpoint.json"
+    if not path.exists():
+        return {}
+    try:
+        dati = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("%s: checkpoint illeggibile (%s), filtro disattivato",
+                       path.name, exc)
+        return {}
+
+    out: dict[int, list[float | None]] = {}
+    for chunk in dati.get("chunks") or []:
+        testo = chunk.get("text") or ""
+        if not testo.strip():
+            continue
+        out[int(chunk.get("idx", 0))] = allinea_probabilita(
+            testo, chunk.get("words"))
+    return out
+
+
 def _carica_precedente(d: Path) -> dict[int, dict]:
     """Le correzioni gia' fatte in un giro precedente."""
     path = d / NOME_FILE
@@ -96,7 +136,8 @@ def _carica_precedente(d: Path) -> dict[int, dict]:
     return {int(r["idx"]): r for r in dati.get("segments", [])}
 
 
-def _scrivi(d: Path, risultati: list[dict], modello: str) -> None:
+def _scrivi(d: Path, risultati: list[dict], modello: str,
+            soglia: float = SOGLIA_PROB) -> None:
     """Il file di correzione della sessione, con il riepilogo.
 
     Il riepilogo conta le parole e quante sono cambiate, perche' e' la
@@ -107,13 +148,18 @@ def _scrivi(d: Path, risultati: list[dict], modello: str) -> None:
     parole = sum(r["n_words"] for r in risultati)
     cambiate = sum(r["n_changed"] for r in risultati)
     scartati = sum(1 for r in risultati if r.get("discarded"))
+    proposte = sum(r.get("n_proposed", 0) for r in risultati)
+    bloccate = sum(r.get("n_blocked", 0) for r in risultati)
     riepilogo = {
         "segments": len(risultati),
         "words": parole,
+        "words_proposed": proposte,
         "words_changed": cambiate,
+        "words_blocked": bloccate,
         "changed_share": round(cambiate / parole, 3) if parole else 0.0,
         "discarded": scartati,
         "model": modello,
+        "prob_threshold": soglia,
     }
     out = {"summary": riepilogo, "segments": risultati}
     (d / NOME_FILE).write_text(
@@ -141,6 +187,15 @@ def _mostra_confronto(righe: list[tuple[dict, dict]]) -> None:
             print(f"    {res['n_changed']} parole: {', '.join(parole)}")
         else:
             print("    nessuna correzione")
+        # Le proposte respinte si vedono anche loro: e' la traccia di
+        # quello che il filtro ha salvato, senza la quale «nessuna
+        # correzione» non distingue «il modello non ha proposto nulla»
+        # da «il modello voleva cambiare sei parole e gliele ho negate».
+        bloccate = [w for w in res["words"] if w.get("blocked")]
+        if bloccate:
+            dettaglio = ", ".join(
+                f"{w['raw']} (p={w['prob']:.2f})" for w in bloccate)
+            print(f"    {len(bloccate)} bloccate perche' certe: {dettaglio}")
 
 
 def _sessioni_da_elaborare(args, out_dir: Path) -> list[Path]:
@@ -178,6 +233,10 @@ def main() -> int:
     ap.add_argument("--model", default=MODELLO, help=f"default {MODELLO}")
     ap.add_argument("--pausa", type=float, default=0.5,
                     help="secondi fra una chiamata e l'altra")
+    ap.add_argument("--soglia-prob", type=float, default=SOGLIA_PROB,
+                    help="non correggere le parole che Whisper aveva "
+                         f"gia' udite con almeno questa probabilita' "
+                         f"(default {SOGLIA_PROB}; 0 per disattivare)")
     ap.add_argument("--out-dir", default=str(OUTPUT_DIR),
                     help="cartella delle sessioni")
     args, avanzi = ap.parse_known_args()
@@ -235,7 +294,7 @@ def main() -> int:
               f"sessione, niente scritto\n")
 
     correttore = Correttore(modello=args.model, consentito=True,
-                            pausa=args.pausa)
+                            pausa=args.pausa, soglia_prob=args.soglia_prob)
     pronto, motivo = correttore.pronto()
     if not pronto:
         raise SystemExit(f"non posso procedere: {motivo}")
@@ -255,7 +314,12 @@ def main() -> int:
             continue
 
         print(f"\n=== {d.name}: {len(segmenti)} segmenti ===")
-        da_inviare = [(int(s.get("idx", 0)), s.get("text", ""))
+        probabilita = _leggi_probabilita(d) if args.soglia_prob > 0 else {}
+        if args.soglia_prob > 0 and not probabilita:
+            logger.warning("%s: nessuna probabilita' per parola, il filtro "
+                           "--soglia-prob non puo' agire", d.name)
+        da_inviare = [(int(s.get("idx", 0)), s.get("text", ""),
+                       probabilita.get(int(s.get("idx", 0))))
                       for s in segmenti]
         risultati = correttore.correggi(da_inviare)
 
@@ -289,7 +353,7 @@ def main() -> int:
         uniti = {r["idx"]: r for r in _carica_precedente(d).values()}
         uniti.update({r["idx"]: r for r in out_segmenti})
         finali = sorted(uniti.values(), key=lambda r: r["idx"])
-        _scrivi(d, finali, args.model)
+        _scrivi(d, finali, args.model, args.soglia_prob)
 
         # Le varianti pubblicabili, cosi' che su GitHub si legga il
         # testo corretto e non quello grezzo. `transcript.txt` resta

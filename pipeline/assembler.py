@@ -508,6 +508,20 @@ def _write_segments_jsonl(segments: list[dict], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _arrotonda(valore: Any, cifre: int = 4) -> float | None:
+    """Una probabilita' a quattro cifre, o None se non c'e'.
+
+    Il campo puo' non esserci, per un chunk trascritto senza timestamp
+    di parola o per un checkpoint scritto da una versione piu' vecchia.
+    Scrivere `None` e' giusto: `0.0` direbbe che Whisper era sicuro che
+    quella parola non fosse stata pronunciata, che e' un'altra cosa e non
+    e' vero.
+    """
+    if isinstance(valore, bool) or not isinstance(valore, (int, float)):
+        return None
+    return round(float(valore), cifre)
+
+
 def _write_tokens_jsonl(segments: list[dict], path: Path) -> None:
     """
     tokens.jsonl — una parola per riga con tutti i suoi metadati.
@@ -527,6 +541,7 @@ def _write_tokens_jsonl(segments: list[dict], path: Path) -> None:
       "duration_ms": 500,
       "speaker": "GLOBAL_001",
       "segment_start": 12.4,    ← per risalire al segmento padre
+      "asr_prob": 0.41,          ← quanto Whisper era sicuro (0.93 = sicuro)
       "f0_mean": 142.3           ← prosodia del segmento padre (se disponibile)
     }
 
@@ -559,6 +574,15 @@ def _write_tokens_jsonl(segments: list[dict], path: Path) -> None:
                     "duration_ms":  round((end - start) * 1000),
                     "speaker":      w.get("speaker", speaker),
                     "segment_start": seg_start,
+                    # La probabilita' che Whisper aveva udito questa
+                    # parola. Sta qui e non solo nel checkpoint perche'
+                    # il checkpoint e' un file di lavoro: si cancella,
+                    # si rigenera, e con lui l'unica traccia di quale
+                    # parola il modello acustico aveva capito e quale
+                    # aveva tirato a indovinare. E' il numero con cui si
+                    # decide se una parola puo' essere riscritta da un
+                    # modello di lingua.
+                    "asr_prob":     _arrotonda(w.get("prob")),
                     **pros_flat,
                 }
                 if row["word"]:  # salta word vuote
@@ -578,6 +602,10 @@ def _write_tokens_jsonl(segments: list[dict], path: Path) -> None:
                 row   = {
                     "segment_idx":  seg_idx,
                     "token_idx":    token_idx,
+                    # Nessun timestamp di parola, quindi nessuna
+                    # probabilita': il campo resta a None invece di
+                    # fingere un numero che non esiste.
+                    "asr_prob":     None,
                     "word":         word,
                     "start":        round(start, 3),
                     "end":          round(end, 3),

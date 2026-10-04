@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 # riapplicare alla fine. E' tutto quello che separa «sera.» da «sera».
 PUNTEGGIATURA = " \t\n.,;:!?()[]{}\"'«»…—-"
 
+# Lo stesso insieme come insieme di caratteri: `_norm` li toglie uno a
+# uno e deve poter chiedere «questo carattere c'e'?» per ognuno.
+_PUNTEGGIATURA = frozenset(PUNTEGGIATURA)
+
 # Il modello e' cambiato due volte, e per due motivi diversi.
 #
 # Prima `gemini-2.5-flash`: Google ha limitato l'accesso alla famiglia
@@ -75,6 +79,17 @@ MODELLI_NOTI = {
     "gemini-3.5-flash-lite": "scelta predefinita: risponde regolarmente",
     "gemini-3.8-flash": "piu' capace, ma spesso in 503 per domanda alta",
 }
+
+# La probabilita' oltre la quale una parola non si tocca.
+#
+# 0.90 e' il valore che lascia passare il 46% delle parole, e su questi
+# dati le parole che il correttore aveva corrette bene — «disastrati»
+# da «drastisovati», «monopolio» da «monopolito», «stesso» da
+# «steam»» — hanno probabilita' 0.41, 0.70 e 0.14: stanno tutte sotto.
+# Sopra questa soglia il modello acustico ha detto che sa cosa sta
+# sentendo, e un modello di lingua che sentisse diversamente ha torto
+# per costruzione.
+SOGLIA_PROB = 0.90
 
 ISTRUZIONI = """\
 Sei un correttore di trascrizioni automatiche di una conversazione \
@@ -188,6 +203,103 @@ def scrivi_varianti(
     return scritti
 
 
+def _norm(parola: str) -> str:
+    """Una parola ridotta alla sua parte parlata.
+
+    Serve a confrontare la parola del testo con quella dei timestamp di
+    parola: sono due rappresentazioni della stessa cosa e differiscono
+    solo per la punteggiatura e per lo spazio che Whisper mette davanti.
+
+    La punteggiatura si toglie ovunque, non solo ai bordi, ed e' il punto
+    in cui sta il trucco. Whisper spezza «C'e'» in «C» e «'e'», quindi
+    l'apostrofo sta in *mezzo* a una delle due meta' e non come bordo:
+    togliendolo solo alle estremi il confronto non tornerebbe mai e
+    l'allineamento si fermerebbe al 63% delle parole.
+    """
+    return "".join(c for c in parola if c not in _PUNTEGGIATURA).casefold()
+
+
+def _come_prob(valore: Any) -> float | None:
+    """Una probabilita' usabile, o None.
+
+    Un checkpoint puo' essere stato scritto da una versione che non
+    salvava il campo, e un valore non numerico farebbe fallire il
+    confronto con la soglia piu' avanti, con un errore che non dice
+    nulla di dove sia il problema.
+    """
+    if isinstance(valore, bool) or not isinstance(valore, (int, float)):
+        return None
+    return float(valore)
+
+
+def allinea_probabilita(
+    testo: str,
+    parole: list[dict] | None,
+) -> list[float | None]:
+    """La probabilita' di Whisper per ogni parola del testo, o None.
+
+    Whisper calcola gia' la probabilita' di ogni parola — sta nei suoi
+    timestamp di parola, col nome `prob` — ma senza questa funzione il
+    correttore non puo' distinguere una parola che il modello acustico
+    aveva capito da una che aveva tirato a indovinare, e finisce per
+    fidarsi dell'unico giudizio che non lo sa: quello del modello di
+    lingua.
+
+    I due elenchi non hanno la stessa lunghezza e non sono allineati: il
+    testo ha «C'e'» come una parola, i timestamp ce l'hanno come due,
+    «C» e «'e'». Percio' il confronto e' una camminata monotonica che
+    consuma, per ogni parola del testo, tutte le voci dei timestamp
+    finche' la loro somma non e' proprio quella parola. Non e' un
+    confronto per indice: su questi dati allineerebbe il 54% delle
+    parole e da quel punto in poi assegnerebbe a ogni parola la
+    probabilita' della vicina.
+
+    Una lista, non un dizionario: la posizione e' tutto quello che
+    serve, e restituisce un valore per ogni parola cosi' il chiamante
+    non deve gestire i buchi. `None` vuol dire «non lo so» e non va
+    confuso con 0.0, che significa «Whisper era sicuro che fosse
+    sbagliata».
+    """
+    tokens = _tokenizza(testo)
+    out: list[float | None] = [None] * len(tokens)
+    if not parole:
+        return out
+
+    i = 0
+    for posizione, token in enumerate(tokens):
+        atteso = _norm(token)
+        if not atteso:
+            continue
+        # Caso normale: una sola voce corrisponde alla parola.
+        if i < len(parole) and _norm(str(parole[i].get("word", ""))) == atteso:
+            out[posizione] = _come_prob(parole[i].get("prob"))
+            i += 1
+            continue
+        # Caso divisibile: piu' voci che messe insieme fanno la parola.
+        accumulato = ""
+        j = i
+        while j < len(parole) and len(accumulato) < len(atteso):
+            accumulato += _norm(str(parole[j].get("word", "")))
+            j += 1
+            if accumulato == atteso:
+                break
+        if accumulato == atteso:
+            # Se una parola e' stata spezzata fra piu' timestamp, la
+            # sua probabilita' e' la peggiore dei pezzi: e' la meno
+            # affidabile, ed e' quella che deve decidere se il modello
+            # di lingua ha diritto di toccarla.
+            pezzi = (_come_prob(parole[k].get("prob")) for k in range(i, j))
+            out[posizione] = min((p for p in pezzi if p is not None),
+                                 default=None)
+            i = j
+        # Altrimenti la parola non si allinea e resta None: non protegge
+        # niente. Meglio che attribuirle la probabilita' di una vicina,
+        # che la esporrebbe a un filtro costruito su un numero che parla
+        # d'un'altra parola.
+
+    return out
+
+
 @dataclass
 class WordFix:
     """Una parola, prima e dopo."""
@@ -195,6 +307,8 @@ class WordFix:
     indice: int
     originale: str
     proposta: str
+    prob: float | None = None
+    bloccata: bool = False
 
     @property
     def scelta(self) -> str:
@@ -209,7 +323,11 @@ class WordFix:
 
     @property
     def cambiata(self) -> bool:
-        return self.scelta != self.originale
+        # Una parola bloccata non e' cambiata: il filtro l'ha rimessa
+        # com'era, e dirne cambiata qualcosa di riportato al suo stato
+        # iniziale farebbe dire al riepilogo che il modello ha lavorato
+        # dove non ha lavorato.
+        return self.scelta != self.originale and not self.bloccata
 
 
 @dataclass
@@ -222,10 +340,22 @@ class SegmentResult:
     parole: list[WordFix] = field(default_factory=list)
     scartato: bool = False
     motivo_scarto: str = ""
+    n_proposte: int = 0
 
     @property
     def n_cambiate(self) -> int:
         return sum(1 for f in self.parole if f.cambiata)
+
+    @property
+    def n_bloccate(self) -> int:
+        """Quante proposte sono state respinte perche' certe.
+
+        Il numero conta anche perche' e' l'unico modo di capire se il
+        filtro sta lavorando o e' solo acceso: se su una notte intera
+        blocca zero parole, o la soglia e' troppo alta o le probabilita'
+        non ci sono, e le due cose si confondono.
+        """
+        return sum(1 for f in self.parole if f.bloccata)
 
     @property
     def n_parole(self) -> int:
@@ -245,9 +375,12 @@ class SegmentResult:
             "changed_share": round(self.quota_cambiate, 3),
             "discarded": self.scartato,
             "discard_reason": self.motivo_scarto,
+            "n_proposed": self.n_proposte,
+            "n_blocked": self.n_bloccate,
             "words": [
                 {"i": f.indice, "raw": f.originale, "fixed": f.scelta,
-                 "changed": f.cambiata}
+                 "changed": f.cambiata, "prob": f.prob,
+                 "blocked": f.bloccata}
                 for f in self.parole
             ],
         }
@@ -436,11 +569,13 @@ class Correttore:
         consentito: bool = False,
         pausa: float = 0.5,
         tentativi: int = 3,
+        soglia_prob: float = SOGLIA_PROB,
     ) -> None:
         self.modello = modello
         self.consentito = consentito
         self.pausa = pausa
         self.tentativi = tentativi
+        self.soglia_prob = soglia_prob
         self._client = None
 
     def _chiave(self) -> str | None:
@@ -470,8 +605,20 @@ class Correttore:
         self._client = genai.Client(api_key=self._chiave())
         return self._client
 
-    def correggi_segmento(self, idx: int, testo: str) -> SegmentResult:
-        """Corregge un segmento, o lo dichiara non correggibile."""
+    def correggi_segmento(
+        self,
+        idx: int,
+        testo: str,
+        prob: list[float | None] | None = None,
+    ) -> SegmentResult:
+        """Corregge un segmento, o lo dichiara non correggibile.
+
+        `prob` e' la probabilita' di Whisper parola per parola, nella
+        stessa divisione di `testo.split()`. Se arriva, il filtro e'
+        attivo; se manca, il segmento viene corretto come prima e senza
+        rete di protezione, perche' in quel caso non c'e' niente su cui
+        basare un giudizio.
+        """
         if not testo.strip():
             return SegmentResult(idx, testo, testo)
 
@@ -564,21 +711,77 @@ class Correttore:
                                "quelle del testo: scartata"),
             )
 
-        corretto, parole = applicato
-        return SegmentResult(idx, testo, corretto, parole=parole)
+        _, parole = applicato
+        proposte = sum(1 for f in parole if f.scelta != f.originale)
+        parole = self._filtra(parole, prob)
+        corretto = " ".join(f.scelta for f in parole)
+        return SegmentResult(idx, testo, corretto, parole=parole,
+                             n_proposte=proposte)
 
-    def correggi(self, segmenti: Iterable[tuple[int, str]]) -> list[SegmentResult]:
-        """Corregge piu' segmenti, con una pausa fra uno e l'altro."""
+    def _filtra(
+        self,
+        parole: list[WordFix],
+        prob: list[float | None] | None,
+    ) -> list[WordFix]:
+        """Le parole che Whisper aveva gia' capito non si toccano.
+
+        Il difetto che questo chiude e' noto e si vede in un esempio:
+        su «Cominciatemi ragazzi, siamo drastisovati» il correttore ha
+        proposto «Camminate ragazzi, siamo disastrati» e, al secondo
+        giro, «Diamoci ragazzi, siamo disastrati». La seconda parola e'
+        un buon correzione; la prima e' un dialettalismo riscritto in
+        italiano, e nessun prompt lo ferma.
+
+        Ma le due non sono uguali per Whisper: «disastrati» era stato
+        udito con probabilita' 0.41, «stea-» con 0.14, mentre
+        «Cominciatemi» era stato udito con 0.63. Sopra una soglia il
+        modello acustico ha gia' detto che sa cosa sta sentendo, e li'
+        il giudizio che conta non e' piu' quello del modello di lingua.
+        E' una difesa, non una garanzia: distingue gli errori acustici
+        dai dialettalismi nella maggior parte dei casi, non in tutti.
+        """
+        if not prob or self.soglia_prob <= 0:
+            return parole
+
+        for f in parole:
+            if f.indice >= len(prob):
+                continue
+            p = prob[f.indice]
+            if p is None or p < self.soglia_prob or not f.cambiata:
+                continue
+            # Non si butta via la proposta: resta nel file con la
+            # probabilita' accanto, perche' «il modello voleva cambiarla
+            # e Whisper era sicuro» e' informazione, ed e' l'unica che
+            # permette di tarare la soglia guardando i dati invece di
+            # indovinarla.
+            f.proposta = f.originale
+            f.prob = p
+            f.bloccata = True
+        return parole
+
+    def correggi(self, segmenti: Iterable[Any]) -> list[SegmentResult]:
+        """Corregge piu' segmenti, con una pausa fra uno e l'altro.
+
+        Ogni elemento e' una coppia (idx, testo) o una terna
+        (idx, testo, probabilita'), per poter passare il filtro anche
+        quando chi chiama ce l'ha.
+        """
         out: list[SegmentResult] = []
         # La lista si materializza perche' serve sapere se il
         # segmento corrente e' l'ultimo: e' l'unico punto in cui non
         # ha senso aspettare prima di finire.
         segmenti = list(segmenti)
-        for n, (idx, testo) in enumerate(segmenti):
-            r = self.correggi_segmento(idx, testo)
+        for n,voce in enumerate(segmenti):
+            idx, testo = voce[0], voce[1]
+            prob = voce[2] if len(voce) > 2 else None
+            r = self.correggi_segmento(idx, testo, prob)
             out.append(r)
             if r.scartato:
                 logger.warning("Segmento %d scartato: %s", idx, r.motivo_scarto)
+            elif r.n_bloccate:
+                logger.info("Segmento %d: %d correzioni proposte, %d "
+                            "bloccate perche' certe", idx, r.n_proposte,
+                            r.n_bloccate)
             if self.pausa and n + 1 < len(segmenti):
                 time.sleep(self.pausa)
         return out

@@ -695,14 +695,38 @@ certamente quello che è stato detto») non l'ha fermato: è una
 limitazione del modello, non un difetto di istruzione.
 
 Il danno è limitato e per costruzione: il numero di parole non cambia,
-l'originale resta in `text_raw` e ogni parola affiancata nel file. Ma
-**non è ancora pronto per una passata automatica sui 429 segmenti**, e il
-motivo è che non si può distinguere un errore di riconoscimento da una
-parola che suona stretta solo perché è dialettale — non c'è un
-dizionario che lo sappia. Il filtro più solido sarebbe non far correggere
-le parole che Whisper aveva già capito con sicurezza, e per farlo
-servirebbe la probabilità **per parola**, che oggi non si salva: esiste
-solo quella per segmento.
+l'originale resta in `text_raw` e ogni parola affiancata nel file.
+
+**La riserva è stata chiusa, e il difetto era diverso da come l'avevo
+descritto.** Non è che la probabilità per parola non si salvasse:
+Whisper la calcola, sta nei timestamp di parola col nome `prob`, e
+finiva nel checkpoint. Il difetto era che da lì non usciva più — chi
+correggere il testo leggeva `segments.jsonl`, che i timestamp li omette
+di proposito, e la probabilità si perdeva sul pavimento.
+
+Ora la probabilità arriva dove serve:
+
+- `tokens.jsonl` ha `asr_prob` su ogni parola (16.865 righe sulle
+  quattro sessioni, rigenerate senza riascoltare l'audio);
+- `allinea_probabilita` la riporta alla divisione di `text.split()`,
+  che non coincide: Whisper spezza «C'è» in «C» e «'è». Un confronto
+  per indice allineerebbe il 54% delle parole, una camminata che
+  consuma le voci finché non fanno la parola ne allinea il 100%;
+- `--soglia-prob` (default 0.90) impedisce di correggere le parole che
+  Whisper aveva udito con sicurezza, e ogni blocco resta nel file con
+  la probabilità accanto.
+
+Su 16.865 parole reali la soglia 0.90 protegge 9.063, il 53.7%, e le
+tre parole che il correttore aveva corrette bene — `drastisovati`
+(0.41), `monopolito` (0.70), `steam` (0.14) — stanno tutte sotto.
+
+**Quello che il filtro non risolve**, e va detto con chiarezza:
+`Cominciatemi` ha probabilità 0.63 e resta sotto la soglia, quindi quel
+caso non è stato il filtro a salvarlo ma la decisione di togliere
+del tutto le parole già certe. Il filtro non distingue un dialettalismo
+da un errore acustico: riduce il numero di occasioni in cui il modello
+di lingua riscrive il dialettalismo, non le elimina. Le quattro
+sessioni si possono girare, ma il giudizio finale resta tuo.
 
 Quel che funziona, e va detto: `drastisovati` → «disastrati»,
 `monopolito` → «monopolio», `steam` → «stesso». Sono correzioni che
@@ -711,8 +735,9 @@ a occhio, dalle invenzioni.
 
 **Verificato.** Temperatura 0, perché due passate sullo stesso testo
 davano risultati diversi e una correzione che cambia da una passata
-all'altra non è una correzione: ora è riproducibile. 22 test sulla
-correzione, 175 in tutto su 11 suite.
+all'altra non è una correzione: ora è riproducibile. 32 test sulla
+correzione (10 nuovi sul filtro e sull'allineamento), 2 nuovi sulla
+scrittura di `asr_prob`, 185 in tutto su 11 suite.
 
 ---
 

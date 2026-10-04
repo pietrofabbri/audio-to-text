@@ -26,6 +26,7 @@ from core.device import (  # noqa: E402
     VolumeInfo, _collect_audio, _find_record_dir, parse_recording_time,
 )
 from core.corpus_db import CorpusDB, _normalize_word  # noqa: E402
+from pipeline.assembler import _arrotonda, _write_tokens_jsonl  # noqa: E402
 from pipeline.denoise import QualityScore, compare, denoised_path_for  # noqa: E402
 
 
@@ -1186,6 +1187,51 @@ def test_correzioni_ignora_chi_non_ha_indice(tmp: Path) -> None:
     ]}), encoding="utf-8")
     corr = CorpusDB.load_corrections(d)
     assert set(corr) == {7}, corr
+
+
+# ---------------------------------------------------------------------------
+# La probabilita' per parola arriva al file delle parole
+# ---------------------------------------------------------------------------
+
+# Il numero con cui si distingue un errore di riconoscimento da una
+# parola che suona stretta solo perche' e' dialettale esiste gia' nel
+# checkpoint, ma il checkpoint e' un file di lavoro: si cancella, si
+# rigenera, e con lui la traccia di quale parola il modello acustico
+# aveva capito. Se il dato non arriva a tokens.jsonl, il correttore
+# finisce per non poterlo usare, ed e' gia' successo.
+
+
+def test_probabilita_per_parola_in_tokens(tmp: Path) -> None:
+    segmenti = [
+        {"idx": 0, "start": 0.0, "end": 2.0, "text": "siamo qui",
+         "speaker": "GLOBAL_001",
+         "words": [{"word": " siamo", "start": 0.0, "end": 0.4, "prob": 0.9},
+                   {"word": " qui", "start": 0.5, "end": 0.9, "prob": 0.2}]},
+        # Senza timestamp di parola: le parole vengono distribuite
+        # nell'intervallo, e la probabilita' non esiste.
+        {"idx": 1, "start": 3.0, "end": 4.0, "text": "va bene",
+         "speaker": "GLOBAL_001"},
+    ]
+    path = tmp / "tokens.jsonl"
+    _write_tokens_jsonl(segmenti, path)
+    righe = [json.loads(l) for l in
+             path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(righe) == 4, righe
+    assert righe[0]["asr_prob"] == 0.9, righe[0]
+    assert righe[1]["asr_prob"] == 0.2, righe[1]
+    for r in righe[2:]:
+        assert r["asr_prob"] is None, (
+            "senza timestamp di parola la probabilita' resta None, "
+            f"non 0.0: {r}")
+
+
+def test_probabilita_non_numerica_non_diventa_zero(tmp: Path) -> None:
+    # 0.0 direbbe che Whisper era sicuro che la parola non fosse stata
+    # pronunciata: e' un'altra affermazione, e non e' vera.
+    assert _arrotonda(None) is None
+    assert _arrotonda("alta") is None
+    assert _arrotonda(True) is None
+    assert _arrotonda(0.123456) == 0.1235
 
 
 def test_migrazione_riempie_il_testo_originale(tmp: Path) -> None:

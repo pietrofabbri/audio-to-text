@@ -36,9 +36,10 @@ sys.path.insert(0, str(ROOT))
 
 from core.text_correction import (  # noqa: E402
     Correttore, SegmentResult, WordFix, _applica, _coda, _estrai_json,
-    _modello_mancante, _piano, _retry_after, correggi_segmenti, scrivi_varianti,
+    _modello_mancante, _piano, _retry_after, allinea_probabilita,
+    correggi_segmenti, scrivi_varianti,
 )
-from core.text_correction import MODELLO  # noqa: E402
+from core.text_correction import MODELLO, SOGLIA_PROB  # noqa: E402
 
 
 class Failure(Exception):
@@ -715,6 +716,154 @@ def il_backoff_ascolta_il_server() -> None:
         require(got == atteso, f"{testo} -> {got}, atteso {atteso}")
 
 
+
+# ----------------------------------------------------------------------
+# La probabilita' per parola: il giudizio che non viene dal modello
+# ----------------------------------------------------------------------
+
+# Il difetto che questa sezione copre e' noto e ha un nome. Il
+# correttore riscriveva i dialettalismi: su «Cominciatemi ragazzi,
+# siamo drastisovati» propose «Camminate ... disastrati» e al secondo
+# giro «Diamoci ... disastrati», e nessuna delle due parole nuove era
+# piu' difendibile dell'originale. Nessun prompt lo ferma.
+#
+# Ma non tutte quelle parole sono uguali, e la differenza non e' nel
+# testo: e' in quello che Whisper ne aveva capito. «disastrati» era
+# stato udito con probabilita' 0.41, «Cominciatemi» con 0.98. Sopra una
+# soglia il modello acustico ha gia' detto che sa cosa sta sentendo, e
+# li' il giudizio che conta non e' quello del modello di lingua.
+#
+# Il pericolo di questa difesa e' il suo opposto, ed e' per questo che
+# va provata: gettare via una parola che era giusta. Percio' il test
+# verifica entrambe le direzioni, e che la parola bloccata resti nel
+# file con la probabilita' accanto invece di sparire.
+
+TESTO = "Cominciatemi ragazzi siamo drastisovati"
+PROB = [0.98, 0.99, 0.97, 0.41]
+PROPOSTE = [{"i": 0, "a": "Cominciatemi", "b": "Camminate"},
+            {"i": 3, "a": "drastisovati", "b": "disastrati"}]
+
+
+def allineamento_delle_timestamps() -> None:
+    """Whisper spezza «C'e'» in due voci: l'allineamento se ne accorge."""
+    parole = [{"word": " C", "prob": 0.5}, {"word": "'e'", "prob": 0.9},
+              {"word": " la", "prob": 0.99}]
+    p = allinea_probabilita("C'e la", parole)
+    require(len(p) == 2, f"due parole, due probabilita': {p}")
+    # La parola spezzata vale quanto il pezzo peggiore: se una meta'
+    # e' stata indovinata, la parola intera e' stata indovinata.
+    require(p[0] == 0.5, f"la parola spezzata prende la peggiore: {p}")
+    require(p[1] == 0.99, f"la parola intera prende la sua: {p}")
+
+
+def allineamento_senza_probabilita() -> None:
+    """Nessuna probabilita' significa 'non lo so', non zero."""
+    require(allinea_probabilita("a b", None) == [None, None],
+            "senza parole non si inventa niente")
+    require(allinea_probabilita("a b", [{"word": " a"}, {"word": " b"}])
+            == [None, None],
+            "una voce senza prob non vale zero: vale niente")
+
+
+def allineamento_non_allineato() -> None:
+    """Se i due elenchi non tornano, nessuna parola si appropria."""
+    p = allinea_probabilita("qwerty zzzz",
+                            [{"word": " a", "prob": 0.9},
+                             {"word": " b", "prob": 0.9}])
+    require(p == [None, None],
+            f"una parola non allineata non prende la prob della vicina: {p}")
+
+
+def parola_certa_non_si_tocca() -> None:
+    """Una parola udita con certezza resta com'era."""
+    c = _correttore([_risposta(PROPOSTE)])
+    r = c.correggi_segmento(0, TESTO, PROB)
+    require("Cominciatemi" in r.testo_corretto,
+            f"parola certa riscritta: {r.testo_corretto}")
+    require("disastrati" in r.testo_corretto,
+            f"la correzione vera e' stata buttata: {r.testo_corretto}")
+    require(r.n_cambiate == 1, f"una correzione sola: {r.n_cambiate}")
+    require(r.n_bloccate == 1, f"una parola bloccata: {r.n_bloccate}")
+    require(r.n_proposte == 2, f"due proposte: {r.n_proposte}")
+
+
+def parola_incerta_si_corregge() -> None:
+    """Sotto la soglia il modello di lingua ha ancora voce."""
+    c = _correttore([_risposta([{"i": 0, "a": "Cominciatemi",
+                                  "b": "Camminate"}])])
+    r = c.correggi_segmento(0, "Cominciatemi ragazzi", [0.41, 0.99])
+    require("Camminate" in r.testo_corretto,
+            f"una parola incerta deve restare correggibile: "
+            f"{r.testo_corretto}")
+    require(r.n_bloccate == 0, "niente da bloccare")
+
+
+def senza_probabilita_niente_filtro() -> None:
+    """Se le probabilita' non ci sono, il correttore lavora come prima."""
+    c = _correttore([_risposta(PROPOSTE)])
+    r = c.correggi_segmento(0, TESTO)
+    require("Camminate" in r.testo_corretto,
+            "senza probabilita' non si blocca niente")
+    require(r.n_bloccate == 0, "senza probabilita' non si blocca niente")
+
+
+def soglia_zero_disattiva_il_filtro() -> None:
+    """`--soglia-prob 0` resta il comportamento di prima."""
+    c = _correttore([_risposta(PROPOSTE)], soglia_prob=0.0)
+    r = c.correggi_segmento(0, TESTO, PROB)
+    require("Camminate" in r.testo_corretto,
+            "con la soglia a zero il filtro e' spento")
+    require(r.n_cambiate == 2, f"due correzioni: {r.n_cambiate}")
+
+
+def parola_spezzata_protetta_solo_se_lo_e() -> None:
+    """«C'e'» si corregge se una meta' e' incerta, si blocca se certe."""
+    testo = "C'e la cosa"
+    parole = [{"word": " C", "prob": 0.99}, {"word": "'e'", "prob": 0.2},
+              {"word": " la", "prob": 0.99}, {"word": " cosa", "prob": 0.99}]
+    correzione = [{"i": 0, "a": "C'e", "b": "Che"}]
+
+    c = _correttore([_risposta(correzione)])
+    r = c.correggi_segmento(0, testo, allinea_probabilita(testo, parole))
+    require("Che" in r.testo_corretto,
+            f"una meta' incerta: la parola si corregge ({r.testo_corretto})")
+
+    parole[1]["prob"] = 0.95
+    c = _correttore([_risposta(correzione)])
+    r = c.correggi_segmento(0, testo, allinea_probabilita(testo, parole))
+    require("C'e" in r.testo_corretto,
+            f"tutto certo: la parola non si tocca ({r.testo_corretto})")
+
+
+def parola_bloccata_restare_tracciata() -> None:
+    """Il blocco si vede nel file, non e' una sparizione."""
+    c = _correttore([_risposta(PROPOSTE)])
+    d = c.correggi_segmento(0, TESTO, PROB).to_dict()
+    bloccata = [w for w in d["words"] if w["blocked"]]
+    require(len(bloccata) == 1, f"una parola bloccata: {len(bloccata)}")
+    w = bloccata[0]
+    require(w["prob"] == 0.98, f"la probabilita' resta: {w}")
+    require(w["raw"] == "Cominciatemi", f"l'originale resta: {w}")
+    require(w["fixed"] == w["raw"], f"e il testo e' quello: {w}")
+    require(w["changed"] is False,
+            "una parola bloccata non e' una parola cambiata")
+    require(d["n_blocked"] == 1 and d["n_proposed"] == 2,
+            f"il riepilogo conta le proposte e i blocchi: {d}")
+
+
+def il_batch_conosce_le_probabilita() -> None:
+    """Anche via lista di segmenti il filtro resta attivo."""
+    c = _correttore([_risposta(PROPOSTE), _risposta(PROPOSTE)])
+    risultati = c.correggi([(0, TESTO, PROB), (1, TESTO, PROB)])
+    require(len(risultati) == 2, "due risultati")
+    for r in risultati:
+        require(r.n_bloccate == 1, f"bloccata anche in batch: {r}")
+    # E una coppia senza probabilita' continua a funzionare.
+    c = _correttore([_risposta(PROPOSTE)])
+    r = c.correggi([(0, TESTO)])[0]
+    require(r.n_bloccate == 0, "senza probabilita' niente blocchi")
+
+
 CHECKS = [
     ("il JSON con virgole finali viene letto, non scartato",
      virgole_finali_nel_json),
@@ -748,6 +897,24 @@ CHECKS = [
      senza_correzioni_niente_varianti),
     ("correggere i segmenti non tocca la fonte",
      correggere_segmenti_non_tocca_l_originale),
+    ("i timestamp spezzati si allineano alle parole",
+     allineamento_delle_timestamps),
+    ("senza probabilita' non si inventa un numero",
+     allineamento_senza_probabilita),
+    ("una parola non allineata non prende la prob della vicina",
+     allineamento_non_allineato),
+    ("una parola che Whisper aveva capito non si tocca",
+     parola_certa_non_si_tocca),
+    ("una parola incerta resta correggibile", parola_incerta_si_corregge),
+    ("senza probabilita' il correttore lavora come prima",
+     senza_probabilita_niente_filtro),
+    ("la soglia a zero spegne il filtro", soglia_zero_disattiva_il_filtro),
+    ("una parola spezzata e' protetta solo se lo sono tutte le parti",
+     parola_spezzata_protetta_solo_se_lo_e),
+    ("la parola bloccata resta tracciata nel file",
+     parola_bloccata_restare_tracciata),
+    ("il batch passa le probabilita' al filtro",
+     il_batch_conosce_le_probabilita),
 ]
 
 
