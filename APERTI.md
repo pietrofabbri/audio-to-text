@@ -27,24 +27,56 @@ la sezione in fondo.
 
 ## Bloccanti — da fare prima della prima notte vera
 
-### 1. Nessuna notte reale è mai girata end-to-end
+### 1. ~~Nessuna notte reale è mai girata end-to-end~~ — chiuso il 4 ottobre
 
-**Stato.** Tutto è stato provato con device finto e con estratti reali,
-ma mai con un `pull` notturno vero su 18 file da un'ora.
+**Stato.** Chiuso, e meglio di quanto si sperasse: ha prodotto un difetto
+che nessun test precedente poteva vedere.
 
-**Pro di farlo subito.** È l'unico test che manca, e vale più di tutti
-gli altri messi insieme: i bug trovati finora (stem incoerente,
-`cpu_threads=None`, cache sul registratore) erano tutti di integrazione,
-e sono emersi solo quando i pezzi sono stati collegati.
+**Cosa è successo.** `pull` su un registratore USB vero (un
+`HS USB FlashDisk`, exFAT, 62 GiB), sette file da un'ora del 4 ottobre.
+Sei sono passati per la catena intera: **6 completati, 0 falliti**,
+ognuno verificato, archiviato e cancellato dal device. Il settimo ha
+fatto trovare il difetto.
 
-**Contra.** Costa una notte di registrazione, o un pomeriggio se si
-simula con i tuoi file.
+**Il difetto.** `2026-10-04_10-49-40.MP3` dichiarava 57.600.000 byte — un'ora
+esatta — e sulla card ce n'erano 3.538.944. Il driver lo dice in una riga
+di log che vale un ettaro:
 
-**Perché ora.** Il rischio non è che fallisca: è che fallisca *di
-notte*, senza nessuno che guardi i log.
+```
+EXFAT_BeginBlockmap: Read with requested offset >= file allocated size. Exiting.
+```
 
-**Io.** Prepara il comando e una procedura di verifica in tre righe.
-**Tu.** Lo lanci e mi dici l'esito.
+Il registratore era rimasto senza corrente mentre scriveva. Il file non
+era illeggibile in blocco: era troncato, e `Errno 22` è la risposta a un
+offset che non esiste, non un errore di rete o di permessi.
+
+**Perché i test non lo avevano visto.** Servivano due cose che un test
+finto non ha: un filesystem che dica di no, e un `ffprobe` che menta. E
+`ffprobe` menteva: ricavava 3600,0 s dividendo il byte count per il
+bitrate, quindi un file con tre minuti si presentava come un'ora, e ogni
+stima partiva da lì senza che nessuno potesse accorgersene.
+
+**Cosa è cambiato nel codice.** Il file troncato non viene più saltato:
+si salva il pezzo leggibile, lo si elabora con il nome vero del device,
+e solo dopo che la trascrizione esiste ed è verificata si cancellano
+sia il pezzo di lavoro sia l'originale. Dieci test nuovi. E due difetti
+miei che sono usciti solo quando la cosa ha girato sul vero:
+
+- la copia di lavoro aveva un suffisso di hash nel nome, e la pipeline
+  scrive `meta.stem` in `transcript.json` a partire dal nome del file che
+  riceve: la sessione finiva nel corpus come
+  `2026-10-04_10-49-40-1508d6ee` mentre la cartella era
+  `2026-10-04_10-49-40`, e i due nomi non tornavano più insieme;
+- il pezzo di lavoro sparisce con l'archivio, e veniva comunque
+  «cancellato» subito dopo: un `avviso di impossibile cancellare`
+  stampato accanto a un cancellamento riuscito, che è il modo più rapido
+  per non far notare il prossimo avviso che conta.
+
+**Cosa è rimasto aperto.** La coda ha impiegato 1 h 31 min per 6 file da
+un'ora, e il tempo dipende dalla quantità di parlato più che dalla
+durata: 482 s per un file con 1.434 parole e 1.035 s per uno con 6.492.
+Il `MEASURED_RTF` di `_Budget` è dichiarato 0,27 e va ricalcolato su
+questi numeri, che sono i primi misurati su un device vero.
 
 ---
 
@@ -758,7 +790,7 @@ quello che si scrive.
 
 **42 test** sulla correzione (4 sul percorso completo, 2 sul
 backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
-`asr_prob`, **198 in tutto su 11 suite**.
+`asr_prob`, **208 in tutto su 11 suite**.
 
 La prima passata asciutta con chiave vera ha mostrato una cosa che i
 test non potevano: su quattro segmenti il modello ha proposto quattro

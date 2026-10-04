@@ -351,6 +351,85 @@ def _verify_output(stem: str) -> tuple[bool, str]:
     return True, f"{len(segs)} segmenti, {words} parole"
 
 
+# Dove finisce il pezzo recuperabile di un file che non si lascia leggere
+# per intero. Dentro logs/, che è già ignorato: sono lavori temporanei, non
+# un archivio (l'archivio è un altro, e vede solo i file sani).
+LAVORO_DIR = LOGS_DIR / "lavoro"
+
+# Sotto questa quantità di byte recuperati non si fa nemmeno il tentativo.
+# Non è una soglia di qualita' dell'audio: e' la soglia sotto la quale il
+# file non e' "una registrazione troncata" ma un file rotto, e su quello
+# conviene che una persona guardi invece che la pipeline lo dichiari
+# elaborato e cancelli il device.
+SALVATAGGIO_MIN_BYTES = 1 << 19
+
+# Sotto questa dimensione di lettura il salvataggio si arrende:shrinkare
+# un blocco non recupera niente se il blocco e' gia' piu' piccolo del
+# confine, e continuare a provare costerebbe una lettura fallita per
+# ogni riga che manca.
+SALVATAGGIO_CHUNK_MINIMO = 1 << 16
+
+
+def _salva_prefisso(source: Path, dest: Path, chunk: int = 1 << 20) -> tuple[int, str]:
+    """Copia da `source` finche' il filesystem risponde, e si ferma al primo errore.
+
+    Restituisce (byte copiati, motivo). Serve per i file che il registratore
+    lascia a meta': la voce in directory promette un'ora di audio, ma gli
+    offset oltre la dimensione allocata non si possono leggere e ogni
+    lettura li chiede. Non e' un errore transitorio e rileggere con lo
+    stesso blocco non serve: il filesystem ha gia' detto di no.
+
+    Però il confine non e' netto, ed e' per questo che si riprova con
+    blocchi piu' piccoli. Il driver rifiuta la lettura che *varca* il
+    confine, non quella che arriva esattamente al confine: leggendo a
+    1 MiB ci si ferma all'ultimo MiB intero e si buttano via i byte fra
+    l'ultimo blocco e la fine reale. Su un file vero misurato sono stati
+    3.145.728 byte con blocchi da 1 MiB e 3.538.944 con blocchi da 4 KiB:
+    quaranta secondi di registrazione, persi non perche' non ci fossero ma
+    perche' non si chiedeva nel modo giusto. Quindi si dimezza e si
+    riprova, fino a un minimo sotto il quale il gioco non vale piu'.
+
+    Il motivo torna al chiamante perche' la risposta conta: "ho salvato
+    3 MiB" e "non ho salvato niente" portano a due decisioni opposte.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    scritti = 0
+    motivo = "file interamente leggibile"
+    try:
+        with source.open("rb") as src, dest.open("wb") as out:
+            while True:
+                try:
+                    blocco = src.read(chunk)
+                except OSError as exc:
+                    if chunk <= SALVATAGGIO_CHUNK_MINIMO:
+                        motivo = (f"si ferma a {scritti} byte "
+                                  f"(blocchi da {chunk}): {exc.strerror or exc}")
+                        break
+                    chunk = max(SALVATAGGIO_CHUNK_MINIMO, chunk // 4)
+                    continue
+                if not blocco:
+                    break
+                out.write(blocco)
+                scritti += len(blocco)
+    except OSError as exc:
+        motivo = f"copia interrotta a {scritti} byte: {exc.strerror or exc}"
+    return scritti, motivo
+
+
+def _lavoro_path(nome: str) -> Path:
+    """Il posto dove finisce il pezzo salvato.
+
+    Il nome del file si mantiene **uguale a quello del device**, e la
+    separazione la fa la cartella. Il nome non si puo' cambiaare: la
+    pipeline scrive `meta.stem` in transcript.json a partire dal nome del
+    file che le si passa, e da li il corpus prende il nome della sessione.
+    Rinominare la copia di lavoro produceva due nomi per la stessa
+    registrazione — cartella `2026-10-04_10-49-40`, corpus
+    `2026-10-04_10-49-40-1508d6ee` — e i due non tornavano piu' insieme.
+    """
+    return LAVORO_DIR / nome
+
+
 def _archive(source: Path, stem: str) -> Path | None:
     """Copia l'originale nell'archivio locale, che verrà ripulito dopo
     ARCHIVE_DAYS giorni. Non è 'tenere tutto per sempre': è la rete di
@@ -474,16 +553,61 @@ def cmd_pull(args) -> int:
             break
         budget.started_file(est)
         recorded, pattern = parse_recording_time(f.name)
+        nome_originale = f.name
+        # L'originale di cui f è, per ora, una copia. Diventa qualcosa
+        # solo quando il file si rivela troncato: allora f passa a essere
+        # il pezzo recuperato e questo conserva il nome vero, quello che
+        # va nel manifest e in session.json.
+        originale: Path | None = None
         try:
             digest = file_sha256(f)
         except OSError as exc:
-            logger.warning("[%d/%d] %s: illeggibile (%s)", i, len(files), f.name, exc)
-            results["skipped"] += 1
-            continue
+            # Non è un errore della pipeline: è il registratore rimasto
+            # senza corrente mentre scriveva. La voce in directory
+            # promette un'ora di audio, gli offset oltre la dimensione
+            # allocata non si possono leggere. Scartare il file significa
+            # lasciarlo sul device per sempre —la coda non si svuota e
+            # l'unica parte recuperabile muore con la prossima
+            # formattazione della card—, quindi si prova a prendere il
+            # pezzo che c'è. Quello che si prende sono quasi sempre i
+            # primi minuti, che sono quelli con il contesto.
+            if args.dry_run:
+                logger.warning("[%d/%d] %s: illeggibile (%s) — in dry-run "
+                               "salverei il pezzo leggibile",
+                               i, len(files), f.name, exc)
+                results["skipped"] += 1
+                continue
+            pezzo = _lavoro_path(nome_originale)
+            scritti, motivo = _salva_prefisso(f, pezzo)
+            if scritti < SALVATAGGIO_MIN_BYTES or _is_not_audio(pezzo):
+                logger.warning("[%d/%d] %s: illeggibile (%s) e senza audio "
+                               "recuperabile, resta sul device",
+                               i, len(files), f.name, exc)
+                results["skipped"] += 1
+                pezzo.unlink(missing_ok=True)
+                append_manifest({
+                    "ts": _now_iso(), "device": label, "file": nome_originale,
+                    "sha256": None, "stem": None, "action": "kept",
+                    "reason": f"illeggibile, nulla recuperabile ({motivo})",
+                })
+                continue
+            logger.warning("[%d/%d] %s: illeggibile (%s); %s",
+                           i, len(files), f.name, exc, motivo)
+            try:
+                digest = file_sha256(pezzo)
+            except OSError as exc2:  # pragma: no cover - difensivo
+                # Un file locale che non si lascia leggere è un problema
+                # diverso e non si risolve da solo: si lascia il file sul
+                # device invece di far morire l'intera coda.
+                logger.error("[%d/%d] %s: anche il pezzo salvato è illeggibile (%s)",
+                             i, len(files), nome_originale, exc2)
+                results["failed"] += 1
+                continue
+            originale, f = f, pezzo
 
         if digest in done_hashes:
             logger.info("[%d/%d] %s: già elaborato, cerco di liberare spazio",
-                        i, len(files), f.name)
+                        i, len(files), nome_originale)
             _try_delete(f, digest, "già elaborato in una run precedente", args)
             continue
 
@@ -491,10 +615,10 @@ def cmd_pull(args) -> int:
         # cancella, non si processa, non si conta come fallimento.
         if _is_not_audio(f):
             logger.info("[%d/%d] %s: non è audio (spazzatura), lascio sul device",
-                        i, len(files), f.name)
+                        i, len(files), nome_originale)
             results["junk"] += 1
             append_manifest({
-                "ts": _now_iso(), "device": label, "file": f.name,
+                "ts": _now_iso(), "device": label, "file": nome_originale,
                 "sha256": digest, "stem": None, "action": "junk",
                 "reason": "ffprobe: nessun audio decodificabile",
             })
@@ -518,19 +642,19 @@ def cmd_pull(args) -> int:
         # completo, la pipeline lo dichiarava non completata e la run
         # finiva con errore.
         if (OUTPUT_DIR / stem / REQUIRED_OUTPUT).exists():
-            suffix = hashlib.sha1(f.name.encode("utf-8")).hexdigest()[:6]
+            suffix = hashlib.sha1(nome_originale.encode("utf-8")).hexdigest()[:6]
             stem = f"{stem}-{suffix}"
             logger.warning(
                 "[%d/%d] %s: l'orario %s è gia' stato elaborato da un altro "
                 "file; lo scrivo in %s per non confonderli",
-                i, len(files), f.name,
+                i, len(files), nome_originale,
                 recorded.isoformat() if recorded else "ignoto", stem,
             )
             # Se anche questa cartella esiste, è lo stesso file di una
             # run precedente: non è una terza registrazione.
             if (OUTPUT_DIR / stem / REQUIRED_OUTPUT).exists():
                 logger.info("[%d/%d] %s: identico a una sessione gia' scritta",
-                            i, len(files), f.name)
+                            i, len(files), nome_originale)
                 results["skipped"] += 1
                 done_hashes.add(digest)
                 _try_delete(f, digest, "gia' elaborato come questa sessione", args)
@@ -541,7 +665,7 @@ def cmd_pull(args) -> int:
         out_dir = OUTPUT_DIR / stem
 
         logger.info("[%d/%d] %s (%.1f MB) — orario %s [%s]",
-                    i, len(files), f.name, f.stat().st_size / 1e6,
+                    i, len(files), nome_originale, f.stat().st_size / 1e6,
                     recorded.isoformat() if recorded else "ignoto", pattern)
 
         if args.dry_run:
@@ -592,7 +716,7 @@ def cmd_pull(args) -> int:
             continue
 
         # --- 5. annotazioni derivate ---------------------------------
-        _stamp_session(stem, recorded, label, f.name)
+        _stamp_session(stem, recorded, label, nome_originale)
 
         with CorpusDB() as cdb:
             cdb.ingest_session(
@@ -601,12 +725,34 @@ def cmd_pull(args) -> int:
                 vad_stats={},
                 recorded_at=recorded.isoformat() if recorded else None,
                 source_device=label,
-                source_filename=f.name,
+                source_filename=nome_originale,
             )
 
         # --- 6. archivio, poi cancellazione --------------------------
         archived = _archive(f, stem)
-        deleted = _try_delete(f, digest, f"elaborato: {why}", args)
+        if archived is not None:
+            # Il pezzo salvato è una copia di lavoro: se l'archivio l'ha
+            # preso, non serve piu' da nessuna parte. Se l'archivio non c'e'
+            # (A2T_KEEP_LOCAL=0) il pezzo salvato e' l'unica copia dei byte
+            # recuperabili, e va tenuto.
+            f.unlink(missing_ok=True)
+        # cancellare un file gia' cancellato non e' un pericolo, e' solo
+        # rumore: un avviso di impossibilita' stampato accanto a un
+        # cancellamento riuscito e' il modo piu' rapido per non far
+        # notare il prossimo avviso che conta davvero.
+        deleted = False
+        if f.exists():
+            deleted = _try_delete(f, digest, f"elaborato: {why}", args)
+        if originale is not None:
+            # L'originale troncato sparisce solo adesso: dopo il
+            # salvataggio, l'elaborazione e la verifica, sul device non
+            # resta nulla che non sia gia' in archivio. TENERLO non
+            # proteggerebbe nulla — non si puo' piu' elaborarlo perche'
+            # manca proprio il pezzo che manca— e occuperebbe la card per
+            # sempre, davanti a ogni pull futuro.
+            deleted = _try_delete(originale, digest,
+                                  f"recuperato il pezzo leggibile: {why}",
+                                  args) or deleted
         # Il file appena elaborato entra nell'indice dei hash gia' fatti:
         # senza questo, una copia identica presente piu' avanti nella
         # stessa coda verrebbe trascritta una seconda volta.
@@ -616,10 +762,12 @@ def cmd_pull(args) -> int:
         results["deleted" if deleted else "kept"] += 1
         budget.finished_file(_probe_duration(f) or 0.0)
         append_manifest({
-            "ts": _now_iso(), "device": label, "file": f.name, "sha256": digest,
-            "stem": stem, "action": "deleted" if deleted else "kept",
+            "ts": _now_iso(), "device": label, "file": nome_originale,
+            "sha256": digest, "stem": stem,
+            "action": "deleted" if deleted else "kept",
             "archived": str(archived) if archived else None,
             "elapsed_sec": round(elapsed, 1), "verified": why,
+            "troncato": nome_originale if originale is not None else None,
         })
         logger.info("  fatto in %.0fs — %s", elapsed, why)
 

@@ -511,6 +511,69 @@ e sia stata verificata (`transcript.json` presente, con segmenti e almeno
 poche parole). Ogni file toccato finisce in `logs/device_manifest.jsonl`
 con hash ed esito.
 
+### Il file che il registratore ha troncato
+
+La prima notte vera è finita con un caso che nessun test precedente
+poteva mostrare, perché serve un device vero: un file che il registratore
+promette intero e non lo è.
+
+`2026-10-04_10-49-40.MP3` dichiarava 57.600.000 byte — un'ora esatta di
+audio — e sulla card ce n'erano 3.538.944. Il driver lo dice in una riga
+di log che vale un ettaro:
+
+```
+EXFAT_BeginBlockmap: Read with requested offset >= file allocated size. Exiting.
+```
+
+Il registratore era rimasto senza corrente mentre scriveva: la voce in
+directory è stata aggiornata, i cluster non sono mai stati allocati.
+
+Due cose rendono facile sbagliare qui. La prima è che `ffprobe` **non se
+ne accorge**: ricava la durata dal byte count e dal bitrate, e
+57.600.000 / 16.000 dà esattamente 3600,0 s. Un file con tre minuti di
+audio si presenta come un'ora, e ogni stima — budget della notte inclusa
+— parte da lì. La seconda è che `Errno 22` non è un errore di rete né di
+permessi: rilettare non serve, il filesystem ha già detto di no, quindi
+un `dd` con blocchi da 1 MiB si ferma a 3 MiB e uno da 4 KiB arriva a
+3,5 MiB. La differenza non è casuale: è dove cade il confine.
+
+Per questo il salvataggio **riprova con blocchi più piccoli** invece di
+arrendersi al primo errore: si dimezza, si riprova, si scende fino a
+64 KiB e a quel punto si ferma. Su quel file vero la differenza fra la
+prima versione e questa è stata di 393.216 byte — 24 secondi e mezzo di
+registrazione, che non perdevano perché non ci fossero ma perché non si
+chiedeva nel modo giusto.
+
+Cosa fa adesso `pull`, in ordine:
+
+1. legge finché il filesystem risponde e **si ferma al primo errore**,
+   senza tentare di rileggere;
+2. **salva il pezzo** in `logs/lavoro/` e controlla che dentro ci sia
+   audio decodificabile — sotto 512 KiB non è una registrazione troncata,
+   è un file rotto, e su quello conviene che una persona guardi;
+3. passa il pezzo alla pipeline con il nome vero del device, così
+   `session.json`, il manifest e il corpus dicono `2026-10-04_10-49-40.MP3`
+   e non il nome della copia di lavoro;
+4.Solo dopo che la trascrizione esiste ed è verificata, archivia il pezzo
+   e cancella **sia** il pezzo di lavoro sia l'originale troncato.
+
+Quel quarto punto è una scelta, non una conseguenza: l'originale non si
+può più elaborare, perché manca proprio il pezzo che manca. TENERlo non
+proteggerebbe nulla e occuperebbe la card davanti a ogni pull futuro. Ma
+la cancellazione avviene **solo** se il salvataggio è riuscito e
+l'output è stato verificato: se la pipeline fallisce, sul device
+restano entrambi, e nel manifest l'esito è `kept` con il numero di byte
+recuperati. Il campo `troncato` nel manifest dice quale dei due casi è.
+
+`--dry-run` non salva niente: è un piano, e un piano che scrive dischi non
+è un piano.
+
+I 3 minuti e 41 secondi recuperati dal file di quella notte sono finiti
+nella sessione `2026-10-04_10-49-40`, che in `session.json` porta
+`"parziale": true` con i byte letti e quelli dichiarati: senza quel
+marchio sembrerebbe una registrazione come le altre, e non lo è. Sono i
+primi minuti, che sono quelli con il contesto di chi parla.
+
 `detect` riconosce i formati di nome più comuni dei registratori
 (`REC_20261003_220415.mp3`, `2026-10-03 22-04-15.m4a`, e così via) e
 ricava l'ora di registrazione, che finisce in `session.json` come
@@ -1136,7 +1199,7 @@ python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
 
-198 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
+208 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
 di attesa sono registrati e confrontati, non dormiti. Prima che fosse
 così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
 per un totale di quasi tre minuti — senza verificare nulla che non

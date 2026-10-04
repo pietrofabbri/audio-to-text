@@ -12,6 +12,8 @@ quanto quelli positivi.
 
 from __future__ import annotations
 
+import argparse
+import io
 import json
 import os
 import sys
@@ -1263,6 +1265,415 @@ def test_migrazione_riempie_il_testo_originale(tmp: Path) -> None:
     with CorpusDB(path) as db:
         r = db.query("SELECT text_raw FROM segments")[0]
         assert r["text_raw"] == _PAROLE_GREZZE, dict(r)
+
+
+# ---------------------------------------------------------------------------
+# Il file troncato: si salva il pezzo, non si lascia tutto sul device
+# ---------------------------------------------------------------------------
+
+
+class _LettoreCheSiBlocca:
+    """Un file che dopo N byte smette di rispondere.
+
+    È quello che fa un registratore spento mentre scrive: la voce in
+    directory promette un'ora di audio, ma gli offset oltre la dimensione
+    allocata non si possono leggere e ogni lettura li chiede. Il difetto
+    si vede solo con dati veri — l'ho trovato solo sul device, non in un
+    test precedente — e qui lo si riproduce a mano per poterlo provare.
+    """
+
+    def __init__(self, dati: bytes, dopo: int, max_chunk: int | None = None) -> None:
+        self._buf = io.BytesIO(dati)
+        self._dopo = dopo
+        self._max = max_chunk
+
+    def __enter__(self) -> "_LettoreCheSiBlocca":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def read(self, n: int = -1) -> bytes:
+        # `max_chunk` modella quello che fa il driver exFAT: non rifiuta
+        # l'offset, rifiuta la lettura che lo VARCA. Un blocco largo che
+        # arriva oltre il confine muore, uno stretto che ci arriva passa.
+        if self._max is not None and n > self._max:
+            raise OSError(22, "Invalid argument")
+        # La letture finisce dove finisce la zona leggibile, non a blocchi
+        # interi oltre: un file vero restituisce fino alla dimensione
+        # allocata e poi solleva, e il doppio di qui sta nel fascio di
+        # byte che il salvataggio deve tenere.
+        if self._buf.tell() >= self._dopo:
+            raise OSError(22, "Invalid argument")
+        return self._buf.read(min(n, self._dopo - self._buf.tell()))
+
+
+class _FonteCheSiBlocca:
+    """Un Path che apre su un lettore che si blocca."""
+
+    def __init__(self, dati: bytes, dopo: int, max_chunk: int | None = None) -> None:
+        self._leggitore = _LettoreCheSiBlocca(dati, dopo, max_chunk)
+
+    def open(self, mode: str):  # noqa: D102
+        return self._leggitore
+
+
+def test_salvataggio_copia_fino_all_errore(tmp: Path) -> None:
+    """Il pezzo salvato deve essere esattamente quello che si e' potuto
+    leggere: ne un byte in piu' (inventato) ne uno in meno (buttato via)."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    dati = b"a" * 3000
+    dest = tmp / "salvato.mp3"
+    scritti, motivo = sd._salva_prefisso(_FonteCheSiBlocca(dati, 1000), dest)
+
+    assert scritti == 1000, scritti
+    assert dest.read_bytes() == dati[:1000], dest.stat().st_size
+    # Il motivo porta i byte recuperati: senza quel numero la risposta
+    # "ho salvato qualcosa" non dice se si puo' chiudere il caso.
+    assert "1000" in motivo, motivo
+
+
+def test_salvataggio_di_un_file_intero_non_inventa_problemi(tmp: Path) -> None:
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    src = tmp / "sano.mp3"
+    src.write_bytes(b"b" * 4096)
+    dest = tmp / "fuori.mp3"
+    scritti, motivo = sd._salva_prefisso(src, dest)
+
+    assert scritti == 4096, scritti
+    assert dest.read_bytes() == src.read_bytes()
+    assert "interamente" in motivo, motivo
+
+
+def test_salvataggio_riprova_con_blocchi_piu_piccoli(tmp: Path) -> None:
+    """Il confine non e' netto: si perde solo se si smette di chiedere.
+
+    Il driver rifiuta la lettura che varca il confine, non quella che ci
+    arriva esattamente. Leggendo a 1 MiB ci si ferma all'ultimo MiB intero
+    e si buttano via i byte in mezzo. Su un file vero misurato: 3.145.728
+    byte con blocchi da 1 MiB, 3.538.944 con blocchi da 4 KiB.
+    """
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    dati = b"c" * 3000
+    # tutto leggibile, ma solo con richieste sotto 100.000 byte
+    fonte = _FonteCheSiBlocca(dati, dopo=3000, max_chunk=100_000)
+    scritti, motivo = sd._salva_prefisso(fonte, tmp / "fuori.mp3")
+
+    assert scritti == 3000, scritti
+    assert (tmp / "fuori.mp3").read_bytes() == dati
+    # il motivo deve dire con quale blocco si e' arrivati al fondo: un
+    # "si ferma a 3000 byte" senza altro non distingue il salvataggio
+    # riuscito da quello che si e' arreso subito
+    assert str(sd.SALVATAGGIO_CHUNK_MINIMO) in motivo, motivo
+
+
+def test_salvataggio_si_arrende_sul_blocco_minimo(tmp: Path) -> None:
+    """Se anche il blocco piu' piccolo viene rifiutato, si smette: non si
+    deve provare un blocco alla volta fino alla fine del file."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    fonte = _FonteCheSiBlocca(b"d" * 3000, dopo=3000, max_chunk=1)
+    scritti, motivo = sd._salva_prefisso(fonte, tmp / "vuoto.mp3")
+
+    assert scritti == 0, scritti
+    assert (tmp / "vuoto.mp3").stat().st_size == 0
+    assert "blocchi da" in motivo, motivo
+
+
+def _wav_silenzio(path: Path, secondi: float = 20.0, rate: int = 16000) -> int:
+    """Un WAV vero, scritto a mano: la pipeline e ffprobe devono
+    riconoscerlo come audio, altrimenti il test del salvataggio non
+    prova niente sul salvataggio."""
+    import wave
+    n = int(rate * secondi)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * n)
+    return path.stat().st_size
+
+
+def _ambiente_pull(sd, tmp: Path, *, ok: bool = True):
+    """Un `cmd_pull` che non tocca niente fuori da `tmp`.
+
+    Restituisce (namespace, modulo finto di `run`, elaborati, corpus finto).
+    Il modulo finto sta al posto di quello vero: process_file con un
+    registratore vero dentro costerebbe un'ora e un modello, e qui si
+    vuole provare la catena del salvataggio, non l'ASR.
+    """
+    import types
+
+    device = tmp / "device" / "RECORD"
+    device.mkdir(parents=True)
+    out = tmp / "output"
+    logs = tmp / "logs"
+    for p in (out, logs):
+        p.mkdir(parents=True, exist_ok=True)
+
+    sd.ROOT = tmp
+    sd.OUTPUT_DIR = out
+    sd.LOGS_DIR = logs
+    sd.LAVORO_DIR = logs / "lavoro"
+    sd.MANIFEST_PATH = logs / "device_manifest.jsonl"
+
+    elaborati: list[str] = []
+
+    def process_file(path, config, ns, stem=None):
+        elaborati.append(stem)
+        if not ok:
+            return False
+        doc = {
+            "segments": [
+                {"start": 0.0, "end": 1.0,
+                 "text": "una frase con dentro almeno cinque parole"}
+            ],
+        }
+        d = out / stem
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "transcript.json").write_text(json.dumps(doc), encoding="utf-8")
+        return True
+
+    run_finto = types.ModuleType("run")
+    run_finto.process_file = process_file
+
+    presi: list[dict] = []
+
+    class _CorpusFinto:
+        def __enter__(self): return self
+        def __exit__(self, *_exc): return False
+        def ingest_session(self, **kw): presi.append(kw)
+
+    sd.CorpusDB = _CorpusFinto
+
+    args = argparse.Namespace(
+        source=str(tmp / "device"), mounts=None, limit=None, no_prosody=False,
+        dry_run=False, max_seconds=0, cooldown_sec=0, no_delete=False,
+    )
+    return args, run_finto, elaborati, presi
+
+
+def _hash_rotto(sd, path: Path, rotto: bool):
+    """file_sha256 che si rifiuta di leggere tutto `path`, come fa il
+    driver exFAT quando gli offset chiesti sono oltre la dimensione
+    allocata. Gli altri file si hashano normalmente."""
+    vero = sd.file_sha256
+
+    def wrapper(p, chunk=1 << 20):
+        if rotto and Path(p) == path:
+            raise OSError(22, "Invalid argument")
+        return vero(p, chunk)
+
+    sd.file_sha256 = wrapper
+    return vero
+
+
+def _righe_manifest(sd) -> list[dict]:
+    return [json.loads(x) for x in
+            sd.MANIFEST_PATH.read_text(encoding="utf-8").splitlines() if x]
+
+
+def test_la_copia_di_lavoro_ha_lo_stesso_nome_del_device(tmp: Path) -> None:
+    """Il nome della copia di lavoro non si puo' cambiare.
+
+    La pipeline scrive `meta.stem` in transcript.json a partire dal nome
+    del file che le si passa, e da li il corpus prende il nome della
+    sessione. Rinominare la copia produceva due nomi per la stessa
+    registrazione — cartella `2026-10-04_10-49-40`, corpus
+    `2026-10-04_10-49-40-1508d6ee` — che non tornavano piu' insieme. A
+    separarli basta la cartella, quindi il nome si lascia com'e'.
+    """
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_10-49-40.MP3"
+    lavoro = sd._lavoro_path(nome)
+    assert lavoro.name == nome, lavoro
+    assert lavoro.parent == sd.LAVORO_DIR, lavoro
+    # e non sta accanto all'originale, altrimenti non potrebbe chiamarsi
+    # come lui senza schiacciarlo
+    assert (tmp / nome).resolve() != lavoro.resolve()
+
+
+def test_file_troncato_viene_elaborato_e_cancellato(tmp: Path) -> None:
+    """Il caso trovato sul device vero.
+
+    Un file che non si lascia leggere per intero non deve restare sul
+    registratore per sempre: si salva il pezzo leggibile, lo si
+    elabora, e solo dopo si cancella. E quando si cancella, non resta
+    sul device nulla che non sia gia' in archivio.
+    """
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_10-49-40.MP3"
+    args, run_finto, elaborati, presi = _ambiente_pull(sd, tmp)
+    troncato = tmp / "device" / "RECORD" / nome
+    _wav_silenzio(troncato)
+
+    sys.modules["run"] = run_finto
+    vero = _hash_rotto(sd, troncato, rotto=True)
+    try:
+        codice = sd.cmd_pull(args)
+    finally:
+        sys.modules.pop("run", None)
+        sd.file_sha256 = vero
+
+    assert codice == 0, codice
+    # elaborato, non saltato: era una registrazione a meta', non spazzatura
+    assert elaborati == ["2026-10-04_10-49-40"], elaborati
+    assert (sd.OUTPUT_DIR / "2026-10-04_10-49-40" / "transcript.json").exists()
+
+    # il device e' pulito davvero
+    assert not troncato.exists(), "il file troncato e' ancora sul device"
+
+    # e il pezzo recuperabile e' in archivio: cancellare senza archiviare
+    # sarebbe stato buttare via l'unica copia dei dati letti
+    archivi = list((tmp / "archive").iterdir())
+    assert len(archivi) == 1, archivi
+    assert archivi[0].stat().st_size > sd.SALVATAGGIO_MIN_BYTES, archivi[0]
+    # con il nome della sessione e l'estensione del device: un archivio
+    # chiamato come la copia di lavoro non si riconosce da nessuna parte
+    assert archivi[0].name == "2026-10-04_10-49-40.MP3", archivi[0]
+
+    # il manifest deve dire che era troncato, e con quale nome vero
+    righe = _righe_manifest(sd)
+    assert len(righe) == 1, righe
+    assert righe[0]["action"] == "deleted", righe[0]
+    assert righe[0]["troncato"] == nome, righe[0]
+    assert righe[0]["file"] == nome, righe[0]
+
+    # e il corpus deve aver ricevuto il nome del device, non quello della
+    # copia di lavoro: il nome che si vede sul registratore e' il dato
+    assert presi and presi[0]["source_filename"] == nome, presi
+
+
+def test_troncato_senza_audio_recuperabile_resta_sul_device(tmp: Path) -> None:
+    """Se dal file rotto non esce niente di utilizzabile non si dichiara
+    la sessione elaborata e non si cancella: e' meglio un file che resta
+    che un device con dentro un buco che sembra una registrazione."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_11-00-00.MP3"
+    args, run_finto, elaborati, presi = _ambiente_pull(sd, tmp)
+    rotto = tmp / "device" / "RECORD" / nome
+    rotto.write_bytes(b"\x00" * 200_000)  # spazzatura: nessun audio
+
+    sys.modules["run"] = run_finto
+    vero = _hash_rotto(sd, rotto, rotto=True)
+    try:
+        codice = sd.cmd_pull(args)
+    finally:
+        sys.modules.pop("run", None)
+        sd.file_sha256 = vero
+
+    assert elaborati == [], elaborati
+    assert rotto.exists(), "un file senza audio recuperabile non si cancella"
+    if sd.LAVORO_DIR.exists():
+        assert not list(sd.LAVORO_DIR.iterdir()), "resta una copia di lavoro inutile"
+    righe = _righe_manifest(sd)
+    assert righe[0]["action"] == "kept", righe[0]
+    assert righe[0]["sha256"] is None, righe[0]
+
+
+def test_dry_run_su_file_troncato_non_scrive_nulla(tmp: Path) -> None:
+    """Il dry-run e' un piano. Salvare un pezzo e' un'operazione vera:
+    se il piano la fa, il piano non e' piu' un piano."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_12-00-00.MP3"
+    args, run_finto, elaborati, presi = _ambiente_pull(sd, tmp)
+    troncato = tmp / "device" / "RECORD" / nome
+    _wav_silenzio(troncato)
+
+    args.dry_run = True
+    sys.modules["run"] = run_finto
+    vero = _hash_rotto(sd, troncato, rotto=True)
+    try:
+        sd.cmd_pull(args)
+    finally:
+        sys.modules.pop("run", None)
+        sd.file_sha256 = vero
+
+    assert troncato.exists(), "il dry-run non tocca il device"
+    assert not sd.LAVORO_DIR.exists(), "il dry-run non scrive copie di lavoro"
+    assert elaborati == [], elaborati
+
+
+def test_pull_fallito_lascia_il_file_troncato_sul_device(tmp: Path) -> None:
+    """La catena vale anche quando la pipeline va male: senza output
+    verificato non si cancella, nemmeno un file gia' parzialmente
+    recuperato."""
+    import importlib
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_13-00-00.MP3"
+    args, run_finto, elaborati, presi = _ambiente_pull(sd, tmp, ok=False)
+    troncato = tmp / "device" / "RECORD" / nome
+    _wav_silenzio(troncato)
+
+    sys.modules["run"] = run_finto
+    vero = _hash_rotto(sd, troncato, rotto=True)
+    try:
+        codice = sd.cmd_pull(args)
+    finally:
+        sys.modules.pop("run", None)
+        sd.file_sha256 = vero
+
+    assert codice == 1, codice
+    assert troncato.exists(), "pipeline fallita: il file resta sul device"
+
+
+def test_salvataggio_non_stampa_avvisi_di_contraddizione(tmp: Path) -> None:
+    """Un avviso di 'impossibile cancellare' accanto a un cancellamento
+    riuscito e' rumore che copre il rumore vero.
+
+    Il pezzo di lavoro sparisce con l'archivio, quindi cancellarlo dopo e'
+    cancellare un file che non c'e' piu': si deve dire che c'e' gia' stato
+    fatto, non che non si e' potuto fare.
+    """
+    import importlib
+    import logging
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_14-00-00.MP3"
+    args, run_finto, elaborati, presi = _ambiente_pull(sd, tmp)
+    troncato = tmp / "device" / "RECORD" / nome
+    _wav_silenzio(troncato)
+
+    raccolti: list[str] = []
+
+    class _Raccoglie(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            # getMessage() formatta gia' gli argomenti: riformattarlo
+            # qui leverebbe un '%s' che nel testo non c'era piu'.
+            raccolti.append(record.getMessage())
+
+    manometro = _Raccoglie()
+    log = logging.getLogger("sync_device")
+    log.addHandler(manometro)
+    sys.modules["run"] = run_finto
+    vero = _hash_rotto(sd, troncato, rotto=True)
+    try:
+        codice = sd.cmd_pull(args)
+    finally:
+        sys.modules.pop("run", None)
+        sd.file_sha256 = vero
+        log.removeHandler(manometro)
+
+    assert codice == 0, codice
+    assert not troncato.exists()
+    rumore = [m for m in raccolti if "impossibile cancellare" in m]
+    assert not rumore, rumore
 
 
 # -------------------------------------------------------------------
