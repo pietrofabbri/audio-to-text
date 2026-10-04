@@ -455,11 +455,49 @@ esistono. **Tu.** Il dispositivo e l'accesso all'app.
 Non sono rimasti indietro: sono in attesa di dati che non esistono
 ancora, e ognuno ha il motivo per cui aspettare.
 
-**10 — soglia 0,78.** C'è **una sola voce** in `speakers_db.json`. Con
-una voce la soglia non è valutabile: nessuna coppia da confrontare. Il
-giudizio su una soglia si fa sulle coppie certe e su quelle incerte, e
-quelle arriveranno dalla seconda persona che parla nel registratore.
-`review_speakers.py list` stampa la matrice quando è il momento.
+**10 — soglia 0,78.** ~~Non valutabile, c'era una sola voce.~~
+Rivalutata l'8 ottobre, con quattordici voci e 621 coppie. **La soglia
+non è spostabile**, e i numeri dicono perché.
+
+Il caso che chiude la questione è `GLOBAL_004 × GLOBAL_018`: quattordici
+confronti **fra le stesse due voci**, in sessioni diverse, che valgono da
+**0,661 a 0,784**. La soglia 0,78 li divide 1 sopra e 13 sotto. Per
+metterli tutti dalla stessa parte servirebbe una soglia fra 0,777 e
+0,784: una finestra di **0,007**, più stretta della differenza che c'è fra
+due registrazioni diverse della stessa coppia di voci. Lo stesso vale
+per `GLOBAL_001 × GLOBAL_028` (0,688–0,848, 2 sopra e 8 sotto) e per
+`GLOBAL_006 × GLOBAL_026` (0,614–0,786, 1 sopra e 4 sotto).
+
+In altre parole: **la soglia non dà nemmeno una risposta coerente alla
+stessa domanda.** Chiedi se due voci sono la stessa persona e la risposta
+cambia a seconda della sessione che scegli di confrontare. Spostare il
+numero non sistema niente, perché il problema non è il numero: è che un
+coseno fra due embedding singoli non è una grandezza sufficiente.
+
+La zona grigia è esplosa da 6 a **31 coppie**, quasi tutte concentrate su
+poche coppie di voci (`GLOBAL_004 × GLOBAL_018` da sola ne ha 9).
+
+**Una cosa che ho verificato e che non reggeva:** pensavo che le voci con
+poco audio fossero quelle più incerte, e che bastasse registrare di piu'.
+Misurato, non e' vero: l'escursione delle somiglianze vale **0,646** per
+le voci sotto i 10 minuti e **0,629** per quelle sopra, rapporto 1,0x.
+Quello che conta non e' la quantita' di audio ma il numero di confronti
+fatti, che e' una cosa di campionamento. Registrare di piu' aiuta poco.
+
+**Il ritrovamento che conta di piu'.** La matrice che guardi e il
+confronto che il sistema fa **non sono la stessa operazione**. La matrice
+confronta campione con campione; `SpeakerDB._best_match()` confronta
+l'embedding della sessione **contro i centroidi** memorizzati. Per
+`GLOBAL_028` la matrice dice 0,848 contro `GLOBAL_001` — ben sopra la
+linea — mentre il sistema ne ha visto 0,734 e ha giustamente aperto una
+voce nuova.
+
+Il sistema e' coerente: non e' un bug. Ma il numero che vedi nel report
+**non e' quello che il sistema ha usato**, e senza dirlo uno legge 0,848,
+conclude che il sistema ha sbagliato, e magari corregge a mano un merge
+che era giusto. Il report dovrebbe mostrare entrambi i numeri, o dire
+qual è dei due quello che decide. Non l'ho cambiato: quale delle due
+grandezze vuoi usare come riferimento e' una decisione tua.
 
 **11 — campione denoise di 180 s.** Costa 45 s per file, ed è il prezzo
 di non fare una seconda passata ASR su un'ora sola. Su un file la
@@ -876,9 +914,12 @@ tarati), **9** (pubblicazione), e il carico termico.
    `unreliable` al 4,9%, sotto il 5%, e i timestamp per parola hanno
    mostrato che i segmenti segnalati sono davvero peggiori
    (probabilità mediana 0,636 contro 0,960). Le soglie **non** si alzano.
-3. **10 — la soglia**, quando ci sarà la seconda voce. Le sei coppie in
-   zona grigia dicono quanto manca: finche' sono tutte sotto, la soglia
-   non e' tarata, e basta.
+3. **10 — la soglia**, rivalutata l'8 ottobre con 14 voci e 621 coppie.
+   Il numero non è spostabile: le stesse due voci si somigliano da 0,661
+   a 0,784 a seconda della sessione. La domanda aperta non è più il
+   numero ma **quale grandezza vuoi come riferimento**: la matrice
+   confronta campione con campione, il sistema confronta embedding contro
+   centroidi, e il report mostra solo il primo dei due.
 4. **15 — il termico**, con `powermetrics` e una notte di misura.
 5. **8 — biometria.** Quando arriva l'hardware.
 
