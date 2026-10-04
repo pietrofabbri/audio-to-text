@@ -823,13 +823,52 @@ testo: sta in quello che il modello acustico ne aveva capito. Su
 | `Cominciatemi` | 0.63 | udito, solo che stretto: **protetto** |
 
 Sopra `--soglia-prob` la parola non si tocca, per quanto il modello di
-lingua insista. Il default è **0.90**, che su 16.865 parole reali
-protegge **9.063 (53,7%)** e lascia le altre 7.802 correggibili.
+lingua insista. Il default è **0.90**. Quanto protegga davvero dipende
+da dove si mette, e il numero si misura sulle parole vere:
+
+| soglia | protette | correggibili |
+|---|---|---|
+| 0.70 | 12.268 (72,7%) | 4.597 (27,3%) |
+| 0.75 | 11.617 (68,9%) | 5.248 (31,1%) |
+| 0.80 | 10.865 (64,4%) | 6.000 (35,6%) |
+| 0.85 | 10.049 (59,6%) | 6.816 (40,4%) |
+| **0.90** | **9.063 (53,7%)** | **7.802 (46,3%)** |
+| 0.95 | 7.519 (44,6%) | 9.346 (55,4%) |
+
+Su 16.865 parole. La distribuzione è spiegata bene e vale la pena
+guardarla: il 53,7% delle parole sta sopra 0.90 e il 35,5% sta sotto
+0.80. Due mucchi con una coda lunga in mezzo — e le parole quasi
+inaudibili sono il materiale su cui il correttore ha un compito, la
+ragione per cui il filtro non può essere spinto a proteggere quasi
+tutto.
 
 ```bash
 python correct_text.py --consent --soglia-prob 0.90
 python correct_text.py --consent --soglia-prob 0    # filtro spento
 ```
+
+**Il 0.90 è una scelta, e non è quella giusta in assoluto.** Su cinque
+parole etichettate a mano — tre correzioni giuste e due riscritture
+sbagliate — la soglia non separa le due classi, perché sono intercalate:
+
+| parola | `asr_prob` | che cos'è | con soglia 0.74 |
+|---|---|---|---|
+| `steam` | 0.14 | correzione giusta | passa |
+| `drastisovati` | 0.41 | correzione giusta | passa |
+| `Cominciatemi` | 0.63 | riscrittura da bloccare | **passa** |
+| `monopolito` | 0.70 | correzione giusta | passa |
+| `similiata` | 0.74 | invenzione da bloccare | bloccata |
+
+Con 0.74 si blocca `similiata` e si lascia correggere `monopolito`; con
+0.63 si fa il contrario — si salva `Cominciatemi` e si blocca una
+correzione giusta. Non c'è un valore che vinca le due cose insieme, e il
+motivo è che la probabilità di Whisper misura quanto era sicuro
+l'orecchio, non quanto era giusta la correzione.
+
+Cinque parole sono un campione troppo piccolo per decidere: servono
+tutte le proposte del modello con la probabilità accanto, e si leggono
+in una pagina con `--solo-proposte` sotto. Finché quel giro non c'è, il
+default resta 0.90 e la scelta è dichiarata, non misurata.
 
 **È una difesa, non una garanzia.** Nel caso qui sopra la soglia non
 avrebbe salvato `Cominciatemi` (0.63): quel caso è stato risolto
@@ -839,12 +878,20 @@ butta a riscrivere il dialettalismo, e mettere accanto al testo il
 numero che ha deciso — così il giudizio si può rifare con dati, non a
 intuito.
 
-Ogni parola bloccata resta nel file con la sua probabilità:
+Ogni parola bloccata resta nel file con la sua probabilità **e con la
+proposta che è stata respinta**, perché è quella che serve per tarare la
+soglia guardando i dati:
 
 ```json
 {"i": 0, "raw": "Cominciatemi", "fixed": "Cominciatemi",
- "changed": false, "prob": 0.98, "blocked": true}
+ "proposta": "Camminate", "changed": false, "prob": 0.98,
+ "blocked": true}
 ```
+
+`fixed` è il testo, e resta quello di prima. `proposta` è che cosa il
+modello voleva scrivere lì: senza questo campo la parola bloccata era
+identica a una parola che il modello non aveva mai toccato, e la soglia
+si tarava guardando il nulla.
 
 e il riepilogo della sessione conta le due cose per separate:
 
@@ -855,6 +902,59 @@ e il riepilogo della sessione conta le due cose per separate:
 Se `words_blocked` è zero su una notte intera, o la soglia è troppo
 alta o le probabilità non ci sono: le due cose si confondono, ed è
 per questo il numero è nel riepilogo.
+
+### Leggere una passata intera: `--solo-proposte`
+
+Il confronto originale/corretto serve per capire **un** segmento. Su
+429 segmenti sono pagine, e la domanda che conta dopo è più piccola:
+quali parole il modello vuole cambiare, quante volte, e con quanta
+sicurezza Whisper le aveva udite.
+
+```bash
+python correct_text.py --consent --dry --solo-proposte
+```
+
+Una riga per parola proposta, raggruppata per parola e ordinata per
+frequenza, e alla fine una sintesi che mette tutte le sessioni
+insieme:
+
+```
+  accettata  drastisovati. -> distratti.  x1  p=0.41  vocabolario: MAI UDITA
+  accettata  frasci, -> frasi,  x12  p=0.32  vocabolario: 13x p=0.24
+  respinta   Cominciatemi -> Camminate  x3  p=0.98  vocabolario: MAI UDITA
+```
+
+Quattro colonne, e ognuna dice una cosa diversa:
+
+- **`x12`** — quante volte la proposta compare. Una parola proposta
+  dodici volte è un fatto della trascrizione, una proposta unica è
+  rumore: senza il conteggio hanno lo stesso peso sulla carta.
+- **`p=0.32`** — la probabilità che Whisper aveva dato alla parola. È
+  la stessa cifra che la soglia confronta, e serve a capire *dove* il
+  filtro ha negato qualcosa (`respinta`).
+- **`vocabolario`** — quante volte la parola **proposta** compare già
+  nelle trascrizioni, e con quanta sicurezza Whisper l'aveva capita
+  altrove. `frasi` c'è già, tredici volte: il modello non sta
+  inventando, sta adattando.
+
+**La colonna «vocabolario» è un dato, non un verdetto**, e la ragione
+vale la pena dirla perché il primo ragionamento che viene in mente è
+sbagliato: sulle quattro notti vere anche `distratti` — la correzione
+che è *giusta*, `siamo drastisovati` → `siamo distratti` — non è mai
+stata udita, perché in quelle ore nessuno ha detto «distratti». La
+colonna dice che una parola non ha riscontro nel corpus; non dice che
+è sbagliata.
+
+Ed è per questo che a tarare la soglia non serve un altro numero
+automatico: servono gli occhi. Sul campione vero di quattro segmenti
+le proposte erano quattro, e due erano buone (`drastisovati →
+distratti`, `frasci → frasi`), una dubbia (`Cominciatemi → Diamoci`)
+e una peggio dell'originale (`similiata → sibilata`, che sostituisce
+un nonsense con un altro nonsense). Con una riga per parola le quattro
+entrano in una pagina e la decisione è tua.
+
+Le proposte respinte dal filtro compaiono nella stessa tabella: è
+guardando quelle che si sceglie dove mettere `--soglia-prob`.
 
 ### Il numero di parole non può cambiare
 
@@ -1036,18 +1136,19 @@ python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
 
-192 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
+198 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
 di attesa sono registrati e confrontati, non dormiti. Prima che fosse
 così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
 per un totale di quasi tre minuti — senza verificare nulla che non
 fosse già verificato.
 
 Il percorso completo di `correct_text.py` è provato per intero, non
-solo il modulo: quattro test lo eseguono in una cartella a caso con un
+solo il modulo: sette test lo eseguono in una cartella a caso con un
 modello finto al posto di Gemini, e controllano che senza `--consent`
 non esca niente, che i giri interrotti non perdano il lavoro precedente,
-e che le parole che il filtro protegge restino tali **nel testo scritto
-su disco** e non solo nel riepilogo.
+che le parole che il filtro protegge restino tali **nel testo scritto
+sul disco** e non solo nel riepilogo, e che il report `--solo-proposte`
+cambi quello che si vede senza cambiare quello che si scrive.
 
 `--full` è quello che conta quando qualcosa è cambiato: costruisce un
 **registratore finto** e ci fa girare la catena vera. L'audio non è un

@@ -1003,8 +1003,8 @@ def _sessione(tmp: Path | str, n: int = 3) -> Path:
     return d
 
 
-def _corri(tmp: Path | str, *argomenti: str) -> tuple[int, _ClienteFinto]:
-    """`correct_text.py` come lo lancia l'utente, in una cartella a caso."""
+def _esegui(tmp: Path | str, *argomenti: str) -> tuple[int, str, _ClienteFinto]:
+    """Il comando, l'output del comando, e il modello finto che ha risposto."""
     import contextlib
     import io
     import logging
@@ -1014,6 +1014,7 @@ def _corri(tmp: Path | str, *argomenti: str) -> tuple[int, _ClienteFinto]:
 
     cliente = _ClienteFinto()
     originale_client = text_correction.Correttore._ottieni_client
+    scrittura = io.StringIO()
     originale_argv = sys.argv
     chiave = os.environ.get("GOOGLE_API_KEY")
     attese: list[float] = []
@@ -1027,7 +1028,7 @@ def _corri(tmp: Path | str, *argomenti: str) -> tuple[int, _ClienteFinto]:
     os.environ["GOOGLE_API_KEY"] = "chiave-finta-di-prova"
     sys.argv = ["correct_text.py", *argomenti, "--out-dir", str(tmp)]
     try:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(scrittura):
             try:
                 codice = correct_text.main()
             except SystemExit as exc:
@@ -1041,6 +1042,12 @@ def _corri(tmp: Path | str, *argomenti: str) -> tuple[int, _ClienteFinto]:
             os.environ.pop("GOOGLE_API_KEY", None)
         else:
             os.environ["GOOGLE_API_KEY"] = chiave
+    return codice, scrittura.getvalue(), cliente
+
+
+def _corri(tmp: Path | str, *argomenti: str) -> tuple[int, _ClienteFinto]:
+    """`correct_text.py` come lo lancia l'utente, in una cartella a caso."""
+    codice, _, cliente = _esegui(tmp, *argomenti)
     return codice, cliente
 
 
@@ -1140,6 +1147,123 @@ def cli_il_filtro_e_nel_riepilogo(tmp: Path) -> None:
 
 
 
+def proposta_respinta_sopravvive_al_blocco() -> None:
+    """La parola che il filtro ha negato conserva quello che il modello
+    voleva scrivere.
+
+    Prima non era cosi': il filtro azzerava la proposta, e nel file
+    restava solo la parola originale con un `blocked`. Il commento nel
+    codice diceva il contrario — «non si butta via la proposta» — e la
+    ragione per cui il filtro esiste e' proprio guardare che cosa il
+    modello voleva scrivere dove Whisper era sicuro. Senza quel dato la
+    soglia si tarerebbe guardando il nulla.
+    """
+    c = _correttore([_risposta(PROPOSTE)])
+    d = c.correggi_segmento(0, TESTO, PROB).to_dict()
+    bloccata = [w for w in d["words"] if w["blocked"]]
+    require(len(bloccata) == 1, f"una parola bloccata: {bloccata}")
+    w = bloccata[0]
+    require(w["raw"] == "Cominciatemi", f"l'originale resta: {w}")
+    require(w["proposta"] == "Camminate",
+            f"la proposta respinta deve restare nel file: {w}")
+    require(w["fixed"] == w["raw"],
+            f"ma il testo non la prende: {w}")
+    require(w["changed"] is False, "una parola bloccata non e' cambiata")
+
+
+def il_vocabolario_conta_le_parole(tmp: Path) -> None:
+    """Il vocabolario somma le parole di tutte le sessioni con la loro
+    probabilita' media."""
+    import correct_text
+
+    d = _sessione(tmp)
+    vocabolario = correct_text._vocabolario([d])
+    # Ogni segmento e' «parolaN del segmento N»: `parola1` compare una
+    # volta sola, `del` e `segmento` tre volte ciascuno. E il conteggio
+    # conta tutte le occorrenze, mentre la media copre solo quelle con la
+    # probabilita' — e nel checkpoint di questa sessione c'e' il solo
+    # segmento 0, dove `del` e' stato udito con 0.99.
+    n, _, quante = vocabolario["del"]
+    require(n == 3, f"`del` compare in tutti e tre i segmenti: {n}")
+    require(quante == 0,
+            f"ma solo il segmento 0 ha un checkpoint, quindi nessuna "
+            f"probabilita' misurata: {quante}")
+    # `parola0` e' l'unica parola del segmento con checkpoint che
+    # l'allineamento riconosce, ed e' l'unica con una probabilita' media.
+    n, media, quante = vocabolario["parola0"]
+    require((n, quante) == (1, 1), f"una volta, una misurata: {vocabolario}")
+    require(abs(media - 0.99) < 1e-6, f"la media e' quella: {media}")
+    require(vocabolario["parola1"][0] == 1,
+            f"una parola che compare una volta: {vocabolario['parola1']}")
+    require("corretta" not in vocabolario,
+            "il vocabolario si legge sulle trascrizioni, non sulle risposte")
+    # E una media che non c'e' si dichiara, invece di diventare uno zero
+    # che si legge come «Whisper non era sicuro».
+    require("mai misurata" in correct_text._nota_vocabolario("del", vocabolario),
+            f"la nota deve dire che non e' misurata: "
+            f"{correct_text._nota_vocabolario('del', vocabolario)}")
+
+
+def il_report_elenca_le_proposte(tmp: Path) -> None:
+    """`--solo-proposte` mostra una riga per parola e non i testi."""
+    _sessione(tmp)
+    codice, out, _ = _esegui(tmp, "--consent", "--solo-proposte")
+    require(codice == 0, f"il comando deve uscire pulito: {codice}")
+    require("parola0 -> CORRETTAparola0" in out,
+            f"la parola bloccata deve comparire come respinta: {out}")
+    require("parola1 -> CORRETTAparola1" in out,
+            f"una riga per parola proposta: {out}")
+    require("x1" in out, f"il conteggio delle occorrenze: {out}")
+    require("prima :" not in out,
+            f"col report compatto i testi non si stampano: {out}")
+    require("MAI UDITA" in out or "vocabolario:" in out,
+            f"la colonna del vocabolario: {out}")
+
+
+def il_report_raggruppa_e_sintetizza(tmp: Path) -> None:
+    """La stessa parola proposta in tre segmenti e' una riga sola, e il
+    riepilogo finale mette le sessioni insieme."""
+    _sessione(tmp)
+    codice, out, _ = _esegui(tmp, "--consent", "--solo-proposte")
+    require(codice == 0, f"il comando deve uscire pulito: {codice}")
+    # Tre segmenti, tre proposte diverse (`parola0/1/2`), nessuna
+    # ripetuta: il raggruppamento non deve inventare aggregazioni.
+    require(out.count("-> CORRETTA") == 3, f"tre proposte: {out}")
+    # Con una sola sessione non c'e' una sintesi da fare: sarebbe la
+    # stessa tabella due volte.
+    require("tutte le sessioni" not in out,
+            f"una sola sessione non ha bisogno di sintesi: {out}")
+
+
+def il_report_senza_consente_non_stampa_nulla(tmp: Path) -> None:
+    """Senza `--consent` resta la spiegazione, e nessuna parola."""
+    _sessione(tmp)
+    codice, out, _ = _esegui(tmp, "--solo-proposte")
+    require(codice == 0, f"il comando deve uscire pulito: {codice}")
+    require("Nessuna chiamata" in out, f"la spiegazione c'e': {out}")
+    require("->" not in out, f"nessuna proposta senza consenso: {out}")
+
+
+def il_report_non_impedisce_la_scrittura(tmp: Path) -> None:
+    """Il report cambia quello che si vede, non quello che si scrive.
+
+    Il rischio di un interruttore che cambia il percorso di scrittura e'
+    esatto: il giro produce il file e le varianti come sempre, e le
+    proposte respinte arrivano in `text_correction.json` come in un giro
+    senza report.
+    """
+    d = _sessione(tmp)
+    _esegui(tmp, "--consent", "--solo-proposte")
+    require((d / "text_correction.json").exists(), "il file deve esserci")
+    require((d / "transcript.corrected.txt").exists(),
+            "e anche le varianti pubblicabili")
+    doc = json.loads((d / "text_correction.json").read_text(encoding="utf-8"))
+    bloccate = [w for s in doc["segments"] for w in s["words"] if w["blocked"]]
+    require(len(bloccate) == 1, f"una parola bloccata: {bloccate}")
+    require(bloccate[0]["proposta"] == "CORRETTAparola0",
+            f"e la sua proposta respinta e' nel file: {bloccate}")
+
+
 CHECKS = [
     ("il JSON con virgole finali viene letto, non scartato",
      virgole_finali_nel_json),
@@ -1199,6 +1323,18 @@ CHECKS = [
      cli_i_giri_si_accumulano),
     ("il filtro compare nel riepilogo del comando",
      cli_il_filtro_e_nel_riepilogo),
+    ("la proposta respinta resta nel file dopo il blocco",
+     proposta_respinta_sopravvive_al_blocco),
+    ("il vocabolario conta le parole delle sessioni",
+     il_vocabolario_conta_le_parole),
+    ("il report compatto elenca le proposte una riga per parola",
+     il_report_elenca_le_proposte),
+    ("il report non ripete la stessa tabella due volte",
+     il_report_raggruppa_e_sintetizza),
+    ("senza consenso il report non stampa proposte",
+     il_report_senza_consente_non_stampa_nulla),
+    ("il report non cambia quello che si scrive",
+     il_report_non_impedisce_la_scrittura),
 ]
 
 

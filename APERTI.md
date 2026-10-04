@@ -750,14 +750,26 @@ Aggiunto anche quello che mancava del tutto: **il percorso completo
 del comando**. Fino ad ora era provato solo il modulo, ma gira
 `correct_text.py`, che ha incroci suoi — i giri precedenti da non
 perdere, il `--limit` che interrompe a metà, i file pubblicabili da
-riscrivere. Quattro test lo eseguono davvero in una cartella a caso,
+riscrivere. Sette test lo eseguono davvero in una cartella a caso,
 con un modello finto e l'orologio tarato, e verificano anche che il
 filtro arrivi fino al testo scritto su disco e non si fermi al
-riepilogo.
+riepilogo, e che il report cambi quello che si vede senza cambiare
+quello che si scrive.
 
-36 test sulla correzione (4 nuovi sul percorso completo, 2 sul
-backoff), 2 sulla scrittura di `asr_prob`, **192 in tutto su 11
-suite**.
+**42 test** sulla correzione (4 sul percorso completo, 2 sul
+backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
+`asr_prob`, **198 in tutto su 11 suite**.
+
+La prima passata asciutta con chiave vera ha mostrato una cosa che i
+test non potevano: su quattro segmenti il modello ha proposto quattro
+parole e due erano buone, una dubbia e una peggio dell'originale
+(`similiata` → `sibilata`, un nonsense sostituito con un altro
+nonsense). Nessun numero automatico lo distingue da
+`drastisovati` → `distratti`, che e' la correzione giusta: la somiglianza
+fra le due parole dice 0.48 e 0.82, cioe' il contrario, e la parola
+giusta non compare mai nel vocabolario delle quattro notti. Quindi la
+soglia si continua a tarare a occhio, e con `--solo-proposte` si fa
+sulle righe, non sulle pagine.
 
 ---
 

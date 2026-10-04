@@ -312,13 +312,23 @@ class WordFix:
 
     @property
     def scelta(self) -> str:
-        """La forma scelta, con l'originale come riserva.
+        """La forma che finisce nel testo, con l'originale come riserva.
 
         Il modello a volte restituisce una stringa vuota o solo spazi:
         in quel caso la parola originale resta, perche' una correzione
         che cancella una parola e' una cancellazione, non una
         correzione.
+
+        E una parola bloccata torna com'era, anche se il modello aveva
+        proposto qualcosa: il filtro ha negato la proposta e il testo non
+        deve accorgersene. La proposta respinta resta pero' in
+        `proposta`, ed e' l'unico posto dove si vede che cosa il modello
+        voleva scrivere li': senza questo la parola bloccata e'
+        indistinguibile da una parola che il modello non ha mai toccata,
+        e la soglia si tarerebbe a caso.
         """
+        if self.bloccata:
+            return self.originale
         return self.proposta.strip() or self.originale
 
     @property
@@ -379,8 +389,8 @@ class SegmentResult:
             "n_blocked": self.n_bloccate,
             "words": [
                 {"i": f.indice, "raw": f.originale, "fixed": f.scelta,
-                 "changed": f.cambiata, "prob": f.prob,
-                 "blocked": f.bloccata}
+                 "proposta": f.proposta, "changed": f.cambiata,
+                 "prob": f.prob, "blocked": f.bloccata}
                 for f in self.parole
             ],
         }
@@ -749,12 +759,14 @@ class Correttore:
             p = prob[f.indice]
             if p is None or p < self.soglia_prob or not f.cambiata:
                 continue
-            # Non si butta via la proposta: resta nel file con la
-            # probabilita' accanto, perche' «il modello voleva cambiarla
-            # e Whisper era sicuro» e' informazione, ed e' l'unica che
-            # permette di tarare la soglia guardando i dati invece di
-            # indovinarla.
-            f.proposta = f.originale
+            # Non si butta via la proposta: resta nel file accanto alla
+            # probabilita', perche' «il modello voleva cambiarla e Whisper
+            # era sicuro» e' informazione, ed e' l'unica che permette di
+            # tarare la soglia guardando i dati invece di indovinarla.
+            # `proposta` non si tocca: `scelta` fa risalire il testo
+            # all'originale da sola, e azzerare qui la proposta
+            # farebbe sparire l'informazione proprio nel posto in cui
+            # la si va a leggere.
             f.prob = p
             f.bloccata = True
         return parole

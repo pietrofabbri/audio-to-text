@@ -7,6 +7,16 @@ Correzione del testo delle sessioni con un LLM.
     python correct_text.py --consent           # scrive davvero
     python correct_text.py --consent --session 19-42-33
     python correct_text.py --session 19-42-33 --riscorri
+    python correct_text.py --consent --dry --solo-proposte
+
+`--solo-proposte` e' il modo di guardare una passata intera. Il
+confronto originale/corretto serve per capire un segmento; su
+quattrocentoventinove segmenti sono pagine, e la domanda che conta
+dopo e' piu' piccola: quali parole il modello vuole cambiare, quante
+volte, e con quanta sicurezza Whisper le aveva udite. Una riga per
+parola, e in una pagina c'e' tutto. Le proposte respinte dal filtro
+compaiono insieme alle altre, perche' e' guardando quelle che si decide
+dove mettere la soglia.
 
 Perche' `--consent` e non un interruttore silenzioso. Ogni segmento
 mandato a un'API esterna porta fuori dal portatile il testo di una
@@ -55,7 +65,8 @@ sys.path.insert(0, str(HERE))
 
 from core.config import OUTPUT_DIR  # noqa: E402
 from core.text_correction import (  # noqa: E402
-    MODELLO, SOGLIA_PROB, Correttore, allinea_probabilita, scrivi_varianti,
+    MODELLO, PUNTEGGIATURA, SOGLIA_PROB, Correttore, allinea_probabilita,
+    scrivi_varianti,
 )
 
 logger = logging.getLogger("correct_text")
@@ -198,6 +209,190 @@ def _mostra_confronto(righe: list[tuple[dict, dict]]) -> None:
             print(f"    {len(bloccate)} bloccate perche' certe: {dettaglio}")
 
 
+def _parola_pulita(parola: str) -> str:
+    """La parola come si cerca nel vocabolario: senza punteggiatura."""
+    return parola.strip(PUNTEGGIATURA).lower()
+
+
+def _vocabolario(sessioni: list[Path]) -> dict[str, tuple[int, float, int]]:
+    """Ogni parola delle trascrizioni: quante volte, e con quanta sicurezza.
+
+    Serve a una cosa sola: dire se la parola che il modello propone
+    esiste gia' nelle trascrizioni o e' la prima volta che compare.
+    «frasi» che il correttore propone per «frasci» e' una parola che
+    Whisper aveva gia' capita tredici volte: il modello non sta
+    inventando, sta adattando. Una parola che non compare mai e' un
+    caso da guardare con piu' attenzione.
+
+    Il conteggio e' su tutte le occorrenze, la media solo su quelle che
+    hanno la probabilita': un segmento senza checkpoint — o una parola
+    che Whisper ha spezzato in due — non abbassa la media con uno zero
+    che non e' mai stato misurato. Il terzo numero del valore, quante
+    occorrenze hanno contribuito alla media, serve a non mostrare una
+    media come se fosse stata misurata su tutte. Media e conteggio non
+    coincidono, e con questa tabella e' meglio che si veda.
+
+    Ma non e' un verdetto, ed e' meglio dirlo qui perche' il primo
+    dato che viene in testa e' sbagliato: sulle quattro notti vere anche
+    «distratti» — la correzione che e' giusta, «siamo drastisovati» in
+    «siamo distratti» — non e' mai stata udita, perche' in quelle ore
+    nessuno ha detto «distratti». La colonna dice che una parola non
+    ha riscontro nel corpus: non dice che e' sbagliata. A decidere
+    resta la lista, quindi il giudizio.
+    """
+    conta: dict[str, list[float]] = {}
+    for d in sessioni:
+        if not (d / "segments.jsonl").exists():
+            continue
+        probabilita = _leggi_probabilita(d)
+        for s in _leggi_sessione(d):
+            idx = int(s.get("idx", 0))
+            for posizione, parola in enumerate(s.get("text", "").split()):
+                voce = conta.setdefault(_parola_pulita(parola), [0.0, 0.0, 0.0])
+                voce[0] += 1
+                probs = probabilita.get(idx) or []
+                if posizione < len(probs) and probs[posizione] is not None:
+                    voce[1] += float(probs[posizione])
+                    voce[2] += 1.0
+    return {k: (int(v[0]), v[1] / v[2] if v[2] else 0.0, int(v[2]))
+            for k, v in conta.items() if k}
+
+
+def _raccogli_proposte(risultati: list[dict], sessione: str) -> dict:
+    """Le parole che il modello ha proposto di cambiare, raggruppate.
+
+    Una parola proposta venti volte e' un fatto della trascrizione: si
+    sente male e la si scrive ogni volta in un modo diverso. Una parola
+    proposta una volta sola e' rumore. Senza il conteggio le due cose
+    hanno lo stesso peso sulla carta, e chi legge la lista finisce per
+    decidere sul caso singolo mentre il caso ripetuto passa inosservato.
+
+    Le proposte respinte dal filtro contano insieme alle altre, e con la
+    stessa importanza: e' proprio sapere che cosa il modello voleva
+    scrivere dove Whisper era sicuro che permette di tarare la soglia
+    sui dati invece che a caso.
+    """
+    out: dict[tuple[str, str, bool], dict] = {}
+    for r in risultati:
+        for w in r.get("words") or []:
+            if not (w.get("changed") or w.get("blocked")):
+                continue
+            raw, proposta = w.get("raw") or "", w.get("proposta") or ""
+            # Una proposta uguale all'originale non e' una proposta, ne'
+            # solo di punteggiatura ne' altro: qui non c'e' niente da
+            # giudicare, e una riga in piu' rende la tabella meno
+            # leggibile. Il confronto lo fa il testo affiancato.
+            if _parola_pulita(raw) == _parola_pulita(proposta):
+                continue
+            chiave = (raw, proposta, bool(w.get("blocked")))
+            voce = out.setdefault(
+                chiave, {"n": 0, "probs": [], "sessioni": set()})
+            voce["n"] += 1
+            p = w.get("prob")
+            if p is not None:
+                voce["probs"].append(float(p))
+            voce["sessioni"].add(sessione)
+    return out
+
+
+def _unisci(uno: dict, due: dict) -> dict:
+    """Somma due raccolte, tenendo conto anche delle sessioni."""
+    for chiave, voce in due.items():
+        dest = uno.setdefault(chiave, {"n": 0, "probs": [], "sessioni": set()})
+        dest["n"] += voce["n"]
+        dest["probs"] += voce["probs"]
+        dest["sessioni"] |= voce["sessioni"]
+    return uno
+
+
+def _nota_vocabolario(proposta: str, vocabolario: dict,
+                      sessioni: set[str] = frozenset()) -> str:
+    """La parola proposta, e quanto Whisper l'ha capita in altre occasioni.
+
+    Le sessioni sono un parametro e non una parte del vocabolario: sono
+    le sessioni da cui e' venuta *questa* proposta, e possono essere due
+    mentre la parola proposta si trova anche in altre tre.
+    """
+    voce = vocabolario.get(_parola_pulita(proposta))
+    if voce is None:
+        nota = "vocabolario: MAI UDITA"
+    else:
+        n, media, quante = voce
+        p = f"p={media:.2f}" if quante else "p=? (mai misurata)"
+        su = f" su {quante}" if quante < n else ""
+        nota = f"vocabolario: {n}x {p}{su}"
+    dove = ""
+    if sessioni:
+        sedute = sorted(sessioni)
+        dove = "  " + (", ".join(sedute) if len(sedute) <= 2
+                       else f"{len(sedute)} sessioni")
+    return f"{nota}{dove}"
+
+
+def _ordina(proposte: dict) -> list[tuple]:
+    """Le piu' frequenti prima, e fra parita' in ordine alfabetico.
+
+    L'ordinamento mette davanti le parole che il modello propone piu'
+    spesso perche' sono quelle che decidono: «frasci -> frasi» dodici
+    volte insegna piu' di dodici correzioni uniche e fragili. Sul resto
+    l'ordine e' quello del dizionario, cosi' che due passate sulla stessa
+    lista si possano confrontare riga per riga.
+    """
+    return sorted(proposte.items(),
+                  key=lambda kv: (-kv[1]["n"], _parola_pulita(kv[0][1])))
+
+
+def _riga_proposta(chiave: tuple[str, str, bool], voce: dict,
+                   vocabolario: dict,
+                   con_sessioni: bool = False) -> str:
+    raw, proposta, bloccata = chiave
+    ps = voce["probs"]
+    p = f"p={min(ps):.2f}" if ps else "p=?"
+    sessioni = voce["sessioni"] if con_sessioni else frozenset()
+    return (f"  {'respinta' if bloccata else 'accettata'}  "
+            f"{raw} -> {proposta}  x{voce['n']}  {p}  "
+            f"{_nota_vocabolario(proposta, vocabolario, sessioni)}")
+
+
+def _stampa_proposte(sessione: str, proposte: dict, vocabolario: dict) -> None:
+    if not proposte:
+        print(f"\n=== {sessione}: nessuna parola proposta ===")
+        return
+    accettate = sum(v["n"] for k, v in proposte.items() if not k[2])
+    respinte = sum(v["n"] for k, v in proposte.items() if k[2])
+    mai = sum(1 for k in proposte
+              if _parola_pulita(k[1]) not in vocabolario)
+    print(f"\n=== {sessione}: {len(proposte)} parole diverse proposte, "
+          f"{accettate} accettate, {respinte} respinte, {mai} mai udite ===")
+    for chiave, voce in _ordina(proposte):
+        print(_riga_proposta(chiave, voce, vocabolario))
+
+
+def _stampa_sintesi(proposte: dict, vocabolario: dict,
+                    limite: int = 25) -> None:
+    """Tutte le sessioni insieme, e solo le parole piu' frequenti.
+
+    Il limite serve perche' l'elenco completo di quattro notti puo'
+    essere lungo, e le parole che compaiono una volta sola sono rumore
+    di Whisper piu' che un difetto del correttore: non fanno decidere
+    nulla da sole.
+    """
+    if not proposte:
+        return
+    accettate = sum(v["n"] for k, v in proposte.items() if not k[2])
+    respinte = sum(v["n"] for k, v in proposte.items() if k[2])
+    mai = sum(1 for k in proposte if _parola_pulita(k[1]) not in vocabolario)
+    ordinate = _ordina(proposte)
+    print(f"\n=== tutte le sessioni: {len(proposte)} parole diverse, "
+          f"{accettate} accettate, {respinte} respinte dal filtro, "
+          f"{mai} mai udite in nessuna sessione ===")
+    for chiave, voce in ordinate[:limite]:
+        print(_riga_proposta(chiave, voce, vocabolario, con_sessioni=True))
+    if len(ordinate) > limite:
+        print(f"  ... e altre {len(ordinate) - limite} parole, "
+              f"una volta ciascuna o poche")
+
+
 def _sessioni_da_elaborare(args, out_dir: Path) -> list[Path]:
     """Le cartelle da guardare, con `--session` che accetta l'ora sola.
 
@@ -237,6 +432,11 @@ def main() -> int:
                     help="non correggere le parole che Whisper aveva "
                          f"gia' udite con almeno questa probabilita' "
                          f"(default {SOGLIA_PROB}; 0 per disattivare)")
+    ap.add_argument("--solo-proposte", action="store_true",
+                    help="mostra solo le parole che il modello propone di "
+                         "cambiare, non i testi: una riga per parola, con "
+                         "la probabilita' che Whisper le aveva dato e "
+                         "quante volte la proposta compare")
     ap.add_argument("--out-dir", default=str(OUTPUT_DIR),
                     help="cartella delle sessioni")
     args, avanzi = ap.parse_known_args()
@@ -293,6 +493,10 @@ def main() -> int:
         print(f"\n[dry-run] fino a {args.limit or 'tutti'} segmenti per "
               f"sessione, niente scritto\n")
 
+    proposte_totali: dict = {}
+    # Il vocabolario si costruisce solo se serve, e una volta sola: sono
+    # quattro checkpoint da rileggere, e serve a una colonna sola.
+    vocabolario = _vocabolario(sessioni) if args.solo_proposte else {}
     correttore = Correttore(modello=args.model, consentito=True,
                             pausa=args.pausa, soglia_prob=args.soglia_prob)
     pronto, motivo = correttore.pronto()
@@ -322,22 +526,27 @@ def main() -> int:
                        probabilita.get(int(s.get("idx", 0))))
                       for s in segmenti]
         risultati = correttore.correggi(da_inviare)
+        esiti = [res.to_dict() for res in risultati]
 
         righe = []
         out_segmenti = []
-        for seg, res in zip(segmenti, risultati):
-            r = res.to_dict()
+        for seg, r in zip(segmenti, esiti):
             r["start"] = seg.get("start")
             r["end"] = seg.get("end")
             r["speaker"] = seg.get("speaker")
             r["firma"] = _firma(seg.get("text", ""))
             out_segmenti.append(r)
             righe.append((seg, r))
-            if not args.dry:
+            if not args.dry and not args.solo_proposte:
                 print(f"  [{seg.get('idx'):>4}] {r['n_changed']:>3} correzioni"
                       + ("  SCARTATO" if r["discarded"] else ""))
 
-        _mostra_confronto(righe)
+        if args.solo_proposte:
+            raccolte = _raccogli_proposte(esiti, d.name)
+            _unisci(proposte_totali, raccolte)
+            _stampa_proposte(d.name, raccolte, vocabolario)
+        else:
+            _mostra_confronto(righe)
 
         if args.dry:
             continue
@@ -363,6 +572,9 @@ def main() -> int:
         print(f"  scritto {d / NOME_FILE}")
         for p in scritti:
             print(f"  scritto {p.name}")
+
+    if args.solo_proposte and len(sessioni) > 1:
+        _stampa_sintesi(proposte_totali, vocabolario)
 
     if args.dry:
         print("\n[dry-run] niente scritto. Con --consent si scrive.")
