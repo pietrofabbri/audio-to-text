@@ -729,6 +729,20 @@ def cmd_pull(args) -> int:
             )
 
         # --- 6. archivio, poi cancellazione --------------------------
+        # La durata va letta **prima** che il file sparisca. Dopo la
+        # cancellazione ffprobe non trova piu' niente e restituisce None,
+        # e `finished_file(None or 0.0)` finisce con `max(0.0, 1.0)`: il
+        # budget riceve **un secondo** di audio dove ne aveva 3.600. Da
+        # lì in poi l'RTF che ha imparato è 482 invece di 0,13, la stima
+        # del file successivo dice venti giorni, e con la finestra
+        # notturna la coda si ferma dopo il primo file e gli altri restano
+        # sul registratore per sempre.
+        #
+        # Il bug era invisibile finche' nessuno lanciava `pull` con un
+        # budget: senza `--max-seconds` la coda non si ferma e sembra
+        # andare tutto bene. E' la differenza fra una prova e la notte.
+        durata_reale = _probe_duration(f) or 0.0
+
         archived = _archive(f, stem)
         if archived is not None:
             # Il pezzo salvato è una copia di lavoro: se l'archivio l'ha
@@ -760,7 +774,7 @@ def cmd_pull(args) -> int:
 
         results["ok"] += 1
         results["deleted" if deleted else "kept"] += 1
-        budget.finished_file(_probe_duration(f) or 0.0)
+        budget.finished_file(durata_reale)
         append_manifest({
             "ts": _now_iso(), "device": label, "file": nome_originale,
             "sha256": digest, "stem": stem,

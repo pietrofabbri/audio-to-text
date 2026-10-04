@@ -1505,6 +1505,54 @@ def test_il_rtf_dichiarato_copre_il_caso_peggiore_misurato(tmp: Path) -> None:
     assert stimato < 1.0, stimato
 
 
+def test_il_budget_conta_l_audio_prima_della_cancellazione(tmp: Path) -> None:
+    """Il file va cancellato, ma la sua durata va contata **prima**.
+
+    Dopo la cancellazione ffprobe restituisce None, `finished_file(None or
+    0.0)` finisce con `max(0.0, 1.0)` e il budget conta **un secondo** di
+    audio dove ne aveva 3.600. Da li' in poi l'RTF imparato e' 482
+    invece di 0,13, la stima sul file successivo dice venti giorni, e con
+    la finestra notturna la coda si ferma dopo il primo file: gli altri
+    restano sul registratore per sempre.
+
+    Il bug era invisibile finche' nessuno lanciava `pull` con un budget,
+    perche' senza `--max-seconds` la coda non si ferma e sembra andare
+    tutto bene.
+    """
+    import importlib
+    import logging
+    sd = importlib.import_module("sync_device")
+
+    nome = "2026-10-04_15-00-00.MP3"
+    args, run_finto, elaborati, presi = _ambiente_pull(sd, tmp)
+    troncato = tmp / "device" / "RECORD" / nome
+    secondi = _wav_silenzio(troncato, secondi=20.0)
+
+    visti: list[float] = []
+    vero_finished = sd._Budget.finished_file
+
+    def spia(self, audio_sec, simulated=False):
+        visti.append(audio_sec)
+        return vero_finished(self, audio_sec, simulated=simulated)
+
+    log = logging.getLogger("sync_device")
+    sys.modules["run"] = run_finto
+    sd._Budget.finished_file = spia
+    try:
+        codice = sd.cmd_pull(args)
+    finally:
+        sys.modules.pop("run", None)
+        sd._Budget.finished_file = vero_finished
+
+    assert codice == 0, codice
+    assert not troncato.exists(), "il file deve essere stato cancellato"
+    assert len(visti) == 1, visti
+    # il WAV dura 20 secondi: il budget deve averne contati 20, non 1
+    assert visti[0] > 5, (
+        f"il budget ha contato {visti[0]}s di audio per un file di {secondi} "
+        f"byte: sta leggendo la durata dopo la cancellazione")
+
+
 def _righe_manifest(sd) -> list[dict]:
     return [json.loads(x) for x in
             sd.MANIFEST_PATH.read_text(encoding="utf-8").splitlines() if x]

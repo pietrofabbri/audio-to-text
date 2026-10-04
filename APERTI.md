@@ -75,8 +75,25 @@ miei che sono usciti solo quando la cosa ha girato sul vero:
 **Cosa è rimasto aperto.** La coda ha impiegato 1 h 31 min per 6 file da
 un'ora, e il tempo dipende dalla quantità di parlato più che dalla
 durata: 482 s per un file con 1.434 parole e 1.035 s per uno con 6.492.
-Il `MEASURED_RTF` di `_Budget` è dichiarato 0,27 e va ricalcolato su
-questi numeri, che sono i primi misurati su un device vero.
+
+**Il difetto che quella notte non poteva mostrare.** La coda era stata
+lanciata **senza budget**, e con `--max-seconds` il comportamento è un
+altro. Nel codice la durata del file veniva letta con ffprobe **dopo**
+la cancellazione: il file non c'era più, ffprobe restituiva `None`, e
+`finished_file(None or 0.0)` finiva con `max(0.0, 1.0)` — il budget
+contava **un secondo** di audio dove ne aveva 3.600.
+
+Da lì in poi l'RTF che aveva imparato era **482** invece di 0,13, la stima
+sul file successivo dava **1.735.200 secondi** — venti giorni — e con la
+finestra notturna da 4 ore la coda si fermava dopo il primo file. Gli
+altri sette restavano sul registratore, ogni notte, e nessun errore: il
+log diceva solo «Budget esaurito», che è un comportamento legittimo.
+
+Non è un difetto della notte del 4 ottobre, che è passata senza budget e
+come tale non lo mostrava. È un difetto che la notte con budget avrebbe
+mostrato alla prima esecuzione, e che nessuna prova fino ad adesso
+guardava. La durata ora si legge prima che il file sparisca, e un test
+verifica che il budget conti i secondi di audio veri.
 
 ---
 
@@ -831,7 +848,7 @@ quello che si scrive.
 
 **42 test** sulla correzione (4 sul percorso completo, 2 sul
 backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
-`asr_prob`, **209 in tutto su 11 suite**.
+`asr_prob`, **210 in tutto su 11 suite**.
 
 La prima passata asciutta con chiave vera ha mostrato una cosa che i
 test non potevano: su quattro segmenti il modello ha proposto quattro

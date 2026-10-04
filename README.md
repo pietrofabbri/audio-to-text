@@ -514,6 +514,14 @@ che non finisce dentro la finestra costerebbe il suo tempo senza
 produrre nulla. Quello che non entra resta sul device e riparte dalla
 stessa condizione la notte dopo.
 
+La stima del file successivo non è una tabella: dopo il primo file la
+coda impara dal suo RTF reale. Per farlo la durata va letta **prima** che
+il file venga cancellato — leggendola dopo, ffprobe non trova niente e il
+budget conta un secondo di audio dove ne aveva 3.600, l'RTF imparato
+diventa 482 e la coda si ferma dopo un file solo senza dire niente di
+sbagliato nel log. Un test controlla che i secondi contati siano quelli
+veri.
+
 Il ciclo non finisce finché c'è un file da elaborare: tra l'uno e
 l'altro c'è una **pausa di respiro** (`--cooldown-sec`, 90 s di notte,
 30 s di giorno) e il ciclo è a `nice 10`. Il costo in tempo è dichiarato
@@ -1227,7 +1235,7 @@ python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
 
-209 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
+210 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
 di attesa sono registrati e confrontati, non dormiti. Prima che fosse
 così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
 per un totale di quasi tre minuti — senza verificare nulla che non
