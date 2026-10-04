@@ -356,6 +356,108 @@ def t_reindex_popola_il_database(tmp: Path) -> None:
             f"rilanciare il comando ha cambiato il database: {st} -> {st2}")
 
 
+def t_reindex_toglie_la_sessione_senza_cartella(tmp: Path) -> None:
+    """Una sessione rinominata non deve restare a contare parole due volte.
+
+    Il caso reale, trovato sul database vero: il fix del file troncato
+    ha tolto l'hash dal nome della copia di lavoro, quindi lo stem della
+    sessione e' passato da `2026-10-04_10-49-40-1508d6ee` a
+    `2026-10-04_10-49-40`. `ingest_session_dir` cancella le righe del
+    nuovo stem, e quelle del vecchio restano tutte: la sessione con
+    l'hash sparisce dalla tabella `sessions` ma non — perche' quel nome
+    non corrisponde a nessuna cartella, non perche' qualcosa l'abbia
+    cancellata. Restano i suoi token, il suo wordfreq e i suoi bigrams,
+    e le parole di quel quarto d'ora vengono contate due volte.
+
+    Il punto che rende la cosa silenziosa: la riga `sessions` col nome
+    vecchio e' ancora li', quindi le foreign key sono soddisfatte e
+    `integrity_check` risponde `ok`. Nessun errore, solo statistiche
+    sbagliate.
+
+    Qui si rifa la situazione: si ingesta con un nome, poi si rinomina la
+    cartella e si reingesta, e si controlla che il nome vecchio sparisca
+    anche da `tokens`, `wordfreq` e `bigrams`, non solo da `sessions`.
+    """
+    print("  reindex toglie la sessione rimasta senza cartella")
+    from core.corpus_db import CorpusDB
+
+    out, _clone = _fake_env(tmp)
+    db = tmp / "corpus.sqlite"
+    pc.OUTPUT_DIR = out
+    require(_quiet(pc.cmd_reindex, argparse.Namespace(db=str(db))) == 0,
+            "reindex iniziale non riuscito")
+
+    # Il nome cambia come e' successo davvero: la cartella perde l'hash.
+    vecchia = out / "2026-10-02_21-44-16"
+    nuova = out / "2026-10-02_21-44-16-9f2c1ab0"
+    vecchia.rename(nuova)
+    tr = json.loads((nuova / "transcript.json").read_text(encoding="utf-8"))
+    tr["meta"]["stem"] = nuova.name
+    tr["meta"]["file"] = f"{nuova.name}.mp3"
+    (nuova / "transcript.json").write_text(
+        json.dumps(tr, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    require(_quiet(pc.cmd_reindex, argparse.Namespace(db=str(db))) == 0,
+            "reindex dopo il rinomina non riuscito")
+
+    with CorpusDB(path=db) as cdb:
+        stems = {r["stem"] for r in cdb.query("SELECT stem FROM sessions")}
+        require(vecchia.name not in stems,
+                f"la sessione col nome vecchio {vecchia.name} e' ancora in sessions")
+        require(nuova.name in stems,
+                f"la sessione col nome nuovo {nuova.name} non c'e' in sessions")
+        # Il punto vero: se restano, `wordfreq` conta le stesse parole
+        # due volte e nessuno lo vede.
+        for tabella in ("tokens", "wordfreq", "bigrams"):
+            n = cdb.query(
+                f"SELECT count(*) c FROM {tabella} WHERE stem = ?",
+                (vecchia.name,))[0]["c"]
+            require(n == 0,
+                    f"{tabella} ha ancora {n} righe col nome vecchio {vecchia.name}")
+
+        st = cdb.stats()
+    require(st["sessions"] == 1,
+            f"sessioni nel database: {st['sessions']}, attesa 1")
+    require(st["segments"] == 2,
+            f"segmenti nel database: {st['segments']}, attesi 2")
+
+
+def t_reindex_non_pota_se_output_e_vuoto(tmp: Path) -> None:
+    """Un percorso sbagliato non deve azzerare l'indice.
+
+    La potatura confronta gli stem del database con le cartelle presenti.
+    Se la directory passata e' sbagliata — un disco non montato, un
+    percorso spostato — non si deve concludere che il corpus sia vuoto e
+    cancellare tutto: un errore che si vede subito, ma che si fa male
+    prima di accorgersene. Con zero sessioni da cui misurare, la
+    potatura non guarda niente e lascia il database com'e'.
+    """
+    print("  reindex non pota nulla se output non contiene sessioni")
+    from core.corpus_db import CorpusDB
+
+    out, _clone = _fake_env(tmp)
+    db = tmp / "corpus.sqlite"
+    pc.OUTPUT_DIR = out
+    require(_quiet(pc.cmd_reindex, argparse.Namespace(db=str(db))) == 0,
+            "reindex iniziale non riuscito")
+
+    with CorpusDB(path=db) as cdb:
+        prima = cdb.stats()
+
+    # Directory che esiste ma non contiene sessioni: e' il caso in cui
+    # `output/` e' stata svuotata o montata altrove.
+    vuota = tmp / "output_vuota"
+    vuota.mkdir()
+    pc.OUTPUT_DIR = vuota
+    require(_quiet(pc.cmd_reindex, argparse.Namespace(db=str(db))) == 0,
+            "reindex verso una directory vuota non riuscito")
+
+    with CorpusDB(path=db) as cdb:
+        dopo = cdb.stats()
+    require(dopo == prima,
+            f"la potatura ha cancellato il database: {prima} -> {dopo}")
+
+
 def main() -> int:
     tests = [
         t_nothing_forbidden_lands_on_the_repo,
@@ -365,6 +467,8 @@ def main() -> int:
         t_with_names_publishes_them,
         t_names_to_hide_reads_the_speaker_db,
         t_reindex_popola_il_database,
+        t_reindex_toglie_la_sessione_senza_cartella,
+        t_reindex_non_pota_se_output_e_vuoto,
     ]
     failed = 0
     for fn in tests:

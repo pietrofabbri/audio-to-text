@@ -761,6 +761,67 @@ class CorpusDB:
                     len(da_rimuovere))
         return len(da_rimuovere)
 
+    def prune_missing_sessions(self, output_dir: Path | str) -> int:
+        """Rimuove le sessioni che piu' non hanno una cartella su disco.
+
+        `ingest_session_dir` prende lo stem da `transcript.json` e cancella
+        le righe di *quello* stem. E' idempotente finche' lo stem non
+        cambia: quando cambia — ed e' successo, quando il fix del file
+        troncato ha tolto l'hash dal nome della copia di lavoro — le
+        righe del nome vecchio restano tutte. Il sintomo e' una sessione
+        in `sessions` senza piu' una cartella, con i suoi token, il suo
+        wordfreq e i suoi bigrams ancora dentro: parole contate due volte
+        e nessun errore, perche' i vincoli di integrita' sono soddisfatti
+        (la riga `sessions` c'e' ancora, quindi le foreign key non hanno
+        niente da dire) e `integrity_check` risponde `ok`.
+
+        Il confronto e' fra lo stem nel database e le cartelle presenti
+        in `output_dir`: una riga senza cartella non e' piu' riproducibile
+        e non puo' essere re-ingestata, quindi e' rumore che pesa sulle
+        statistiche.
+
+        Una cartella senza `transcript.json` non conta come presente: e'
+        una sessione non finita, e quella la si riprende, non la si
+        dichiara inesistente.
+
+        Returns:
+            quante sessioni sono state rimosse.
+        """
+        output_dir = Path(output_dir)
+        presenti: set[str] = set()
+        if output_dir.is_dir():
+            for d in output_dir.iterdir():
+                if d.is_dir() and (d / "transcript.json").exists():
+                    presenti.add(d.name)
+        # Una directory assente o vuota significa che non si sa dove
+        # guardare, non che il corpus sia vuoto: in quel caso non si
+        # tocca niente, altrimenti un percorso sbagliato azzererebbe
+        # l'indice.
+        if not presenti:
+            logger.warning(
+                "CorpusDB: nessuna sessione completa in %s, nessuna potatura",
+                output_dir,
+            )
+            return 0
+
+        obsoleti = [
+            r["stem"] for r in self.conn.execute("SELECT stem FROM sessions")
+            if r["stem"] not in presenti
+        ]
+        for stem in obsoleti:
+            # Le tabelle figlie hanno `ON DELETE CASCADE` sullo stem, ma
+            # i vincoli sulle tabelle create prima del cascade non sono
+            # affidabili: si cancella esplicitamente, cosi' il risultato
+            # non dipende dallo schema che si trova sul disco.
+            for tabella in ("segments", "tokens", "wordfreq", "bigrams"):
+                self.conn.execute(f"DELETE FROM {tabella} WHERE stem = ?", (stem,))
+            self.conn.execute("DELETE FROM sessions WHERE stem = ?", (stem,))
+        self.conn.commit()
+        if obsoleti:
+            logger.info("CorpusDB: %d sessioni obsolete rimosse: %s",
+                        len(obsoleti), ", ".join(sorted(obsoleti)))
+        return len(obsoleti)
+
     def relabel_speakers(self, renames: dict[str, str], dry_run: bool = False) -> int:
         """Rietichetta gli ID nelle tabelle del corpus dopo un merge.
 

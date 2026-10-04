@@ -461,12 +461,19 @@ def cmd_reindex(args) -> int:
         # assorbite nella tabella e le query per parlante contano anche
         # quelle.
         potate = cdb.prune_speakers()
+
+        # E poi le sessioni che non hanno piu' una cartella: senza,
+        # un cambio di nome lascia dentro token, wordfreq e bigrams
+        # che contano due volte lo stesso testo.
+        persi = cdb.prune_missing_sessions(OUTPUT_DIR)
         st = cdb.stats()
 
     print(f"\nDatabase ricostruito: {n_ok} sessioni ingestate"
           f"{f', {n_skipped} saltate' if n_skipped else ''}.")
     if potate:
         print(f"  {potate} voci obsolete rimosse dalla tabella speakers")
+    if persi:
+        print(f"  {persi} sessioni obsolete rimosse (nessuna cartella corrispondente)")
     print(f"  sessioni={st['sessions']} segmenti={st['segments']} "
           f"parole_distinte={st['distinct_words']} "
           f"parlato={st['total_speech_hours']:.1f} h")

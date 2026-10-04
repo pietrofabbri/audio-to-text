@@ -886,7 +886,7 @@ quello che si scrive.
 
 **42 test** sulla correzione (4 sul percorso completo, 2 sul
 backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
-`asr_prob`, **210 in tutto su 11 suite**.
+`asr_prob`, **212 in tutto su 11 suite**.
 
 La prima passata asciutta con chiave vera ha mostrato una cosa che i
 test non potevano: su quattro segmenti il modello ha proposto quattro
@@ -898,6 +898,68 @@ fra le due parole dice 0.48 e 0.82, cioe' il contrario, e la parola
 giusta non compare mai nel vocabolario delle quattro notti. Quindi la
 soglia si continua a tarare a occhio, e con `--solo-proposte` si fa
 sulle righe, non sulle pagine.
+
+---
+
+### 23. ~~Le parole contate due volte~~ — chiuso il 10 ottobre
+
+**Stato.** Chiuso. Trovato guardando i numeri del corpus vero, non da un
+test: il database dichiarava **12 sessioni per 11 cartelle**.
+
+**Il difetto.** `ingest_session` cancella le righe del proprio stem e
+riescrive: e' idempotente finche' lo stem non *cambia*. Lo stem viene da
+`transcript.json`, e quando il fix del file troncato (punto 1) ha tolto
+l'hash dal nome della copia di lavoro, quello e' passato da
+`2026-10-04_10-49-40-1508d6ee` a `2026-10-04_10-49-40`. Le righe del nome
+vecchio non sono state cancellate da nessuna parte: non per una
+dimenticanza dell'ingest, ma perche' nessuno le cerca piu'. La
+sessione vecchia e' sparita dalla tabella `sessions` — non perche' qualcosa
+l'avesse rimossa, ma perche' nella tabella finisce solo cio' che si
+ingesta, e cio' col nome nuovo. Restavano **160 token, 116 wordfreq e
+149 bigrams** che duplicavano parola per parola un testo gia' presente:
+erano un sottoinsieme esatto dei 170 token della sessione buona.
+
+**Perche' nessuno se ne accorgesse.** La riga `sessions` col nome vecchio
+era ancora li', quindi le foreign key erano soddisfatte e
+`pragma integrity_check` rispondeva `ok`. Il vincolo c'era — `tokens`,
+`wordfreq` e `bigrams` lo dichiarano tutti — ma un vincolo fra due tabelle
+che sono *entrambe* sbagliate non ha niente da dire. Il danno non e' un
+errore di scrittura: e' che `a` pesava 5 volte su 531 e `e` 2 su 1.364, e
+una frequenza sbagliata in un corpus che vuoi interrogare e' peggio di un
+database rotto, perche' risponde.
+
+**Il rimedio.** `prune_missing_sessions(output_dir)`: confronta gli stem
+nella tabella con le cartelle che hanno un `transcript.json` e cancella
+le tabelle figlie di quelli che non trovano niente. Agganciato a
+`publish_corpus.py reindex`, accanto alla potatura delle voci che gia'
+esisteva.
+
+**La regola che tiene la cosa sicura.** Una cartella senza
+`transcript.json` non conta come assente: e' una sessione non finita, e
+quella la si riprende, non la si dichiara inesistente. E una directory
+`output/` vuota o inesistente non fa potare niente: un percorso sbagliato
+non deve azzerare l'indice — e' un errore che si vede subito ma che si fa
+male prima di accorgersene. Senza sessioni da cui misurare, la potatura
+non guarda niente.
+
+Cancellate esplicitamente tutte e quattro le tabelle figlie invece di
+fidarsi di `ON DELETE CASCADE`: funziona, ma sui database creati prima che
+il vincolo ci fosse no, e il risultato di una potatura non deve dipendere
+dallo schema che si trova sul disco.
+
+**Verificato sui dati veri.** 12 → 11 sessioni, `-160` token, `-116`
+wordfreq, `-149` bigrams, `-0` segmenti (i segmenti del nome vecchio non
+c'erano gia': erano stati sostituiti da quelli del nome nuovo). Le 11
+sessioni valide sono risultate **identiche parola per parola** a prima del
+purge, confronto fatto riga per riga sui 41.782 token e sul wordfreq
+completo. 2 test nuovi, **212 in tutto su 11 suite**.
+
+Il primo dei due test e' stato verificato rotto: con la chiamata alla
+potatura disattivata fallisce con «la sessione col nome vecchio
+2026-10-02_21-44-16 e' ancora in sessions». Il secondo copre il caso
+opposto — una `output/` vuota non deve cancellare niente — perche' una
+potatura che non distingue «non c'e' niente» da «non so dove guardare» e'
+peggio della duplicazione che corregge.
 
 ---
 
