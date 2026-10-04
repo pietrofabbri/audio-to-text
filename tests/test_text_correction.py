@@ -34,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
+import core.text_correction as text_correction  # noqa: E402
 from core.text_correction import (  # noqa: E402
     Correttore, SegmentResult, WordFix, _applica, _coda, _estrai_json,
     _modello_mancante, _piano, _retry_after, allinea_probabilita,
@@ -92,6 +93,48 @@ def _correttore(risposte, **kw) -> Correttore:
 
 def _risposta(correzioni) -> str:
     return json.dumps({"correzioni": correzioni})
+
+
+class _Orologio:
+    """Un `time` finto che registra le attese e non aspetta.
+
+    Senza questo, due test su trentasei dormono davvero: quello del
+    backoff e quello del modello sparito. Tra i due chiedevano 165
+    secondi di attesa vera e ci restavano dentro — la suite della
+    correzione durava quasi tre minuti, dei quali 164 secondi erano un
+    test che guardava l'orologio di parete.
+
+    Il sonno non verificava niente e costava tutto: un backoff che
+    cominciasse a dormire trenta secondi invece di venti passerebbe in
+    egual modo, e uno che non dormisse affatto anche. Sostituendolo con
+    una lista si verifica anche la quantita' dell'attesa, che era la
+    parte che il test dichiarava di coprire e non copriva.
+
+    Si sostituisce `time` *nel modulo sotto test* e non `time.sleep`:
+    quest'ultimo e' attributo del modulo `time` stesso, quindi
+    rimpiazzarlo cambierebbe il sonno di tutto il processo, test
+    vicini compresi, e un test che solleva un'eccezione prima di
+    rimettere a posto lascerebbe il processo con l'attesa disattivata.
+    Qui la sostituzione ha la durata di un `try`, e il modulo vero
+    della produzione non viene toccato.
+    """
+
+    def __init__(self, attese: list[float]) -> None:
+        self.attese = attese
+
+    def sleep(self, secondi: float) -> None:
+        self.attese.append(secondi)
+
+
+def _orologio_falso(attese: list[float]):
+    """Mette l'orologio finto e restituisce il modulo vero."""
+    originale = text_correction.time
+    text_correction.time = _Orologio(attese)
+    return originale
+
+
+def _ripristina_orologio(originale) -> None:
+    text_correction.time = originale
 
 
 # ----------------------------------------------------------------------
@@ -321,21 +364,35 @@ def tentativi_e_backoff() -> None:
     riempirebbe di buchi proprio nelle ore in cui la macchina e' meno
     sotto controllo. Dopo l'ultimo tentativo il testo resta quello di
     prima, dichiarato come non corretto.
-    """
-    c = _correttore([RuntimeError("429"), RuntimeError("503"),
-                     _risposta([{"i": 0, "a": "una", "b": "una"}])],
-                    tentativi=3)
-    r = c.correggi_segmento(0, "una due tre")
-    require(not r.scartato, f"il terzo tentativo doveva riuscire: "
-                            f"{r.motivo_scarto}")
-    require(c._client.chiamate == 3, "devono essere state tre chiamate")
 
-    c = _correttore([RuntimeError("429"), RuntimeError("429")], tentativi=2)
-    r = c.correggi_segmento(0, "una due tre")
-    require(r.scartato, "esauriti i tentativi il segmento resta non corretto")
-    require(r.testo_corretto == "una due tre", "il testo non si perde")
-    require("fallita" in r.motivo_scarto,
-            f"il motivo deve dire che ha fallito, dice {r.motivo_scarto!r}")
+    Verifica anche quanto si aspetta fra un tentativo e l'altro, e non
+    solo che si ritenta: un rate limit attende trenta secondi e un
+    sovraccarico quindici, ed e' la differenza fra una notte che
+    finisce e una notte che no.
+    """
+    attese: list[float] = []
+    originale = _orologio_falso(attese)
+    try:
+        c = _correttore([RuntimeError("429"), RuntimeError("503"),
+                         _risposta([{"i": 0, "a": "una", "b": "una"}])],
+                        tentativi=3)
+        r = c.correggi_segmento(0, "una due tre")
+        require(not r.scartato, f"il terzo tentativo doveva riuscire: "
+                                f"{r.motivo_scarto}")
+        require(c._client.chiamate == 3, "devono essere state tre chiamate")
+        require(attese == [30.0, 15.0],
+                f"rate limit trenta secondi, sovraccarico quindici: {attese}")
+
+        c = _correttore([RuntimeError("429"), RuntimeError("429")],
+                        tentativi=2)
+        r = c.correggi_segmento(0, "una due tre")
+        require(r.scartato,
+                "esauriti i tentativi il segmento resta non corretto")
+        require(r.testo_corretto == "una due tre", "il testo non si perde")
+        require("fallita" in r.motivo_scarto,
+                f"il motivo deve dire che ha fallito, dice {r.motivo_scarto!r}")
+    finally:
+        _ripristina_orologio(originale)
 
 
 # ----------------------------------------------------------------------
@@ -641,13 +698,21 @@ def modello_non_disponibile() -> None:
         else:
             raise Failure(f"{fallito}: doveva fallire")
 
-    # Con un errore invece normale, il backoff resta.
-    c = _correttore([RuntimeError("429 quota"), RuntimeError("429 quota"),
-                     _risposta([{"i": 0, "a": "una", "b": "una"}])],
-                    tentativi=3)
-    r = c.correggi_segmento(0, "una due tre")
-    require(not r.scartato, "un rate limit si ritenta, non si ferma tutto")
-    require(c._client.chiamate == 3, "deve aver riprovato")
+    # Con un errore invece normale, il backoff resta. E resta anche
+    # quando l'attesa non e' davvero un'attesa.
+    attese: list[float] = []
+    originale = _orologio_falso(attese)
+    try:
+        c = _correttore([RuntimeError("429 quota"),
+                         RuntimeError("429 quota"),
+                         _risposta([{"i": 0, "a": "una", "b": "una"}])],
+                        tentativi=3)
+        r = c.correggi_segmento(0, "una due tre")
+        require(not r.scartato, "un rate limit si ritenta, non si ferma tutto")
+        require(c._client.chiamate == 3, "deve aver riprovato")
+        require(attese == [30.0, 30.0], f"due rate limit, due attese: {attese}")
+    finally:
+        _ripristina_orologio(originale)
 
 
 def virgole_finali_nel_json() -> None:
@@ -864,6 +929,217 @@ def il_batch_conosce_le_probabilita() -> None:
     require(r.n_bloccate == 0, "senza probabilita' niente blocchi")
 
 
+
+# ----------------------------------------------------------------------
+# Il percorso completo: il comando come lo usa l'utente
+# ----------------------------------------------------------------------
+
+# Tutto quello sopra verifica il modulo. Ma il modulo non e' quello che
+# gira: gira `correct_text.py`, e il comando ha una forma tutta sua — i
+# giri precedenti da non perdere, il `--limit` che interrompe a meta',
+# i file pubblicabili da riscrivere a ogni giro. Se uno di quegli
+# incroci si rompe, gli unit test restano verdi e la notte produce un
+# testo perso.
+#
+# Qui il comando viene davvero eseguito, in una cartella a caso, con un
+# modello finto al posto di Gemini e l'orologio tarato: nessuna rete,
+# nessuna chiave, e quello che viene scritto si guarda sul disco.
+
+
+SESSIONE = "2026-10-04_21-00-00"
+
+
+class _ClienteFinto:
+    """Un Gemini finto che corregge la prima parola e basta."""
+
+    def __init__(self) -> None:
+        self.models = self
+        self.viste: list[str] = []
+
+    def generate_content(self, model=None, contents=None, config=None):
+        testo = contents.split("Testo:\n", 1)[1]
+        self.viste.append(testo)
+        parole = testo.split()
+        return _Risposta(json.dumps({"correzioni": [
+            {"i": 0, "a": parole[0], "b": "CORRETTA" + parole[0]}]}))
+
+
+def _sessione(tmp: Path | str, n: int = 3) -> Path:
+    """Una sessione con tre segmenti, gia' trascritta."""
+    from pipeline.assembler import _write_srt, _write_txt
+
+    # Il `main` di questa suite passa la cartella temporanea come
+    # stringa: e' `TemporaryDirectory` che la restituisce cosi', e
+    # dividerla per un nome prima di averla cambiata in Path fallisce.
+    d = Path(tmp) / SESSIONE
+    d.mkdir(parents=True, exist_ok=True)
+    segmenti = [
+        {"idx": i, "start": float(i * 3), "end": float(i * 3 + 2),
+         "speaker": "GLOBAL_001", "text": f"parola{i} del segmento {i}",
+         "no_speech_prob": 0.01, "quality": "ok", "quality_reasons": []}
+        for i in range(n)
+    ]
+    (d / "segments.jsonl").write_text(
+        "\n".join(json.dumps(s, ensure_ascii=False) for s in segmenti) + "\n",
+        encoding="utf-8")
+    _write_txt(segmenti, d / "transcript.txt")
+    _write_srt(segmenti, d / "transcript.srt")
+    # Solo il primo segmento ha un checkpoint con parole: e' la situazione
+    # reale, e serve a coprire il caso in cui la probabilita' manca per
+    # gli altri senza che il comando si fermi.
+    chunk = {"idx": 0, "start": 0.0, "end": 2.0,
+             "text": segmenti[0]["text"], "language": "it",
+             "no_speech_prob": 0.01, "duration_sec": 2.0,
+             "words": [{"word": f" parola{i}", "start": 0.0, "end": 0.4,
+                        "prob": 0.99} for i in range(3)] + [
+                       {"word": " del", "start": 0.4, "end": 0.9, "prob": 0.99},
+                       {"word": " segmento", "start": 0.9, "end": 1.4,
+                        "prob": 0.98}]}
+    (d / f"{SESSIONE}.checkpoint.json").write_text(
+        json.dumps({"file": "a.wav", "stem": "a", "chunks": [chunk],
+                    "stages": [], "speaker_global_map": {},
+                    "diarization_segments": []}, ensure_ascii=False),
+        encoding="utf-8")
+    return d
+
+
+def _corri(tmp: Path | str, *argomenti: str) -> tuple[int, _ClienteFinto]:
+    """`correct_text.py` come lo lancia l'utente, in una cartella a caso."""
+    import contextlib
+    import io
+    import logging
+    import os
+
+    import correct_text
+
+    cliente = _ClienteFinto()
+    originale_client = text_correction.Correttore._ottieni_client
+    originale_argv = sys.argv
+    chiave = os.environ.get("GOOGLE_API_KEY")
+    attese: list[float] = []
+    orologio = _orologio_falso(attese)
+    # Il comando mette i log a INFO e li scrive su stderr: dentro una
+    # suite sono solo rumore fra una riga di risultato e l'altra.
+    logging.disable(logging.CRITICAL)
+    text_correction.Correttore._ottieni_client = lambda self: cliente
+    # Una chiave finta: `pronto()` chiede che ce ne sia una, e questa non
+    # e' la chiave di nessuno.
+    os.environ["GOOGLE_API_KEY"] = "chiave-finta-di-prova"
+    sys.argv = ["correct_text.py", *argomenti, "--out-dir", str(tmp)]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                codice = correct_text.main()
+            except SystemExit as exc:
+                codice = exc.code if exc.code is not None else 0
+    finally:
+        logging.disable(logging.NOTSET)
+        text_correction.Correttore._ottieni_client = originale_client
+        sys.argv = originale_argv
+        _ripristina_orologio(orologio)
+        if chiave is None:
+            os.environ.pop("GOOGLE_API_KEY", None)
+        else:
+            os.environ["GOOGLE_API_KEY"] = chiave
+    return codice, cliente
+
+
+def cli_senza_consente_non_esce_nulla(tmp: Path) -> None:
+    """Senza `--consent` il comando spiega e basta."""
+    d = _sessione(tmp)
+    prima = sorted(p.name for p in d.iterdir())
+    codice, cliente = _corri(tmp, "--dry")
+    require(codice == 0, f"il comando deve usire pulito: {codice}")
+    require(not cliente.viste, "nessuna chiamata al modello")
+    require(sorted(p.name for p in d.iterdir()) == prima,
+            "niente file scritti senza consenso")
+
+
+def cli_con_consente_scrive_tutto(tmp: Path) -> None:
+    """Con `--consent` il giro è completo: correzione e varianti."""
+    d = _sessione(tmp)
+    originale = (d / "transcript.txt").read_text(encoding="utf-8")
+    codice, cliente = _corri(tmp, "--consent")
+    require(codice == 0, f"il comando deve riuscire: {codice}")
+    require(len(cliente.viste) == 3, f"tre segmenti, tre chiamate: "
+                                    f"{len(cliente.viste)}")
+    for nome in ("text_correction.json", "transcript.corrected.txt",
+                 "transcript.corrected.srt", "segments.corrected.jsonl"):
+        require((d / nome).exists(), f"manca {nome}: "
+                                     f"{sorted(p.name for p in d.iterdir())}")
+    # L'originale non si tocca mai: i due errori devono restare entrambi
+    # visibili, e' il punto della correzione affiancata.
+    require((d / "transcript.txt").read_text(encoding="utf-8") == originale,
+            "transcript.txt non deve essere mai sovrascritto")
+    # Il testo corretto contiene davvero le correzioni. Il segmento 0
+    # no: e' quello con i timestamp di parola, e tutte le sue parole
+    # sono state udite con probabilita' 0.98-0.99, quindi il filtro le
+    # ha lasciate stare. Che il filtro arrivi fino al file scritto — e
+    # non resti fermo al riepilogo — e' parte di quello che si verifica
+    # qui.
+    corretto = (d / "transcript.corrected.txt").read_text(encoding="utf-8")
+    require("CORRETTAparola1" in corretto, f"correzione assente: {corretto}")
+    require("CORRETTAparola2" in corretto, f"correzione assente: {corretto}")
+    require("CORRETTAparola0" not in corretto,
+            f"una parola che Whisper aveva capito non si riscrive: "
+            f"{corretto}")
+    require("parola0 del segmento 0" in corretto,
+            f"il testo della parola bloccata resta: {corretto}")
+
+
+def cli_i_giri_si_accumulano(tmp: Path) -> None:
+    """Un giro interrotto non perde il lavoro del giro precedente."""
+    d = _sessione(tmp)
+    _corri(tmp, "--consent", "--limit", "1")
+    _corri(tmp, "--consent", "--limit", "1")
+    # Il terzo giro trova i due segmenti gia' corretti e rifinische il
+    # terzo: non ripete le chiamate gia' fatte.
+    _, cliente = _corri(tmp, "--consent")
+    require(len(cliente.viste) == 1,
+            f"l'ultimo giro deve correggere un segmento solo: "
+            f"{len(cliente.viste)}")
+
+    doc = json.loads((d / "text_correction.json").read_text(encoding="utf-8"))
+    require(doc["summary"]["segments"] == 3,
+            f"tutti i segmenti devono restare nel file: {doc['summary']}")
+    idx = [s["idx"] for s in doc["segments"]]
+    require(idx == sorted(idx), f"i segmenti devono restare in ordine: {idx}")
+
+    # E il testo ricostruito contiene tutte le correzioni che il filtro
+    # lascia passare: e' il punto di un giro che si ferma a meta'.
+    # Il segmento 0 resta com'e' perche' il filtro lo protegge, e anche
+    # questo deve valere a fine giro e non solo a meta'.
+    corretto = (d / "transcript.corrected.txt").read_text(encoding="utf-8")
+    for i in (1, 2):
+        require(f"CORRETTAparola{i}" in corretto,
+                f"la correzione del segmento {i} e' andata persa: {corretto}")
+    require("parola0 del segmento 0" in corretto,
+            f"la parola protetta dal filtro e' stata riscritta lo stesso: "
+            f"{corretto}")
+
+
+def cli_il_filtro_e_nel_riepilogo(tmp: Path) -> None:
+    """Dal comando esce anche quante parole il filtro ha negate."""
+    d = _sessione(tmp)
+    _corri(tmp, "--consent")
+    doc = json.loads((d / "text_correction.json").read_text(encoding="utf-8"))
+    riepilogo = doc["summary"]
+    require(riepilogo["words_proposed"] == 3,
+            f"tre proposte: {riepilogo}")
+    require(riepilogo["words_blocked"] == 1,
+            f"la parola con probabilita' 0.99 non si tocca: {riepilogo}")
+    require(riepilogo["words_changed"] == 2, f"le altre due passano: "
+                                             f"{riepilogo}")
+    require(riepilogo["prob_threshold"] == SOGLIA_PROB,
+            f"la soglia va scritta: {riepilogo}")
+    # Il blocco non e' una sparizione: la parola e' ancora li', con la
+    # probabilita' che ha deciso.
+    bloccate = [w for s in doc["segments"] for w in s["words"] if w["blocked"]]
+    require(len(bloccate) == 1, f"una parola bloccata: {bloccate}")
+    require(bloccate[0]["prob"] == 0.99, f"con la sua probabilita': {bloccate}")
+
+
+
 CHECKS = [
     ("il JSON con virgole finali viene letto, non scartato",
      virgole_finali_nel_json),
@@ -915,6 +1191,14 @@ CHECKS = [
      parola_bloccata_restare_tracciata),
     ("il batch passa le probabilita' al filtro",
      il_batch_conosce_le_probabilita),
+    ("senza consenso il comando non scrive niente",
+     cli_senza_consente_non_esce_nulla),
+    ("con consenso il giro e' completo",
+     cli_con_consente_scrive_tutto),
+    ("un giro interrotto non perde il lavoro precedente",
+     cli_i_giri_si_accumulano),
+    ("il filtro compare nel riepilogo del comando",
+     cli_il_filtro_e_nel_riepilogo),
 ]
 
 

@@ -1032,9 +1032,22 @@ MAX_THREADS        = 4           # tetto misurato, verificato da un test
 Un solo comando:
 
 ```bash
-python tests/run_all.py            # test veloci, ~10 secondi
+python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
+
+192 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
+di attesa sono registrati e confrontati, non dormiti. Prima che fosse
+così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
+per un totale di quasi tre minuti — senza verificare nulla che non
+fosse già verificato.
+
+Il percorso completo di `correct_text.py` è provato per intero, non
+solo il modulo: quattro test lo eseguono in una cartella a caso con un
+modello finto al posto di Gemini, e controllano che senza `--consent`
+non esca niente, che i giri interrotti non perdano il lavoro precedente,
+e che le parole che il filtro protegge restino tali **nel testo scritto
+su disco** e non solo nel riepilogo.
 
 `--full` è quello che conta quando qualcosa è cambiato: costruisce un
 **registratore finto** e ci fa girare la catena vera. L'audio non è un

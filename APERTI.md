@@ -735,9 +735,29 @@ a occhio, dalle invenzioni.
 
 **Verificato.** Temperatura 0, perché due passate sullo stesso testo
 davano risultati diversi e una correzione che cambia da una passata
-all'altra non è una correzione: ora è riproducibile. 32 test sulla
-correzione (10 nuovi sul filtro e sull'allineamento), 2 nuovi sulla
-scrittura di `asr_prob`, 185 in tutto su 11 suite.
+all'altra non è una correzione: ora è riproducibile.
+
+La suite della correzione **dormiva davvero**: due test aspettavano
+l'attesa del backoff invece di verificarla, e ci restavano dentro
+165 secondi — la suite durava quasi tre minuti, dei quali 164 erano un
+test che guardava l'orologio di parete. Il sonno non verificava niente
+e costava tutto: un backoff che aspettasse trenta secondi invece di
+venti sarebbe passato in egual modo. Adesso l'attesa è registrata e
+confrontata — `[30, 15]` per un rate limit e un sovraccarico — e la
+suite dura 0,2 secondi.
+
+Aggiunto anche quello che mancava del tutto: **il percorso completo
+del comando**. Fino ad ora era provato solo il modulo, ma gira
+`correct_text.py`, che ha incroci suoi — i giri precedenti da non
+perdere, il `--limit` che interrompe a metà, i file pubblicabili da
+riscrivere. Quattro test lo eseguono davvero in una cartella a caso,
+con un modello finto e l'orologio tarato, e verificano anche che il
+filtro arrivi fino al testo scritto su disco e non si fermi al
+riepilogo.
+
+36 test sulla correzione (4 nuovi sul percorso completo, 2 sul
+backoff), 2 sulla scrittura di `asr_prob`, **192 in tutto su 11
+suite**.
 
 ---
 
