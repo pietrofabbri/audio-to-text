@@ -14,7 +14,7 @@ notturna), 3b (il carico termico: 4 thread sono più veloci di 8),
 4 (nomi dei parlanti), 5 (punteggiatura come segnale debole),
 6 (flag di qualità), 9 (pubblicazione, provata con una coda finta).
 **Archiviato:** 7 (saturazione) — non risolvibile da qui.
-**Chiusi stanotte:** 15 (la prosodia in parallelo, che non terminava
+**Chiusi il 3 ottobre:** 15 (la prosodia in parallelo, che non terminava
 mai), 16 (rifare la trascrizione perdeva gli interlocutori), 17 (la
 cache dei WAV), 18 (il database locale vuoto), 19 (la sovrasegmentazione
 delle voci: 21 identita' globali su quattro ore di una conversazione
