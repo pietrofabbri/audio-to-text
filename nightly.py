@@ -103,6 +103,28 @@ def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
+def _log_uscita_male(nome: str, code: int, out: str) -> None:
+    """Scrive perche' un passo e' fallito, non solo che e' fallito.
+
+    `subprocess.run` cattura l'output, quindi il messaggio d'errore
+    vero — l'eccezione, il modulo che manca, la riga che spiega il
+    guasto — esiste solo in quella variabile. Senza questo, un ciclo
+    notturno finito con «pull ha restituito 1» non lascia nessuna
+    traccia del motivo: il giorno dopo la domanda e' «perche' non ha
+    lavorato?» e la risposta non esiste da nessuna parte.
+
+    Non si stampa tutto: il pull emette una riga per chunk trascritto e
+    possono essere centinaia. Bastano le ultime righe, che sono dove
+    sta l'errore.
+    """
+    logger.warning("%s ha restituito %d", nome, code)
+    if not out:
+        logger.warning("%s non ha scritto nulla: nessun output da guardare", nome)
+        return
+    for riga in out.splitlines()[-20:]:
+        logger.warning("  | %s", riga)
+
+
 def _sessioni_non_pubblicate() -> dict[str, list[str]]:
     """Quali file di una sessione completa non sono arrivati nella repo.
 
@@ -231,7 +253,17 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 2. Import ed elaborazione
     # ------------------------------------------------------------------
-    pull = ["python", str(ROOT / "sync_device.py"), "pull",
+    # L'interprete e' quello che sta girando adesso, non il primo
+    # `python` che capita nel PATH: l'import e la pubblicazione
+    # dipendono da faster-whisper, numpy e torch, che stanno
+    # nell'ambiente che ha lanciato nightly. Sotto launchd le due cose
+    # coincidevano perche' il plist mette l'ambiente davanti nel PATH,
+    # quindi l'errore non si e' mai visto lanciandolo a mano: l'import
+    # partiva con l'interprete sbagliato, falliva dopo minuti di
+    # apparentemente lavoro, e il ciclo notturno registrava solo un
+    # codice di uscita. Fuori da launchd l'ambiente non e' nel PATH e
+    # il fallimento e' immediato ma silenzioso.
+    pull = [sys.executable, str(ROOT / "sync_device.py"), "pull",
             "--max-seconds", str(args.max_seconds)]
     if args.source:
         pull += ["--source", args.source]
@@ -250,8 +282,9 @@ def main() -> int:
     if code_pull != 0:
         # L'import può uscire non-zero per un file fallito, non per un
         # errore generale: si prosegue comunque a pubblicare quello che
-        # è stato prodotto.
-        logger.warning("sync_device pull ha restituito %d", code_pull)
+        # è stato prodotto. Il motivo del fallimento va scritto,
+        # altrimenti il ciclo finisce senza lasciare traccia.
+        _log_uscita_male("sync_device pull", code_pull, out_pull)
 
     # ------------------------------------------------------------------
     # 3. Pubblicazione del corpus
@@ -260,9 +293,10 @@ def main() -> int:
     if args.no_publish:
         logger.info("Saltata (--no-publish)")
     else:
-        code_pub, out_pub = _run(["python", str(ROOT / "publish_corpus.py"), "push"])
+        code_pub, out_pub = _run(
+            [sys.executable, str(ROOT / "publish_corpus.py"), "push"])
         if code_pub != 0:
-            logger.warning("publish_corpus push ha restituito %d", code_pub)
+            _log_uscita_male("publish_corpus push", code_pub, out_pub)
         else:
             logger.info("Pubblicazione: %s", out_pub.splitlines()[-1] if out_pub else "ok")
         # Il push puo' uscire 0 senza aver pubblicato tutto: per esempio

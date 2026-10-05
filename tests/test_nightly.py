@@ -147,6 +147,175 @@ def t_dry_run_writes_nothing(tmp: Path) -> None:
     print(f"    device e output intatti (exit {r.returncode})")
 
 
+def t_i_passaggi_usano_l_interprete_di_adesso(tmp: Path) -> None:
+    """I sotto-passi devono girare con l'ambiente che ha lanciato nightly.
+
+    Il pericolo e' `python` scritto alla lettera: funziona finche' il
+    primo `python` nel PATH e' quello giusto, e sotto launchd lo e' perche'
+    il plist mette l'ambiente davanti. Lanciato a mano da una shell
+    normale non lo e': l'import parte con un interprete che non ha
+    faster-whisper, e l'unica traccia del fallimento era un codice di
+    uscita.
+
+    Qui il PATH e' sabotato apposta: `python` e' uno script che fallisce
+    e grida. Se nightly usa l'interprete di adesso, il piano a secco
+    passa lo stesso.
+    """
+    print("  i sotto-passi usano l'interprete che sta girando adesso")
+    import os
+
+    root = tmp / "root"
+    dev = tmp / "untitled"
+    root.mkdir(parents=True, exist_ok=True)
+    fake.build(dev, 2, 0.5, __import__("datetime").datetime(2026, 10, 3, 21),
+               "Alice", -25.0, edge=False, name_pattern="REC_%Y%m%d_%H%M%S.mp3")
+
+    poison = tmp / "bin"
+    poison.mkdir(parents=True, exist_ok=True)
+    (poison / "python").write_text(
+        "#!/bin/sh\necho PYTHON_SABOTATO \"$@\" >&2\nexit 9\n")
+    (poison / "python").chmod(0o755)
+
+    env = {**os.environ, "A2T_ROOT_DIR": str(root),
+           "PATH": f"{poison}:{os.environ.get('PATH', '')}"}
+    r = subprocess.run(
+        [sys.executable, str(ROOT / "nightly.py"), "--dry-run",
+         "--source", str(dev), "--no-publish"],
+        capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=600,
+    )
+    out = r.stdout + r.stderr
+    require("PYTHON_SABOTATO" not in out,
+            "un sotto-passo e' partito con il python del PATH, non con "
+            f"l'ambiente di nightly:\n{out[-1500:]}")
+    require("sync_device pull ha restituito" not in out,
+            f"l'import e' fallito:\n{out[-1500:]}")
+    require("ha restituito" not in out,
+            f"qualche passo e' uscito non-zero:\n{out[-1500:]}")
+    print(f"    python sabotato nel PATH, ciclo intatto (exit {r.returncode})")
+
+
+def t_il_motivo_del_fallimento_arriva_nel_log(tmp: Path) -> None:
+    """Un passo che fallisce deve dire perche', non solo che ha fallito.
+
+    L'output dei sotto-passi e' catturato: senza scriverlo, il log del
+    ciclo finisce con «pull ha restituito 1» e il motivo non e' da
+    nessuna parte. Il giorno dopo la domanda «perche' non ha lavorato?»
+    non ha risposta.
+    """
+    print("  il motivo di un fallimento finisce nel log")
+    import logging
+    import os
+
+    import nightly
+
+    righe: list[str] = []
+
+    class _Cattura(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            righe.append(record.getMessage())
+
+    h = _Cattura()
+    h.setLevel(logging.WARNING)
+    vecchio = logging.getLogger("nightly")
+    livello = vecchio.level
+    vecchio.setLevel(logging.WARNING)
+    vecchio.addHandler(h)
+    try:
+        nightly._log_uscita_male("sync_device pull", 1, (
+            "riga inutile 1\nriga inutile 2\n"
+            "Traceback (most recent call last):\n"
+            "ModuleNotFoundError: No module named 'faster_whisper'"
+        ))
+
+        testo = "\n".join(righe)
+        require("ModuleNotFoundError" in testo,
+                f"il motivo del fallimento non e' nel log:\n{testo}")
+        require("ha restituito 1" in testo,
+                f"il log non dice quale passo e' fallito:\n{testo}")
+
+        # Il pull scrive una riga per chunk: scaricare tutto significherebbe
+        # che il log della notte e' il log dell'ASR, e il motivo (l'ultima
+        # riga) sparirebbe dentro il rumore.
+        rumoroso = "\n".join(f"faster_whisper: chunk {i}" for i in range(5000))
+        righe.clear()
+        nightly._log_uscita_male("sync_device pull", 1, rumoroso + "\nERRORE_FINALE")
+        testo = "\n".join(righe)
+        require("ERRORE_FINALE" in testo,
+                "la riga dell'errore non arriva nel log")
+        righe_strappate = [r for r in righe if "chunk " in r]
+        require(len(righe_strappate) <= 20,
+                f"il log ha riversato {len(righe_strappate)} righe di rumore")
+
+        # E se non c'e' niente da dire, si dice anche quello: un codice di
+        # uscita senza una parola e' il caso piu' difficile da diagnosticare.
+        righe.clear()
+        nightly._log_uscita_male("sync_device pull", 1, "")
+        require(any("non ha scritto nulla" in r for r in righe),
+                "un fallimento senza output non lascia traccia")
+    finally:
+        vecchio.removeHandler(h)
+        vecchio.setLevel(livello)
+    print("    motivo presente, rumore tagliato, silenzio dichiarato")
+
+
+def t_un_passo_che_fallisce_scrive_il_motivo(tmp: Path) -> None:
+    """Il ramo di fallimento del ciclo deve scrivere il motivo, non solo il codice.
+
+    Provare la funzione non basta: se il ramo non la chiama, il motivo
+    resta nella variabile catturata da subprocess e muore li'. Qui si fa
+    fallire l'import per davvero — `_run` restituisce l'errore che
+    faster-whisper avrebbe dato — e si guarda cosa finisce nel log.
+
+    Si cattura stdout e non un handler perche' `main()` chiama
+    `logging.basicConfig(force=True)`: un handler agganciato a mano verrebbe
+    staccato e il log finirebbe a schermo, dove il test non lo vede.
+    """
+    print("  un import che fallisce dice perche' nel log")
+    import contextlib
+    import io
+    import os
+
+    import nightly
+
+    root = tmp / "root"
+    dev = tmp / "untitled"
+    root.mkdir(parents=True, exist_ok=True)
+    fake.build(dev, 2, 0.5, __import__("datetime").datetime(2026, 10, 3, 21),
+               "Alice", -25.0, edge=False, name_pattern="REC_%Y%m%d_%H%M%S.mp3")
+
+    run_originale = nightly._run
+    argv_originale = sys.argv
+    root_originale = os.environ.get("A2T_ROOT_DIR")
+    os.environ["A2T_ROOT_DIR"] = str(root)
+    sys.argv = ["nightly.py", "--dry-run", "--source", str(dev), "--no-publish"]
+
+    def _run_fallito(cmd, timeout=None):
+        if "sync_device.py" in " ".join(cmd):
+            return 1, ("faster_whisper: chunk 0\n"
+                       "ModuleNotFoundError: No module named 'faster_whisper'")
+        return run_originale(cmd, timeout=timeout)
+
+    buf = io.StringIO()
+    nightly._run = _run_fallito
+    try:
+        with contextlib.redirect_stdout(buf):
+            nightly.main()
+    finally:
+        nightly._run = run_originale
+        sys.argv = argv_originale
+        if root_originale is None:
+            os.environ.pop("A2T_ROOT_DIR", None)
+        else:
+            os.environ["A2T_ROOT_DIR"] = root_originale
+
+    testo = buf.getvalue()
+    require("ModuleNotFoundError" in testo,
+            f"l'import e' fallito ma il log non dice perche':\n{testo}")
+    require("sync_device pull" in testo,
+            f"il log non dice quale passo e' fallito:\n{testo}")
+    print("    il motivo di un import fallito finisce nel log")
+
+
 def t_speech_ratio_learns_from_sessions(tmp: Path) -> None:
     """Se esistono sessioni, il rapporto di parlato smette di essere un'ipotesi."""
     print("  il rapporto di parlato si impara dalle sessioni fatte")
@@ -511,6 +680,9 @@ def main() -> int:
         t_limit_is_after_sorting,
         t_queue_growth_is_visible,
         t_dry_run_writes_nothing,
+        t_i_passaggi_usano_l_interprete_di_adesso,
+        t_il_motivo_del_fallimento_arriva_nel_log,
+        t_un_passo_che_fallisce_scrive_il_motivo,
         t_speech_ratio_learns_from_sessions,
         t_cost_model_matches_measurements,
         t_chunks_respect_the_clock_limit,
