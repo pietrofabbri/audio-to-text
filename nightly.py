@@ -83,12 +83,10 @@ MEASURED_RTF = 0.27
 # consumo. Vedere la tabella in core/cost.py.
 
 
-# Artefatti che stanno a livello di corpus, non dentro una cartella di
-# sessione. Il confronto file per file di `_sessioni_non_pubblicate` non li
-# vede, per costruzione: nessuno dei due e' dentro `sessions/<nome>/`.
-# Senza un elenco suo, questi file possono mancare senza che nessuno se ne
-# accorga — che e' esattamente come e' andata con `tokens.jsonl`.
-ARTEFATTI_CORPUS = ("voices/voice_matrix.json",)
+# L'elenco degli artefatti di corpus vive in `publish_corpus`: e' la stessa
+# lista che usa `status`, e tenere due copie di un elenco che elenca i file
+# da controllare significa che uno dei due prima o poi non viene aggiornato.
+from publish_corpus import ARTEFATTI_CORPUS  # noqa: E402,F401
 
 
 def _artefatti_mancanti() -> list[str]:

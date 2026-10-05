@@ -96,6 +96,12 @@ PUBLISHABLE_AFFIANCO = (
     "segments.corrected.jsonl",
 )
 
+# Artefatti che stanno a livello di corpus e non dentro una cartella di
+# sessione. Il confronto file per file non li vede per costruzione, quindi
+# hanno bisogno di un controllo proprio: e' cosi' che `tokens.jsonl` e la
+# matrice delle voci sono rimasti fuori senza che nessuno se ne accorgesse.
+ARTEFATTI_CORPUS = ("voices/voice_matrix.json",)
+
 # File che non devono MAI essere copiati, per nome. La lista è volutamente
 # conservativa: più è restrittiva, meglio è.
 FORBIDDEN = (
@@ -561,13 +567,35 @@ def cmd_status(args) -> int:
         published = {d.name for d in sd.iterdir() if d.is_dir()}
 
     missing = sorted(local - published)
+    # La direzione opposta: una sessione che sta sulla repo e non ha piu'
+    # una cartella in `output/`. Prima non veniva guardata, e il risultato
+    # era che il comando stampava «11 in locale | 12 sulla repo» e subito
+    # sotto «Tutto pubblicato» — una contraddizione enunciata e ignorata.
+    # E' la stessa classe di difetto di un elenco che dichiara un formato
+    # che non copia: il numero c'era, la conclusione no.
+    orfane = sorted(published - local)
+    mancanti_artefatti = [rel for rel in ARTEFATTI_CORPUS
+                          if not (LOCAL_CLONE / rel).exists()]
+
     print(f"Sessioni in locale: {len(local)} | sulla repo: {len(published)}")
     if missing:
         print(f"\nNon ancora pubblicate ({len(missing)}):")
         for m in missing[:20]:
             print(f"  {m}")
-    else:
-        print("\nTutto pubblicato.")
+    if orfane:
+        print(f"\nSulla repo ma non piu' in locale ({len(orfane)}):")
+        for o in orfane[:20]:
+            print(f"  {o}")
+        print("  Non sono riproducibili: senza la cartella non si possono")
+        print("  rielaborare ne' ripubblicare. Decidi tu se tenerle.")
+    if mancanti_artefatti:
+        print(f"\nArtefatti di corpus mancanti ({len(mancanti_artefatti)}):")
+        for rel in mancanti_artefatti:
+            print(f"  {rel}")
+
+    if missing or orfane or mancanti_artefatti:
+        return 0  # c'e' roba da decidere, ma non e' un errore del comando
+    print("\nTutto pubblicato.")
     return 0
 
 

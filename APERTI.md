@@ -986,7 +986,7 @@ quello che si scrive.
 
 **42 test** sulla correzione (4 sul percorso completo, 2 sul
 backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
-`asr_prob`, **217 in tutto su 11 suite**.
+`asr_prob`, **218 in tutto su 11 suite**.
 
 La prima passata asciutta con chiave vera ha mostrato una cosa che i
 test non potevano: su quattro segmenti il modello ha proposto quattro
@@ -1065,7 +1065,7 @@ wordfreq, `-149` bigrams, `-0` segmenti (i segmenti del nome vecchio non
 c'erano gia': erano stati sostituiti da quelli del nome nuovo). Le 11
 sessioni valide sono risultate **identiche parola per parola** a prima del
 purge, confronto fatto riga per riga sui 41.782 token e sul wordfreq
-completo. 2 test nuovi, **217 in tutto su 11 suite**.
+completo. 2 test nuovi, **218 in tutto su 11 suite**.
 
 Il primo dei due test e' stato verificato rotto: con la chiamata alla
 potatura disattivata fallisce con «la sessione col nome vecchio
@@ -1122,6 +1122,27 @@ decidere: e' un pezzo di storia, e la domanda («la sessione che non ha
 piu' una fonte la si tiene o la si lascia nel corpus pubblico?») non ha
 una risposta che si possa scegliere al posto dell'utente.
 
+**E il comando che serve ad accorgersene non se ne accorgeva.** Chiuso il
+10 ottobre. `publish_corpus.py status` guardava solo `locale - published`,
+cioe' le sessioni da pubblicare, e ignorava l'altra direzione. Sul disco
+stampava «Sessioni in locale: 11 | sulla repo: 12» e subito sotto «Tutto
+pubblicato»: una contraddizione enunciata e ignorata, nel comando che
+esiste per dire a che punto siamo. Ora dice anche l'altra direzione, per
+nome, e non chiama «tutto pubblicato» se c'e' roba da decidere — comprese
+le sessioni nuove da pubblicare, che prima erano l'unico caso guardato.
+
+E' la stessa classe di difetto di `tokens.jsonl` e della matrice delle
+voci: un elenco che dichiara un file e il file che non c'era. Qui il
+numero c'era gia' stampato e la conclusione no.
+
+Insieme ho tolto una duplicazione: l'elenco degli artefatti di corpus era
+in `nightly.py` e ora vive in `publish_corpus.py`, da dove `nightly` lo
+importa. Due copie di una lista che elenca i file da controllare vengono
+fuori uso, e una delle due senza che se ne accorga.
+
+Test verificato rotto togliendo il controllo: «con una sessione orfana il
+comando non puo' dire che e' tutto pubblicato». **218 test su 11 suite.**
+
 ---
 
 ### 25. ~~La matrice delle voci non era mai stata pubblicata~~ — chiuso il 10 ottobre
@@ -1165,7 +1186,7 @@ pubblicato. Il file è pushato (`9b08ef3`). I due test nuovi sono stati
 verificati rotti: con la generazione disattivata «la matrice delle voci non
 e' stata pubblicata in .../voices/voice_matrix.json», con il controllo
 artefatti disattivato «la matrice mancante deve essere detta per nome».
-**215 test su 11 suite** (poi 217 con la probabilita' sulle accettate).
+**215 test su 11 suite** (poi 218 con il controllo delle sessioni orfane).
 
 ---
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -543,6 +544,62 @@ def t_voice_matrix_lands_on_the_repo_without_embeddings(tmp: Path) -> None:
           f"{len(doc['gray_zone'])} in zona grigia, nessun embedding")
 
 
+def t_status_dichiara_anche_le_sessioni_orfane(tmp: Path) -> None:
+    """`status` non deve dire «tutto pubblicato» mentre mostra uno scarto.
+
+    Il caso reale: il comando stampava «Sessioni in locale: 11 | sulla
+    repo: 12» e subito sotto «Tutto pubblicato». Guardava solo
+    `locale - published`, cioe' le sessioni da pubblicare, e ignorava
+    l'altra direzione: una sessione che sta sulla repo e non ha piu' una
+    cartella in `output/` — che non si puo' ne' rielaborare ne'
+    ripubblicare.
+
+    E' la stessa classe di difetto di un elenco che dichiara un formato
+    che non copia: il numero c'era gia' stampato, la conclusione no. Il
+    comando che serve a dire «a che punto siamo» non poteva dire il
+    contrario dei numeri che lui stesso aveva appena scritto.
+    """
+    print("  status dichiara anche le sessioni rimaste senza sorgente")
+    import io
+    import contextlib
+
+    out, clone = _fake_env(tmp)
+    pc.OUTPUT_DIR = out
+    pc.LOCAL_CLONE = clone
+    require(_publish(out, clone) == 0, "prima pubblicazione")
+
+    def status() -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            pc.cmd_status(argparse.Namespace())
+        return buf.getvalue()
+
+    testo = status()
+    require("Tutto pubblicato" in testo,
+            f"una sola sessione pubblicata deve risultare completa:\n{testo}")
+
+    # La cartella sparisce: resta sulla repo, non e' piu' riproducibile.
+    shutil.rmtree(out / "2026-10-02_21-44-16")
+
+    testo = status()
+    require("Tutto pubblicato" not in testo,
+            "con una sessione orfana il comando non puo' dire che e' tutto "
+            f"pubblicato:\n{testo}")
+    require("2026-10-02_21-44-16" in testo,
+            f"la sessione orfana deve essere detta per nome:\n{testo}")
+
+    # E l'altra direzione continua a funzionare: una sessione da
+    # pubblicare deve ancora essere segnalata come tale.
+    nuova = out / "2026-10-05_10-00-00"
+    _make_session(nuova, "2026-10-05_10-00-00")
+    testo = status()
+    require("Non ancora pubblicate" in testo,
+            f"una sessione nuova deve risultare da pubblicare:\n{testo}")
+    require("Tutto pubblicato" not in testo,
+            f"non si puo' dire 'tutto pubblicato' con una da pubblicare:\n{testo}")
+    print("    sessione orfana e sessione da pubblicare, entrambe dette")
+
+
 def main() -> int:
     tests = [
         t_nothing_forbidden_lands_on_the_repo,
@@ -555,6 +612,7 @@ def main() -> int:
         t_reindex_popola_il_database,
         t_reindex_toglie_la_sessione_senza_cartella,
         t_reindex_non_pota_se_output_e_vuoto,
+        t_status_dichiara_anche_le_sessioni_orfane,
     ]
     failed = 0
     for fn in tests:
