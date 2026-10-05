@@ -115,6 +115,34 @@ def _make_session(job: Path, stem: str, named: bool = True) -> None:
         json.dumps({"speakers": {"GLOBAL_001": {"name": "Pietro"}}}),
         encoding="utf-8")
 
+    # Il checkpoint che la matrice delle voci legge per i campioni. Non
+    # finisce mai sulla repo (e' nel FORBIDDEN per nome), quindi qui puo'
+    # stare: e' la sorgente da cui la matrice viene generata.
+    _make_checkpoint(job, stem)
+
+
+def _make_checkpoint(job: Path, stem: str, n_voci: int = 2) -> None:
+    """Checkpoint finto con embedding, diarizzazione e mappa globale.
+
+    `load_samples` non legge nient'altro: senza questi tre campi la
+    matrice esce vuota e il test passerebbe senza provare niente.
+    """
+    emb = {f"SPEAKER_0{i}": [0.10 * (i + 1), 0.20, 0.30, 0.40] for i in range(n_voci)}
+    segmenti = [
+        {"idx": i, "speaker": f"SPEAKER_0{i}", "start": float(i * 10),
+         "end": float(i * 10 + 9), "duration_sec": 9.0}
+        for i in range(n_voci)
+    ]
+    (job / f"{stem}.checkpoint.json").write_text(
+        json.dumps({
+            "stem": stem,
+            "diarization_segments": segmenti,
+            "speaker_embeddings": emb,
+            "speaker_global_map": {f"SPEAKER_0{i}": f"GLOBAL_00{i + 1}"
+                                   for i in range(n_voci)},
+        }, ensure_ascii=False),
+        encoding="utf-8")
+
 
 def _fake_env(tmp: Path) -> tuple[Path, Path]:
     """Coda finta e clone git vero, in una directory temporanea.
@@ -458,6 +486,63 @@ def t_reindex_non_pota_se_output_e_vuoto(tmp: Path) -> None:
             f"la potatura ha cancellato il database: {prima} -> {dopo}")
 
 
+def t_voice_matrix_lands_on_the_repo_without_embeddings(tmp: Path) -> None:
+    """La matrice delle voci deve essere pubblicata, e senza embedding.
+
+    Il buco: la matrice si generava solo con `review_speakers.py voices
+    --json`, e quel `--json` non c'era da nessuna parte nella corsa
+    notturna. Il corpus pubblicato aveva i minuti per voce (`session.json`)
+    ma non il numero che dice *chi* ha parlato: quanto due voci
+    somigliano e quali coppie la soglia non riesce a decidere. Sono 34
+    coppie, e senza questo file non si vedono da nessuna parte.
+
+    La seconda parte del test e' quella che conta di piu': la matrice non
+    deve contenere gli embedding vocali. Un embedding e' un'impronta
+    biometrica, e questa repo non ne tiene — quindi il JSON pubblicato
+    viene letto e controllato parola per parola, non solo fatto esistere.
+    """
+    print("  la matrice delle voci arriva, senza embedding")
+    out, clone = _fake_env(tmp)
+    require(_publish(out, clone) == 0, "push non riuscito")
+
+    m = clone / "voices" / "voice_matrix.json"
+    require(m.exists(),
+            f"la matrice delle voci non e' stata pubblicata in {m}")
+
+    doc = json.loads(m.read_text(encoding="utf-8"))
+    for k in ("threshold", "n_voices", "n_samples", "n_pairs",
+              "voices", "pairs", "gray_zone"):
+        require(k in doc, f"manca il campo {k} nella matrice")
+    require(doc["n_voices"] == 2,
+            f"voci nella matrice: {doc['n_voices']}, attese 2")
+    require(doc["n_pairs"] == 1,
+            f"coppie nella matrice: {doc['n_pairs']}, attesa 1")
+    require("GLOBAL_001" in doc["voices"] and "GLOBAL_002" in doc["voices"],
+            f"voci pubblicate: {sorted(doc['voices'])}")
+
+    # Il controllo vero: nessun embedding, in nessuna forma. Non basta
+    # dire che non c'e' la chiave 'embedding' — un vettore potrebbe
+    # essere arrivato sotto un altro nome, o dentro una lista di numeri.
+    testo = m.read_text(encoding="utf-8").lower()
+    require("embedding" not in testo,
+            "la matrice pubblicata contiene un embedding vocale")
+    require("speaker_00" not in testo,
+            "la matrice pubblicata contiene ID locali di pyannote")
+
+    # E il file intero non deve contenere vettori: ogni lista di numeri
+    # deve essere corta. I numeri qui sono minuti e somiglianze, mai 4
+    # decimali di embedding.
+    for gid, campioni in doc["voices"].items():
+        for c in campioni:
+            require(set(c) == {"session", "seconds"},
+                    f"campione di {gid} con campi inattesi: {sorted(c)}")
+    for p in doc["pairs"]:
+        require(set(p) == {"a", "b", "similarity", "same_session"},
+                f"coppia con campi inattesi: {sorted(p)}")
+    print(f"    {doc['n_voices']} voci, {doc['n_pairs']} coppie, "
+          f"{len(doc['gray_zone'])} in zona grigia, nessun embedding")
+
+
 def main() -> int:
     tests = [
         t_nothing_forbidden_lands_on_the_repo,
@@ -466,6 +551,7 @@ def main() -> int:
         t_guard_passes_when_there_is_nothing,
         t_with_names_publishes_them,
         t_names_to_hide_reads_the_speaker_db,
+        t_voice_matrix_lands_on_the_repo_without_embeddings,
         t_reindex_popola_il_database,
         t_reindex_toglie_la_sessione_senza_cartella,
         t_reindex_non_pota_se_output_e_vuoto,

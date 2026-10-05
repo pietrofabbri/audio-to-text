@@ -195,6 +195,53 @@ def _publish_session(stem: str, dry_run: bool = False) -> list[Path]:
     return written
 
 
+def _write_voice_matrix(dry_run: bool = False) -> Path | None:
+    """Genera la matrice di somiglianza fra le voci e la scrive in `voices/`.
+
+    Va pubblicata perche' e' l'unica cosa che dice *chi* ha parlato:
+    `session.json` dice quanti minuti per voce, la matrice dice quanto due
+    voci somigliano e quali coppie la soglia non riesce a decidere. E il
+    punto in cui la diarizzazione si vede incrinata — le 34 coppie in
+    zona grigia non sono un dettaglio di una sessione, sono il buco da
+    chiudere con una decisione.
+
+    `VoiceReport.to_dict()` mette fuori solo pseudonimo, sessione,
+    secondi e somiglianza: **nessun embedding**. E' una scelta che va
+    tenuta, perche' un embedding vocale e' un'impronta biometrica e questa
+    repo non ne tiene.
+
+    Ritorna il percorso scritto, o None se non c'e' nessun campione
+    vocale da confrontare (una sessione senza diarizzazione non e' un
+    errore).
+    """
+    try:
+        from core.speaker_db import SpeakerDB
+        from core.voice_matrix import build_matrix, load_samples
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Matrice delle voci non disponibile: %s", exc)
+        return None
+
+    campioni = load_samples(OUTPUT_DIR)
+    if not campioni:
+        logger.info("Matrice delle voci: nessun campione, non scritta")
+        return None
+
+    rep = build_matrix(campioni, soglia=SpeakerDB().threshold)
+    dest = LOCAL_CLONE / "voices" / "voice_matrix.json"
+    if not dry_run:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(
+            json.dumps(rep.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    logger.info(
+        "Matrice delle voci: %d voci, %d coppie, %d in zona grigia",
+        rep.to_dict()["n_voices"], rep.to_dict()["n_pairs"],
+        len(rep.zona_grigia()),
+    )
+    return dest
+
+
 def _write_index(dry_run: bool = False) -> Path:
     """Indice per data: il punto di ingresso di un LLM nel corpus.
 
@@ -269,6 +316,8 @@ def _write_index(dry_run: bool = False) -> Path:
         "originale affiancato",
         "- `text_correction.json` — ogni parola, originale e corretta: "
         "serve a misurare quanto sbaglia ciascuno dei due",
+        "- `../voices/voice_matrix.json` — somiglianza fra le voci, "
+        "coppia per coppia, e quali coppie la soglia non riesce a decidere",
         "",
     ]
     p = LOCAL_CLONE / "INDEX.md"
@@ -385,6 +434,7 @@ def cmd_push(args) -> int:
         return 0
 
     idx = _write_index(dry_run=args.dry_run)
+    matrice = _write_voice_matrix(dry_run=args.dry_run)
 
     if args.dry_run:
         print(f"\n[dry-run] avrei pubblicato {len(pushed)} sessioni e aggiornato {idx.name}")

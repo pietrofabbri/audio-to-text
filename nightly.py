@@ -83,6 +83,20 @@ MEASURED_RTF = 0.27
 # consumo. Vedere la tabella in core/cost.py.
 
 
+# Artefatti che stanno a livello di corpus, non dentro una cartella di
+# sessione. Il confronto file per file di `_sessioni_non_pubblicate` non li
+# vede, per costruzione: nessuno dei due e' dentro `sessions/<nome>/`.
+# Senza un elenco suo, questi file possono mancare senza che nessuno se ne
+# accorga — che e' esattamente come e' andata con `tokens.jsonl`.
+ARTEFATTI_CORPUS = ("voices/voice_matrix.json",)
+
+
+def _artefatti_mancanti() -> list[str]:
+    """Artefatti di corpus che non sono arrivati nella repo."""
+    return [rel for rel in ARTEFATTI_CORPUS
+            if not (ROOT / "corpus_repo" / rel).exists()]
+
+
 def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
     proc = subprocess.run(
         cmd, cwd=str(ROOT), capture_output=True, text=True,
@@ -262,6 +276,10 @@ def main() -> int:
             logger.warning(
                 "Pubblicazione incompleta: %s non ha nella repo %s",
                 nome, ", ".join(mancanti),
+            )
+        for artefatto in _artefatti_mancanti():
+            logger.warning(
+                "Pubblicazione incompleta: %s non e' nella repo", artefatto,
             )
 
     # ------------------------------------------------------------------

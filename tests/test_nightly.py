@@ -437,6 +437,74 @@ def t_una_pubblicazione_incompleta_viene_detettata(tmp: Path) -> None:
     print(f"    {len(PUBLISHABLE)} formati controllati per sessione")
 
 
+def t_una_matrice_delle_voci_mancante_viene_detettata(tmp: Path) -> None:
+    """Senza la matrice, la repo non dice chi ha parlato.
+
+    Il buco vero, diverso dagli altri: i file per sessione mancavano di
+    uno, quindi il confronto file per file l'avrebbe trovato. La matrice
+    e' un file solo per tutto il corpus e non sta in nessuna cartella di
+    sessione, quindi nessun confronto per sessione la vede. Serve un
+    controllo suo, o il buco si ripete.
+    """
+    print("  la matrice delle voci mancante viene detta")
+    import nightly
+
+    out = tmp / "output"
+    repo = tmp / "corpus_repo" / "sessions"
+    stem = "2026-10-04_14-43-16"
+    src, dst = out / stem, repo / stem
+    src.mkdir(parents=True)
+    dst.mkdir(parents=True)
+
+    from publish_corpus import PUBLISHABLE
+    (src / "transcript.json").write_text("{}", encoding="utf-8")
+    (dst / "transcript.json").write_text("{}", encoding="utf-8")
+    for nome in PUBLISHABLE:
+        if nome == "transcript.json":
+            continue
+        (src / nome).write_text("x", encoding="utf-8")
+        (dst / nome).write_text("x", encoding="utf-8")
+
+    # La matrice sta a livello di corpus, non dentro la sessione.
+    matrice = tmp / "corpus_repo" / "voices" / "voice_matrix.json"
+    matrice.parent.mkdir(parents=True)
+    matrice.write_text("{}", encoding="utf-8")
+
+    root_reale = nightly.ROOT
+    try:
+        nightly.ROOT = tmp
+        # Tutte le sessioni complete e pubblicate: nessun buco per
+        # sessione, eppure la matrice potrebbe mancare lo stesso.
+        require(nightly._sessioni_non_pubblicate() == {},
+                "le sessioni sono a posto, non devono essere segnalate")
+
+        matrice.unlink()
+        require(not (tmp / "corpus_repo" / "voices" / "voice_matrix.json").exists(),
+                "la matrice non e' stata tolta")
+        # Il controllo per sessione, da solo, non la vede: e' un file
+        # che non sta in nessuna cartella di sessione.
+        require(nightly._sessioni_non_pubblicate() == {},
+                "il confronto per sessione non deve accorgersi della matrice")
+
+        # Il controllo degli artefatti, invece, sì: ed è quello che
+        # durante la notte mette a verbale il buco per nome.
+        require(nightly._artefatti_mancanti() == ["voices/voice_matrix.json"],
+                "la matrice mancante deve essere detta per nome")
+    finally:
+        nightly.ROOT = root_reale
+
+    # Rimessa a posto, il controllo non deve più segnalare nulla: se
+    # urlasse sempre, l'avviso diventa rumore che nessuno legge.
+    root_reale = nightly.ROOT
+    try:
+        nightly.ROOT = tmp
+        matrice.write_text("{}", encoding="utf-8")
+        require(nightly._artefatti_mancanti() == [],
+                "con la matrice a posto non deve essere segnalata")
+    finally:
+        nightly.ROOT = root_reale
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -450,6 +518,7 @@ def main() -> int:
         t_thermal_budget_is_actually_passed_on,
         t_thread_cap_is_measured_not_guessed,
         t_una_pubblicazione_incompleta_viene_detettata,
+        t_una_matrice_delle_voci_mancante_viene_detettata,
     ]
     failed = 0
     for fn in tests:

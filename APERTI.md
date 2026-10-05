@@ -999,7 +999,7 @@ diventerebbe rumore che nessuno legge. E una sessione senza
 disattivato: fallisce con «il file mancante deve essere detto per nome,
 risulta {}». Sul disco, dopo il push, tutte e 11 le sessioni hanno i 12
 file, `tokens.jsonl` compreso, e il controllo notturno non segnala
-nulla. **213 test su 11 suite.**
+nulla. **213 test su 11 suite** (poi 215 con la matrice delle voci, punto 25).
 
 **Una cosa trovata di sfuggita.** Nella repo c'e' `2026-10-02_17-02-36`
 che non esiste ne' in `output/` ne' nel database: una delle prime due
@@ -1008,6 +1008,51 @@ l'ho toccata perche' rimuovere da una repo pubblicata non si fa senza
 decidere: e' un pezzo di storia, e la domanda («la sessione che non ha
 piu' una fonte la si tiene o la si lascia nel corpus pubblico?») non ha
 una risposta che si possa scegliere al posto dell'utente.
+
+---
+
+### 25. ~~La matrice delle voci non era mai stata pubblicata~~ — chiuso il 10 ottobre
+
+**Stato.** Chiuso. Maniottava anche questo, ed è il pezzo che dice *chi* ha
+parlato.
+
+**Il buco.** La matrice si generava solo con `review_speakers.py voices
+--json`, e quel `--json` non compariva in nessuna parte della corsa
+notturna. Il corpus pubblicato aveva i minuti per voce — `session.json` li
+ha — ma non il numero che mette due voci vicine: quanto somigliano, e
+soprattutto quali coppie la soglia non riesce a decidere. **34 coppie in
+zona grigia**, il buco aperto da chiudere con una decisione, invisibile
+perche' nessun file della repo le conteneva.
+
+**La forma giusta.** Va pubblicata perche' è l'unica cosa che distingue
+«ha parlato qualcuno» da «chi era». `VoiceReport.to_dict()` mette fuori
+pseudonimo, sessione, secondi e somiglianza: **nessun embedding**. Un
+embedding vocale è un'impronta biometrica e questa repo non ne tiene, e la
+scelta va tenuta verificata, non dichiarata: il test legge il JSON
+pubblicato e controlla che non ci sia né la chiave `embedding` né ID locali
+di pyannote, oltre a verificare che ogni lista contenga solo minuti e
+somiglianze.
+
+Ora si genera a ogni `push` e finisce in `voices/voice_matrix.json`, con la
+riga nell'INDEX che la dichiara come formato.
+
+**Un secondo strato di controllo, perche' il primo non la vedeva.** Il
+confronto file per file del punto 24 cammina dentro `sessions/<nome>/`, e
+la matrice non sta in nessuna cartella di sessione: è un file solo per tutto
+il corpus. Per costruzione quel controllo non può accorgersene. Per questo
+`ARTEFATTI_CORPUS` elenca i file che stanno a livello di corpus e hanno
+bisogno di un controllo loro — oggi solo la matrice, domani quello che
+verrà. Il test lo dimostra: tolta la matrice, `_sessioni_non_pubblicate()`
+non segnala niente e `_artefatti_mancanti()` dice
+`['voices/voice_matrix.json']`.
+
+**Verificato.** Sul disco: 14 voci, 38 campioni, 621 coppie, 34 in zona
+grigia; nessun embedding, nessun ID locale, nessun nome reale nel JSON
+pubblicato. Il file è pushato (`9b08ef3`). I due test nuovi sono stati
+verificati rotti: con la generazione disattivata «la matrice delle voci non
+e' stata pubblicata in .../voices/voice_matrix.json», con il controllo
+artefatti disattivato «la matrice mancante deve essere detta per nome».
+**215 test su 11 suite.**
 
 ---
 
