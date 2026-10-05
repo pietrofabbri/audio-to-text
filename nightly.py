@@ -91,6 +91,36 @@ def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
+def _sessioni_non_pubblicate() -> dict[str, list[str]]:
+    """Quali file di una sessione completa non sono arrivati nella repo.
+
+    Confronta `output/` con `corpus_repo/sessions/`, limitandosi ai file
+    che vanno pubblicati: un file che non e' nell'elenco non e' un buco,
+    e `tokens.jsonl` lo era per mesi senza che nessuno se ne accorgesse.
+
+    Restituisce {sessione: [file mancanti]}, vuoto se tutto e' a posto.
+    """
+    from publish_corpus import PUBLISHABLE, PUBLISHABLE_AFFIANCO
+
+    output_dir = ROOT / "output"
+    repo_sessions = ROOT / "corpus_repo" / "sessions"
+    if not output_dir.is_dir() or not repo_sessions.is_dir():
+        return {}
+    out: dict[str, list[str]] = {}
+    for d in sorted(x for x in output_dir.iterdir()
+                    if x.is_dir() and not x.name.startswith(".")):
+        if not (d / "transcript.json").exists():
+            continue
+        target = repo_sessions / d.name
+        mancanti = [
+            nome for nome in PUBLISHABLE + PUBLISHABLE_AFFIANCO
+            if (d / nome).exists() and not (target / nome).exists()
+        ]
+        if mancanti:
+            out[d.name] = mancanti
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ciclo notturno completo")
     ap.add_argument(
@@ -223,6 +253,16 @@ def main() -> int:
             logger.warning("publish_corpus push ha restituito %d", code_pub)
         else:
             logger.info("Pubblicazione: %s", out_pub.splitlines()[-1] if out_pub else "ok")
+        # Il push puo' uscire 0 senza aver pubblicato tutto: per esempio
+        # se un file di una sessione non e' nell'elenco dei pubblicabili,
+        # e' successo. Il codice di uscita non racconta tutto, quindi
+        # dopo si confronta quello che c'e' in output/ con quello che c'e'
+        # nella repo e quello che manca viene detto per nome.
+        for nome, mancanti in _sessioni_non_pubblicate().items():
+            logger.warning(
+                "Pubblicazione incompleta: %s non ha nella repo %s",
+                nome, ", ".join(mancanti),
+            )
 
     # ------------------------------------------------------------------
     # 4. Bilancio

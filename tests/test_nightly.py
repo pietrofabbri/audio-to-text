@@ -361,6 +361,82 @@ def t_thread_cap_is_measured_not_guessed(tmp: Path) -> None:
           f"giorno {DAYTIME_THREADS}, prosodia {cfg.prosody.num_workers}")
 
 
+def t_una_pubblicazione_incompleta_viene_detettata(tmp: Path) -> None:
+    """Il push che esce 0 non vuol dire che tutto sia pubblicato.
+
+    Il caso reale: `tokens.jsonl` era nell'INDEX.md come formato
+    dichiarato e non nella lista dei file da copiare. La notte passava,
+    il push usciva 0, e il file — quello che rende il corpus
+    interrogabile parola per parola, con KWIC e sincronizzazione al
+    secondo — non era mai arrivato da nessuna parte. Nessuno se ne
+    accorse perche' nessuno guardava: l'elenco dei formati diceva che
+    c'era.
+
+    Qui si verifica che il controllo notturno trovi il buco. Il file
+    mancante viene tolto dalla copia pubblicata di una sessione, e ci si
+    aspetta che venga detto per nome: un avviso generico o un exit 0
+    farebbero passare la cosa due volte.
+    """
+    print("  una pubblicazione incompleta viene detta per nome")
+    import nightly
+
+    out = tmp / "output"
+    repo = tmp / "corpus_repo" / "sessions"
+    stem = "2026-10-04_14-43-16"
+    src = out / stem
+    dst = repo / stem
+    src.mkdir(parents=True)
+    dst.mkdir(parents=True)
+
+    # Una sessione completa: transcript.json la rende completa, e i
+    # file pubblicabili ci sono tutti.
+    from publish_corpus import PUBLISHABLE
+    (src / "transcript.json").write_text("{}", encoding="utf-8")
+    (dst / "transcript.json").write_text("{}", encoding="utf-8")
+    for nome in PUBLISHABLE:
+        if nome == "transcript.json":
+            continue
+        (src / nome).write_text("x", encoding="utf-8")
+        (dst / nome).write_text("x", encoding="utf-8")
+
+    root_reale = nightly.ROOT
+    try:
+        nightly.ROOT = tmp
+        require(nightly._sessioni_non_pubblicate() == {},
+                "una sessione completa e tutta pubblicata non deve "
+                f"essere segnalata: {nightly._sessioni_non_pubblicate()}")
+
+        # Il buco vero: il file che porta i timestamp parola per parola
+        # resta in output/ e non arriva nella repo.
+        (dst / "tokens.jsonl").unlink()
+        mancanti = nightly._sessioni_non_pubblicate()
+        require(mancanti.get(stem) == ["tokens.jsonl"],
+                f"il file mancante deve essere detto per nome, risulta {mancanti}")
+
+        # Rimesso a posto: da qui in poi la sessione e' interamente
+        # pubblicata e non deve piu' essere segnalata, altrimenti i casi
+        # sotto misurerebbero il buco di prima e non quello che provano.
+        (dst / "tokens.jsonl").write_text("x", encoding="utf-8")
+        require(nightly._sessioni_non_pubblicate() == {},
+                "rimesso il file, la sessione non deve piu' essere segnalata")
+
+        # Un file che non si pubblica non e' un buco: altrimenti il
+        # controllo urlerebbe sempre e diventarebbe rumore.
+        (src / "nota_privata.txt").write_text("x", encoding="utf-8")
+        require(nightly._sessioni_non_pubblicate() == {},
+                "un file non pubblicabile non deve essere segnalato")
+        (src / "nota_privata.txt").unlink()
+
+        # Una sessione non finita non si controlla.
+        (src / "2026-10-04_13-30-39").mkdir()
+        (src / "2026-10-04_13-30-39" / "tokens.jsonl").write_text("x", encoding="utf-8")
+        require(nightly._sessioni_non_pubblicate() == {},
+                "una sessione senza transcript.json non va controllata")
+    finally:
+        nightly.ROOT = root_reale
+    print(f"    {len(PUBLISHABLE)} formati controllati per sessione")
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -373,6 +449,7 @@ def main() -> int:
         t_window_lives_in_one_place,
         t_thermal_budget_is_actually_passed_on,
         t_thread_cap_is_measured_not_guessed,
+        t_una_pubblicazione_incompleta_viene_detettata,
     ]
     failed = 0
     for fn in tests:

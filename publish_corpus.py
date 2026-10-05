@@ -68,11 +68,25 @@ REPO_SLUG = "pietrofabbri/corpus"
 LOCAL_CLONE = ROOT / "corpus_repo"
 
 # File pubblicati per ogni sessione.
+#
+# `tokens.jsonl` sta qui perche' e' il file che rende il corpus
+# interrogabile parola per parola: e' l'unico dove ogni parola ha un
+# timestamp proprio, il che significa KWIC, n-grammi, collocazione e
+# sincronizzazione con dati biometrici al secondo. Senza, la repo
+# pubblicata ha i segmenti ma non puo' rispondere a «questa parola, in
+# che momento», che e' la domanda per cui esiste. Era nell'INDEX.md come
+# formato dichiarato e non nell'elenco di chi va copiato: il file non
+# mancava mai perche' non ci si accorse che non era mai stato
+# pubblicato, dato che anche l'INDEX lo elencava come se lo fosse.
+#
+# `speaker_merge.json` e' la mappa dei cluster locali verso le voci
+# globali: senza, dalla repo non si capisce come due frammenti della
+# stessa persona sono diventati una voce sola.
 PUBLISHABLE = (
     "transcript.json", "transcript.txt", "transcript.srt",
-    "prosody.csv", "session.json", "segments.jsonl",
+    "prosody.csv", "session.json", "segments.jsonl", "tokens.jsonl",
     "wordfreq.csv", "analysis_ready.md", "speaker_profiles.json",
-    "denoise_decision.json", "text_correction.json",
+    "speaker_merge.json", "denoise_decision.json", "text_correction.json",
 )
 # Le varianti corrette hanno un suffisso proprio invece di stare in
 # elenco: se un giorno non ci sono (nessuna correzione fatta), non si

@@ -963,6 +963,54 @@ peggio della duplicazione che corregge.
 
 ---
 
+### 24. ~~`tokens.jsonl` non era mai stato pubblicato~~ — chiuso il 10 ottobre
+
+**Stato.** Chiuso. Le trascrizioni del 4 ottobre erano trascritte,
+indicizzate e pubblicate: quello che mancava era un file per sessione.
+
+**Il buco.** `tokens.jsonl` — una parola per riga con timestamp
+proprio — era dichiarato nell'`INDEX.md` fra i formati pubblicati e non
+era nella lista `PUBLISHABLE` di chi va copiato. Non mancava per un
+errore di copia: non era mai stato pubblicato, e nessuno se ne accorse
+perche' l'indice diceva che quel file ci fosse, il push usciva 0 e la
+notte passava. Il file che rende il corpus interrogabile parola per parola
+— KWIC, n-grammi, collocazione, sincronizzazione con dati biometrici al
+secondo — era il documento di riferimento e insieme l'unico assente.
+Aggiunto anche `speaker_merge.json`, che mappa i cluster locali sulle
+voci globali: senza, dalla repo non si capisce come due frammenti della
+stessa persona sono diventati una voce sola.
+
+**Perche' la pubblicazione non era sistematica.** Lo era, in un punto:
+`nightly.py` chiama `publish_corpus.py push` a fine ciclo. Ma il
+codice di uscita del push dice solo che il comando e' finito, non che
+tutto sia arrivato — un file assente dall'elenco esce 0 come uno
+presente. Ora, dopo il push, `_sessioni_non_pubblicate()` confronta
+`output/` con `corpus_repo/sessions/` e **dice per nome** quello che manca,
+sessione per sessione. Non fallisce la notte: un file in meno non e' un
+motivo per buttare quattro ore di elaborazione, ma non passa neppure in
+silenzio.
+
+Il confronto si ferma ai file che vanno pubblicati: un file che non e'
+nell'elenco non e' un buco, altrimenti il controllo urlerebbe sempre e
+diventerebbe rumore che nessuno legge. E una sessione senza
+`transcript.json` non si controlla, perche' e' non finita.
+
+**Verificato.** Il test e' stato verificato rotto con il controllo
+disattivato: fallisce con «il file mancante deve essere detto per nome,
+risulta {}». Sul disco, dopo il push, tutte e 11 le sessioni hanno i 12
+file, `tokens.jsonl` compreso, e il controllo notturno non segnala
+nulla. **213 test su 11 suite.**
+
+**Una cosa trovata di sfuggita.** Nella repo c'e' `2026-10-02_17-02-36`
+che non esiste ne' in `output/` ne' nel database: una delle prime due
+sessioni di prova del 2 ottobre, con dieci file e nessuna fonte. Non
+l'ho toccata perche' rimuovere da una repo pubblicata non si fa senza
+decidere: e' un pezzo di storia, e la domanda («la sessione che non ha
+piu' una fonte la si tiene o la si lascia nel corpus pubblico?») non ha
+una risposta che si possa scegliere al posto dell'utente.
+
+---
+
 ## L'ordine in cui li farei
 
 Fatti: **1** (prima notte vera), **2** (cache WAV), **3** (finestra
