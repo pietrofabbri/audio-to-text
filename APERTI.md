@@ -33,7 +33,10 @@ registrata in sette sessioni si e' divisa in due identita'), 28 (il report
 del correttore contava parole diverse e occorrenze come se fossero la
 stessa cosa), 29 (`merge --dry-run` cancellava la voce dal database delle
 voci: l'ho scoperto perche' il quarto merge ha detto che una delle due
-voci non esisteva, ed esisteva).
+voci non esisteva, ed esisteva), 30 (`split --dry-run` cancellava la voce:
+il flag era dichiarato dal primo giorno e non letto mai — ed e' il comando
+che si usa per non perdere una voce), 31 (nessuno controllava che le voci
+citate dalle sessioni esistessero: ora lo dice `status`).
 
 **Aperti:** 8 (biometria — serve l'hardware), 11 (campione denoise di
 180 s), 12 (modello `medium` — decisione tua), 13 (archivio locale a 7
@@ -51,7 +54,7 @@ decidere a mano. Vedi il punto.
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
 li dava per aperti senza definirli, e il punto 1 restava nell'elenco degli
 aperti sei giorni dopo essere stato chiuso. I punti esistenti sono
-adesso 1–29 e la sezione «sul perché questi sono ancora aperti» copre
+adesso 1–31 e la sezione «sul perché questi sono ancora aperti» copre
 10, 11, 12, 13, 14 e il termico.
 
 ---
@@ -1393,6 +1396,66 @@ quattro merge in dry-run lasciano le 14 identita' intatte e il file
 identico bit per bit; il merge vero continua a sommare i secondi.
 
 **223 test su 11 suite.**
+
+---
+
+### 30. ~~`split --dry-run` cancellava la voce~~ — chiuso il 5 ottobre
+
+**Stato.** Chiuso. È il terzo della stessa famiglia, e il più assurdo.
+
+**Il buco.** `--dry-run` è dichiarato in argparse per `split` **dal primo
+giorno** e `cmd_split` non lo guardava mai: faceva `pop` e `save()`
+incondizionatamente. Il comando prometteva di non toccare niente e
+cancellava.
+
+`split` è **il comando che si usa per non perdere una voce**: è il modo
+per separare due voci unite per errore. Il `--dry-run`, che dovrebbe mettere
+al sicuro, è l'unico modo per perderla davvero. Verificato sul percorso
+reale: `split GLOBAL_018 --dry-run` ha cancellato una voce con **sette
+contributi in sette sessioni diverse**, e sette `session.json` hanno
+continuato a citarla. Ripristinato dal backup, identico bit per bit.
+
+**Il fratello.** Ho passato in rassegna gli altri flag dichiarati nei quattro
+script: `merge`, `consolidate` e `sync` lo leggono, **`split` era l'unico
+che no**.
+
+**Verificato.** Test rotto: «in dry-run la voce non deve sparire: GLOBAL_001
+non c'è più». Sul percorso reale il dry-run non tocca il file e lo split
+vero continua a togliere la voce.
+
+---
+
+### 31. ~~Nessuno controllava che le voci citate esistessero~~ — chiuso il 5 ottobre
+
+**Stato.** Chiuso. È il buco che avevo dichiarato io alla fine della
+sessione precedente, e che i due difetti precedenti rendevano urgente: se il
+primo dei due dry-run avesse potuto accorgersi del secondo, il secondo non
+sarebbe arrivato.
+
+**Il buco.** Una sessione che cita una voce assente dal database delle voci
+non produce nessun errore: un ID inesistente è solo un ID che nessuno
+genera più. Il corpus può avere una voce in più sessioni di quanti siano,
+e la differenza non compare da nessuna parte finché una ricerca non torna
+vuota.
+
+Ora `publish_corpus.py status` lo dice per nome:
+
+```
+Identita' citate ma assenti dal DB delle voci (1):
+  GLOBAL_018 — citata da 2026-10-02_21-44-16, 2026-10-02_22-44-20, ...
+```
+
+**Un difetto mio, trovato dal fatto che un test ha cominciato a fallire.** La
+prima versione leggeva il database da `ROOT_DIR`, che i test non
+sovrascrivono: con `OUTPUT_DIR` finto e il database vero il confronto è fra
+due alberi diversi, e segnalava voci fantasma che in quel test non esistono.
+Il percorso del DB è ora una costante di modulo, `SPEAKERS_DB`, come
+`LOCAL_CLONE` e `OUTPUT_DIR`, e l'helper di test la imposta sull'albero
+finto. **Il sintomo è stato un test che prima passava e ha cominciato a
+fallire**: l'ho preso come rumore e l'ho guardato, ed era la difettosità
+del mio controllo.
+
+**225 test su 11 suite.**
 
 **Una cosa che il test non copre e resta aperta.** Ho contato i test dal
 sorgente con un metodo che dava 125, e sui file che usano convenzioni di

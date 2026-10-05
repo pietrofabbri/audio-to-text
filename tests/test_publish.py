@@ -162,6 +162,18 @@ def _fake_env(tmp: Path) -> tuple[Path, Path]:
     remoto = tmp / "remoto.git"
     out.mkdir(parents=True, exist_ok=True)
     clone.mkdir(parents=True, exist_ok=True)
+    # Il DB delle voci va nella stessa radice finta dell'output: con
+    # l'output finto e il database vero, il controllo di coerenza
+    # confronta due alberi diversi e segnala voci fantasma che qui non
+    # esistono. Trovato perche' un test che doveva passare e' cominciato
+    # a fallire quando e' stato aggiunto quel controllo.
+    db = tmp / "data" / "speakers_db.json"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    db.write_text(json.dumps({"speakers": {
+        "GLOBAL_001": {"centroid": [0.0], "sessions": {}},
+        "GLOBAL_002": {"centroid": [0.0], "sessions": {}},
+    }}), encoding="utf-8")
+    pc.SPEAKERS_DB = db
     _git(tmp, "init", "-q", "--bare", "-b", "main", str(remoto))
     _git(clone, "init", "-q", "-b", "main")
     _git(clone, "config", "user.email", "test@localhost")
@@ -696,9 +708,62 @@ def t_la_spazzatura_del_finder_non_finisce_sulla_repo(tmp: Path) -> None:
     print("    .gitignore scritto, .DS_Store lasciato fuori")
 
 
+def t_status_dichiara_le_voci_che_il_db_non_conosce(tmp: Path) -> None:
+    """`status` deve vedere una voce che le sessioni citano e il DB no.
+
+    E' l'invariante che due dry-run hanno rotto: `merge --dry-run` e
+    `split --dry-run` cancellavano la voce dal database delle voci, e le
+    sessioni continuavano a citarla. Un ID assente non produce un
+    errore — e' solo un ID che nessuno genera piu' — quindi il corpus
+    diventava incoerente in silenzio, e la differenza non compariva da
+    nessuna parte fino a che una ricerca non tornava vuota.
+
+    Il controllo e' nato perche' quei due difetti li ho trovati a mano;
+    il punto e' che il secondo dei due poteva essere impedito dal primo.
+    """
+    print("  status vede le voci citate ma assenti dal DB")
+    import io
+    import contextlib
+
+    out, clone = _fake_env(tmp)
+    pc.OUTPUT_DIR = out
+    pc.LOCAL_CLONE = clone
+    require(_publish(out, clone) == 0, "prima pubblicazione")
+
+    # Il DB delle voci con una sola identita', mentre la sessione ne cita
+    # due: una delle due non esiste piu' e nessuno lo dice.
+    radice = tmp / "root"
+    (radice / "data").mkdir(parents=True, exist_ok=True)
+    db_path = radice / "data" / "speakers_db.json"
+    db_path.write_text(json.dumps({
+        "speakers": {
+            "GLOBAL_001": {"centroid": [0.0], "sessions": {}},
+        },
+    }), encoding="utf-8")
+    vecchio_db = pc.SPEAKERS_DB
+    pc.SPEAKERS_DB = db_path
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            pc.cmd_status(argparse.Namespace())
+        testo = buf.getvalue()
+    finally:
+        pc.SPEAKERS_DB = vecchio_db
+
+    require("assenti dal DB delle voci" in testo,
+            f"una voce citata ma assente dal DB deve essere detta:\n{testo}")
+    require("GLOBAL_002" in testo,
+            f"la voce fantasma deve essere detta per nome:\n{testo}")
+    require("Tutto pubblicato" not in testo,
+            f"non si puo' dire che e' tutto pubblicato con una voce che "
+            f"il corpus non riconosce:\n{testo}")
+    print("    voce fantasma dichiarata per nome")
+
+
 def main() -> int:
     tests = [
         t_nothing_forbidden_lands_on_the_repo,
+        t_status_dichiara_le_voci_che_il_db_non_conosce,
         t_push_ripubblica_solo_cio_che_e_cambiato,
         t_la_spazzatura_del_finder_non_finisce_sulla_repo,
         t_real_names_are_scrubbed_by_default,

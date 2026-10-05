@@ -1272,7 +1272,7 @@ python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
 
-**223 test su 11 suite**, e nessuno aspetta l'orologio di parete: i tempi
+**225 test su 11 suite**, e nessuno aspetta l'orologio di parete: i tempi
 di attesa sono registrati e confrontati, non dormiti. Prima che fosse
 così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
 per un totale di quasi tre minuti — senza verificare nulla che non

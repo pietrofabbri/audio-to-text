@@ -216,9 +216,19 @@ def cmd_split(db: SpeakerDB, args) -> int:
     if args.gid not in db._data["speakers"]:
         print(f"Voce sconosciuta: {args.gid}", file=sys.stderr)
         return 1
-    rec = db._data["speakers"].pop(args.gid)
+    rec = db._data["speakers"][args.gid]
+    contributi = len(rec.get("sessions", {}))
+    if getattr(args, "dry_run", False):
+        # Il flag esiste fin dall'inizio e non era mai stato letto: il
+        # comando prometteva di non toccare niente e cancellava la voce.
+        # `split` e' il comando che si usa per non perdere una voce,
+        # quindi e' il posto peggiore in cui sbagliare.
+        print(f"[dry-run] staccherei {args.gid} ({contributi} contributi). "
+              "Niente scritto.")
+        return 0
+    db._data["speakers"].pop(args.gid)
     db.save()
-    print(f"{args.gid} staccata ({len(rec.get('sessions', {}))} contributi). "
+    print(f"{args.gid} staccata ({contributi} contributi). "
           f"Riapparirà come voce nuova alla prossima sessione.")
     return 0
 

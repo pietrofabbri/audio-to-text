@@ -235,6 +235,46 @@ def test_merge_in_dry_run_non_scrive_il_db(tmp: Path) -> None:
         "i secondi delle due voci devono sommarsi")
 
 
+def test_split_in_dry_run_non_cancella_la_voce(tmp: Path) -> None:
+    """`split --dry-run` dichiarava il flag e non lo leggeva.
+
+    Il caso reale: `--dry-run` e' dichiarato in argparse dal primo giorno e
+    `cmd_split` non lo guardava mai. Il comando cancellava la voce dal
+    database e scriveva, e su una voce vera con sette contributi in sette
+    sessioni diverse. Il risultato e' che sette sessioni citavano un ID
+    che nessuno generava piu'.
+
+    E' il difetto piu' assurdo dei tre trovati eseguendo i comandi, perche'
+    `split` e' proprio il comando che si usa per non perdere una voce: il
+    `--dry-run` che dovrebbe mettere al sicuro e' l'unico modo per
+    perderla davvero.
+    """
+    import argparse
+
+    import review_speakers as rs
+
+    rng = random.Random(SEED)
+    path = tmp / "db.json"
+    db = SpeakerDB(path=path)
+    mappa = db.resolve("s1", {
+        "SPEAKER_00": {"embedding": approx(make_voice(rng)), "seconds": 100.0},
+        "SPEAKER_01": {"embedding": approx(make_voice(rng)), "seconds": 200.0},
+    })
+    gid = mappa["SPEAKER_00"]
+    prima_bytes = path.read_bytes()
+
+    rc = rs.cmd_split(db, argparse.Namespace(gid=gid, dry_run=True))
+    assert rc == 0, "il dry-run deve uscire pulito"
+    assert gid in db._data["speakers"], (
+        f"in dry-run la voce non deve sparire: {gid} non c'e' piu'")
+    assert path.read_bytes() == prima_bytes, "in dry-run il file non si tocca"
+
+    # E senza dry-run la voce deve sparire davvero.
+    rc = rs.cmd_split(db, argparse.Namespace(gid=gid, dry_run=False))
+    assert rc == 0, "lo split vero deve uscire pulito"
+    assert gid not in db._data["speakers"], "lo split vero deve togliere la voce"
+
+
 def pytest_approx(x: float) -> float:
     return round(float(x), 5)
 

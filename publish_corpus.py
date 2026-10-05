@@ -67,6 +67,11 @@ keep_names = False
 
 REPO_SLUG = "pietrofabbri/corpus"
 LOCAL_CLONE = ROOT / "corpus_repo"
+# Il DB delle voci sta qui e non dentro `core.config` perche' i controlli
+# che lo leggono devono poter girare su un albero finto insieme
+# all'output: con `OUTPUT_DIR` finto e il database vero, il confronto
+# fra le due cose non vuole niente. E' la stessa leva di `LOCAL_CLONE`.
+SPEAKERS_DB = ROOT / "data" / "speakers_db.json"
 
 # File pubblicati per ogni sessione.
 #
@@ -624,6 +629,48 @@ def cmd_reindex(args) -> int:
     return 0
 
 
+def _voci_senza_identita() -> tuple[list[str], dict[str, list[str]]]:
+    """Le voci che le sessioni citano e il DB delle voci non conosce.
+
+    E' l'invariante che `review_speakers.py merge --dry-run` e `split
+    --dry-run` hanno rotto cancellando una voce dal database: le sessioni
+    hanno continuato a citarla, e niente lo segnalava, perche' un ID
+    assente non produce un errore — e' solo un ID che nessuno genera
+    piu'.
+
+    Non e' un controllo teorico: senza, il corpus puo' avere una voce in
+    piu' sessioni di quanti siano i(DB) e la differenza non appare da
+    nessuna parte fino a che una ricerca non torna vuota.
+
+    Ritorna `([], {})` quando il DB non c'e': e' una condizione normale
+    prima della prima sessione, non un errore.
+    """
+    db_path = SPEAKERS_DB
+    if not db_path.exists() or not OUTPUT_DIR.is_dir():
+        return [], {}
+    try:
+        note = json.loads(db_path.read_text(encoding="utf-8")).get("speakers") or {}
+    except (json.JSONDecodeError, OSError):
+        return [], {}
+    esistono = set(note)
+
+    dove: dict[str, list[str]] = {}
+    for d in sorted(OUTPUT_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        sj = d / "session.json"
+        if not sj.exists():
+            continue
+        try:
+            voci = json.loads(sj.read_text(encoding="utf-8")).get("speakers") or []
+        except (json.JSONDecodeError, OSError):
+            continue
+        for v in voci:
+            if v and v != "UNKNOWN" and v not in esistono:
+                dove.setdefault(v, []).append(d.name)
+    return sorted(dove), dove
+
+
 def cmd_status(args) -> int:
     if not LOCAL_CLONE.exists():
         print(f"Repo non clonata ({LOCAL_CLONE}).")
@@ -650,6 +697,7 @@ def cmd_status(args) -> int:
     orfane = sorted(published - local)
     mancanti_artefatti = [rel for rel in ARTEFATTI_CORPUS
                           if not (LOCAL_CLONE / rel).exists()]
+    incoerenti, dove_voci = _voci_senza_identita()
 
     print(f"Sessioni in locale: {len(local)} | sulla repo: {len(published)}")
     if missing:
@@ -666,8 +714,18 @@ def cmd_status(args) -> int:
         print(f"\nArtefatti di corpus mancanti ({len(mancanti_artefatti)}):")
         for rel in mancanti_artefatti:
             print(f"  {rel}")
+    if incoerenti:
+        print(f"\nIdentita' citate ma assenti dal DB delle voci "
+              f"({len(incoerenti)}):")
+        for g in incoerenti[:20]:
+            sessioni = ", ".join(dove_voci[g][:3])
+            print(f"  {g} — citata da {sessioni}")
+        print("  Una sessione che cita una voce inesistente parla di una")
+        print("  persona che il DB non conosce piu': il corpus e' incoerente")
+        print("  e nienti lo segnala, perche' un ID assente e' solo un ID")
+        print("  che nessuno genera piu'.")
 
-    if missing or orfane or mancanti_artefatti:
+    if missing or orfane or mancanti_artefatti or incoerenti:
         return 0  # c'e' roba da decidere, ma non e' un errore del comando
     print("\nTutto pubblicato.")
     return 0
