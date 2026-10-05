@@ -26,11 +26,17 @@ correttore), 23 (le parole contate due volte: una sessione rinominata
 restava nel corpus), 24 (`tokens.jsonl` mai pubblicato), 25 (la matrice
 delle voci mai pubblicata).
 
-**Aperti:** 8 (biometria — serve l'hardware), 10 (la soglia 0,78: il
-problema non è il numero ma quale grandezza usare come riferimento),
-11 (campione denoise di 180 s), 12 (modello `medium` — decisione tua),
-13 (archivio locale a 7 giorni), 14 (segmenti da ~18 s), e il termico
-vero (servono `powermetrics` con permessi root e una notte di misura).
+**Aperti:** 8 (biometria — serve l'hardware), 11 (campione denoise di
+180 s), 12 (modello `medium` — decisione tua), 13 (archivio locale a 7
+giorni), 14 (segmenti da ~18 s), e il termico vero (servono
+`powermetrics` con permessi root e una notte di misura).
+**10 è chiuso come ricerca, e non come decisione:** la domanda «quale
+grandezza come riferimento» era falsa, e misurando l'ha sciolta: i tre
+numeri discordanti sono la stessa statistica in tre aggregazioni, la
+soglia 0,78 sta al 99º percentile della distribuzione, e la varianza fra
+sessioni e' rumore che la normalizzazione peggiora. Resta da fare una
+modifica al report — aggregare per coppia di voci — e quattro coppie da
+decidere a mano. Vedi il punto.
 
 *L'elenco è stato riallineato il 10 ottobre.* Prima l'intestazione
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
@@ -535,6 +541,60 @@ sull'embedding-contro-centroide, se la soglia 0,78 va confrontata con
 l'una o con l'altra, e cosa succede a una voce che una dice sotto e
 l'altra dice sopra. Il numero non è spostabile in nessuno dei due casi, e
 quindi la domanda è quale misura guardare, non dove mettere la linea.
+
+**La domanda è caduta il 10 ottobre: misurata, non scelta.** Non era una
+preferenza, e cercandola come preferenza si rispondeva «dipende». Tre
+numeri per lo stesso confronto di `GLOBAL_001` contro `GLOBAL_028`:
+
+| come lo calcoli | numero |
+|---|---|
+| il campione più somigliante in assoluto | **0,848** |
+| la media dei 10 confronti campione-campione | **0,754** |
+| centroide contro centroide | **0,7343** |
+
+**Non sono in disaccordo: sono la stessa statistica aggregata in tre
+modi.** Verificato che il centroide *è* la media dei campioni — il coseno
+fra centroide e media vale **1,0000** per tutte e sette le voci con un
+solo campione, e da 0,934 a 0,989 per quelle con piu' sessioni. Quindi
+l'0,734 che il sistema ha visto e lo 0,848 che la matrice mostrava non
+erano due opinioni: la matrice mostrava il caso piu' fortunato e il
+sistema il piu' conservatore. **Il sistema non ha sbagliato, e non ha
+aperto una voce che andava aperta.**
+
+**La soglia 0,78 non si tocca, e adesso si sa perche'.** Delle 567 coppie
+fra voci e sessioni diverse: mediana **0,278**, percentile 95 **0,728**,
+percentile 99 **0,775**, massimo 0,848. La soglia sta al **99º percentile**
+del confronto fra persone diverse, e solo **4** coppie su 567 la superano.
+Non e' un numero scelto, e' un numero tarato sulla forma della distribuzione.
+
+**La varianza fra sessioni e' rumore vero, e ho provato a toglierlo.** Il
+centering (sottrazione della media globale, la tecnica standard della
+verifica vocale) **peggiora l'escursione media del 52%**, da 0,141 a
+0,215: toglie la componente condivisa — il 38% della somiglianza — e
+lascia solo il residuo rumoroso. Nessuna normalizzazione cheap risolve.
+
+**Il vero difetto era l'unita' della decisione, e non la grandezza.** La
+matrice chiede «*questi due campioni* sono la stessa persona?» e lo fa621
+volte, con34 indecise. Ma nessuno decide sui campioni: si decide sulle
+**voci**. Aggregando per coppia di voci, le 34 indecisioni diventano
+**4**, e sono le uniche che restano:
+
+| coppia | media | massimo | sopra soglia |
+|---|---|---|---|
+| `GLOBAL_004 × GLOBAL_018` | 0,734 | 0,784 | 1/14 |
+| `GLOBAL_024 × GLOBAL_026` | 0,734 | 0,744 | 0/2 |
+| `GLOBAL_001 × GLOBAL_028` | 0,754 | 0,848 | 2/10 |
+| `GLOBAL_027 × GLOBAL_028` | 0,757 | 0,779 | 0/2 |
+
+`GLOBAL_004 × GLOBAL_018` era la coppia che «chiudeva la questione» con 1
+sopra e 13 sotto: era la firma esatta di una domanda posta 14 volte.
+
+**La correzione proposta, quindi, non e' spostare la soglia.** È fare
+confrontare la matrice per coppia di voci con il numero
+centroide-contro-centroide, cioe' lo stesso del sistema: il report e il
+sistema smettono di contraddirsi per costruzione, e la decisione passa da
+34 a 4. Non l'ho implementata: e' un cambio di comportamento del report, e
+l'ho scritta qui per deciderla con te.
 
 **11 — campione denoise di 180 s.** Costa 45 s per file, ed è il prezzo
 di non fare una seconda passata ASR su un'ora sola. Su un file la
