@@ -358,6 +358,25 @@ def cmd_consolidate(db: SpeakerDB, args) -> int:
             print(f"  {stem}: {rep.clusters_after} voci, identita' gia' corrette")
             continue
 
+        # Nessuna fusione e identita' complete: i cluster sono gli stessi
+        # di prima, quindi le identita' sono le stesse. Il confronto con
+        # il centroide puo' stare sotto soglia anche quando non e' cambiato
+        # niente — accade quando il centroide si e' spostato rispetto a
+        # una sessione vecchia. Ricalcolarle da zero in quel caso non
+        # ripara niente: cambia gli ID e divide una persona in due, perche'
+        # le altre sessioni che la hanno registrata continuano a chiamarla
+        # con l'identita' vecchia.
+        if not rep.changed and len(vecchia) == len(nuovi_emb):
+            sec = _speaking_seconds(nuovi)
+            for locale, gid in vecchia.items():
+                db._register(gid, stem, locale, to_vector(nuovi_emb[locale]),
+                             sec.get(locale, 0.0))
+            db.save()
+            rinessi.append(stem)
+            print(f"  {stem}: {rep.clusters_after} voci, nessuna fusione, "
+                  "identita' conservate")
+            continue
+
         # Qualcosa non si riappiglia: si parte da zero per quella
         # sessione. E' il caso in cui la fusione ha cambiato una voce
         # cosi' tanto che non e' piu' la stessa, ed e' corretto che

@@ -658,6 +658,119 @@ def consolidate_rifatto_non_cambia_nulla() -> None:
 
 
 @check
+def consolidate_non_rinumera_una_voce_che_non_ha_cambiato() -> None:
+    """Se non e' stata fusa niente, le identita' restano quelle.
+
+    Il caso reale, trovato eseguendo `consolidate` in scrittura sulle 11
+    sessioni vere: ha detto «zero fusioni» e ha fatto sparire
+    `GLOBAL_008`, `GLOBAL_009` e `GLOBAL_022`, creando `GLOBAL_029`,
+    `030`, `031`, `032`. `GLOBAL_018` — una persona sola, registrata in
+    sette sessioni — e' finita divisa fra se stessa e `GLOBAL_030`.
+
+    Il motivo e' che il confronto con il centroide puo' stare sotto
+    soglia anche quando i cluster non sono cambiati: accade quando il
+    centroide si e' spostato rispetto a una sessione vecchia. Il codice
+    lo leggeva come «questa voce non e' piu' la stessa» e ripartiva da
+    zero, rinumerando.
+
+    Il test esistente sull'idempotenza non lo vedeva: parte da checkpoint
+    con la mappa globale **vuota**, quindi non ha mai niente da
+    conservare. Qui la mappa e' gia' piena e viene fatto scivolare il
+    centroide sotto soglia.
+    """
+    import os
+
+    with tempfile.TemporaryDirectory() as tmp:
+        import sys as _sys
+        config_mod = _sys.modules["core.config"]
+        import review_speakers as rs
+
+        radice = Path(tmp) / "root"
+        out = radice / "output"
+        out.mkdir(parents=True, exist_ok=True)
+
+        # Una sessione, due voci, con la mappa gia' assegnata.
+        nome = "2026-01-01_10-00-00"
+        d = out / nome
+        d.mkdir()
+        segmenti = [
+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 600.0},
+            {"speaker": "SPEAKER_01", "start": 600.0, "end": 400.0},
+        ]
+        (d / f"{nome}.checkpoint.json").write_text(json.dumps({
+            "stem": nome,
+            "file": f"input/{nome}.mp3",
+            "stages": {s: {"done": True} for s in (
+                "ffmpeg", "vad", "transcription", "diarization", "prosody")},
+            "diarization_segments": segmenti,
+            "speaker_embeddings": {"SPEAKER_00": _voce(1), "SPEAKER_01": _voce(4)},
+            "speaker_global_map": {"SPEAKER_00": "GLOBAL_001",
+                                   "SPEAKER_01": "GLOBAL_002"},
+            "chunks": [],
+        }), encoding="utf-8")
+
+        os.environ["A2T_ROOT_DIR"] = str(radice)
+        import importlib
+        try:
+            importlib.reload(_sys.modules["core.config"])
+            importlib.reload(_sys.modules["core.speakers_merge"])
+            importlib.reload(rs)
+            db = rs.SpeakerDB(path=radice / "data" / "speakers_db.json")
+            # Il DB conosce le due identita' con un centroide **diverso**
+            # da quello del checkpoint: e' lo spostamento del centroide,
+            # non un cambio di persona.
+            #
+            # `GLOBAL_001` ha un contributo anche in un'altra sessione e
+            # quindi sopravvive a `forget_session`; `GLOBAL_002` ha solo
+            # questa e sparisce. E' la forma del caso reale: senza una
+            # voce che sopravvive, `forget_session` svuota tutto e i numeri
+            # tornano fuori uguali per caso, e il test passerebbe senza
+            # provare niente.
+            db._data["speakers"] = {
+                "GLOBAL_001": {
+                    "centroid": _voce(9),
+                    "sessions": {
+                        "altra|SPEAKER_00": {
+                            "stem": "2026-01-01_11-00-00",
+                            "local_speaker": "SPEAKER_00",
+                            "seconds": 500.0,
+                        },
+                    },
+                },
+                "GLOBAL_002": {
+                    "centroid": _voce(9),
+                    "sessions": {
+                        f"{nome}|SPEAKER_01": {
+                            "stem": nome,
+                            "local_speaker": "SPEAKER_01",
+                            "seconds": 400.0,
+                        },
+                    },
+                },
+            }
+            db._data["next_index"] = 3
+            db.save()
+
+            class _A:
+                dry_run = False
+                min_seconds = None
+                threshold = None
+
+            rs.cmd_consolidate(db, _A())
+
+            dopo = json.loads(
+                (d / f"{nome}.checkpoint.json").read_text(encoding="utf-8")
+            )["speaker_global_map"]
+            require(dopo == {"SPEAKER_00": "GLOBAL_001",
+                            "SPEAKER_01": "GLOBAL_002"},
+                    f"senza fusioni le identita' non possono cambiare, "
+                    f"sono diventate {dopo}")
+        finally:
+            os.environ.pop("A2T_ROOT_DIR", None)
+            importlib.reload(_sys.modules["core.config"])
+
+
+@check
 def consolidate_collega_le_stesse_voci() -> None:
     """La stessa voce in due sessioni diverse prende la stessa identita'."""
     with tempfile.TemporaryDirectory() as tmp:

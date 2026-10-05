@@ -27,7 +27,11 @@ restava nel corpus), 24 (`tokens.jsonl` mai pubblicato), 25 (la matrice
 delle voci mai pubblicata), 26 (`push` ripubblicava tutto e lo dichiarava:
 tre commit della repo del corpus hanno un messaggio con un numero che non
 corrisponde a quello che hanno cambiato, e la spazzatura del Finder era
-finita in HEAD).
+finita in HEAD). **Chiusi il 5 ottobre, eseguendo i comandi in scrittura:**
+27 (`consolidate` rinumerava le voci senza aver fuso niente: una persona
+registrata in sette sessioni si e' divisa in due identita'), 28 (il report
+del correttore contava parole diverse e occorrenze come se fossero la
+stessa cosa).
 
 **Aperti:** 8 (biometria — serve l'hardware), 11 (campione denoise di
 180 s), 12 (modello `medium` — decisione tua), 13 (archivio locale a 7
@@ -45,7 +49,7 @@ decidere a mano. Vedi il punto.
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
 li dava per aperti senza definirli, e il punto 1 restava nell'elenco degli
 aperti sei giorni dopo essere stato chiuso. I punti esistenti sono
-adesso 1–26 e la sezione «sul perché questi sono ancora aperti» copre
+adesso 1–28 e la sezione «sul perché questi sono ancora aperti» copre
 10, 11, 12, 13, 14 e il termico.
 
 ---
@@ -1277,6 +1281,74 @@ il `.gitignore` ci sia e che `.DS_Store` non arrivi nel remoto.
 -A` pubblica quello che il Finder lascia nella cartella», con gli altri 12
 della suite verdi. Sul disco il dry-run passa da «avrei pubblicato 11
 sessioni» a «Nessuna sessione da pubblicare». **220 test su 11 suite.**
+
+---
+
+### 27. ~~`consolidate` rinumerava le voci che non aveva cambiato~~ — chiuso il 5 ottobre
+
+**Stato.** Chiuso. Trovato eseguendo `consolidate` in **scrittura** sulle 11
+sessioni vere, che fino adesso era stato solo in `--dry-run`.
+
+**Il buco.** Il comando ha stampato «**zero fusioni**» e ha fatto sparire
+`GLOBAL_008`, `GLOBAL_009` e `GLOBAL_022`, creando `GLOBAL_029`, `030`,
+`031`, `032`. Il caso peggiore è `GLOBAL_018`: una persona sola,
+registrata in sette sessioni, è finita **divisa** fra `GLOBAL_018` e
+`GLOBAL_030`.
+
+Il codice aveva già scritto nel commento che «`consolidate` rieseguito due
+volte deve dare lo stesso identico risultato, altrimenti non è una
+riparazione ma un rumore che cambia da solo». Il test che copriva quella
+frase esisteva, ma **partiva da checkpoint con la mappa globale vuota**:
+non aveva mai niente da conservare, quindi il caso non lo vedeva.
+
+**La causa.** Il confronto fra l'embedding della sessione e il centroide
+salvato può stare sotto soglia anche quando i cluster non sono cambiati —
+accade quando il centroide si è spostato rispetto a una sessione vecchia.
+Il codice lo leggeva come «questa voce non è più la stessa» e ripartiva
+da zero: cancellava la sessione dal DB e ricalcolava gli ID. Serve che sia
+cambiato qualcosa per arrivarci, e quel controllo non c'era.
+
+**La correzione.** Se non è stata fusa niente e la mappa precedente è
+completa, le identità si conservano: i cluster sono gli stessi, quindi le
+identità sono le stesse.
+
+**Verificato.** Test rotto togliendo il ramo conservativo: «senza fusioni
+le identità non possono cambiare, sono diventate
+`{'SPEAKER_00': 'GLOBAL_002', 'SPEAKER_01': 'GLOBAL_003'}`» — cioè le due
+voci si sono **scambiate**, non solo rinumerate, che è il danno peggiore
+perché attribuisce a una persona le parole di un'altra. Sugli 11 checkpoint
+veri, prima e dopo, **nessuna mappa cambia**; le 14 identità sono le stesse
+e i centroidi si muovono di un coseno di 0,9999997, cioè rumore in virgola
+mobile.
+
+**Una cosa che ho perso e dichiaro.** Ho fermato il correttore LLM mentre
+scriveva, e il suo report va su stdout bufferizzato: 39 righe su 147 non
+sono arrivate a terra. Il `pkill` mio, non un difetto del codice.
+
+---
+
+### 28. ~~Il report del correttore mescolava parole e occorrenze~~ — chiuso il 5 ottobre
+
+**Stato.** Chiuso, trovato leggendo l'output reale.
+
+L'intestazione scriveva «**147 parole diverse proposte, 126 accettate, 22
+respinte**». Ma 147 veniva da `len(proposte)` — le parole *diverse* —
+mentre 126 e 22 venivano dalla somma di `v["n"]`, cioè le **occorrenze** di
+quelle parole nel testo. I due numeri si riferivano a grandezze diverse ed
+erano separati da una virgola, quindi si leggevano come un sottoinsieme:
+126 delle 147 parole accettate. Non è vero.
+
+Il numero era giusto, la parola che lo introduceva no. Ora la
+dichiarazione è:
+
+```
+=== 2026-10-04_10-49-40: 4 parole diverse proposte (4 accettate,
+0 respinte), in 4 occorrenze (4 da correggere, 0 bloccate), 3 mai udite ===
+```
+
+Test verificato rotto: 43/44 con la formulazione di prima.
+
+**222 test su 11 suite.**
 
 **Una cosa che il test non copre e resta aperta.** Ho contato i test dal
 sorgente con un metodo che dava 125, e sui file che usano convenzioni di

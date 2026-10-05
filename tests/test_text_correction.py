@@ -1244,6 +1244,34 @@ def il_vocabolario_conta_le_parole(tmp: Path) -> None:
             f"{correct_text._nota_vocabolario('del', vocabolario)}")
 
 
+def il_report_distingue_le_parole_dalle_occorrenze(tmp: Path) -> None:
+    """L'intestazione non deve mescolare due grandezze diverse.
+
+    Il caso reale: l'intestazione scriveva «147 parole diverse proposte,
+    126 accettate, 22 respinte», ma 147 veniva da `len(proposte)` — le
+    parole *diverse* — mentre 126 e 22 venivano dalla somma di `v["n"]`,
+    cioe' le *occorrenze* di quelle parole nel testo. Letto come si legge,
+    sembra che 126 delle 147 parole siano state accettate: non e' vero,
+    sono 126 occorrenze distribuite su un numero minore di parole.
+
+    Il numero e' giusto, la parola che lo introduce no: e' quello che
+    faceva leggere il rapporto come un sottoinsieme.
+    """
+    _sessione(tmp)
+    codice, out, _ = _esegui(tmp, "--consent", "--solo-proposte")
+    require(codice == 0, f"il comando deve uscire pulito: {codice}")
+    riga = [l for l in out.splitlines() if "parole diverse proposte" in l]
+    require(riga, f"l'intestazione della sessione deve esserci: {out}")
+    testo = riga[0]
+    require("diverse proposte (" in testo,
+            f"le parole diverse e le occorrenze vanno dichiarate come due "
+            f"grandezze diverse:\n{testo}")
+    require("occorrenze" in testo,
+            f"le occorrenze devono avere la loro etichetta:\n{testo}")
+    require("da correggere" in testo,
+            f"le occorrenze da correggere vanno dette come tali:\n{testo}")
+
+
 def il_report_elenca_le_proposte(tmp: Path) -> None:
     """`--solo-proposte` mostra una riga per parola e non i testi."""
     _sessione(tmp)
@@ -1305,6 +1333,8 @@ def il_report_non_impedisce_la_scrittura(tmp: Path) -> None:
 
 
 CHECKS = [
+    ("l'intestazione distingue parole diverse da occorrenze",
+     il_report_distingue_le_parole_dalle_occorrenze),
     ("il JSON con virgole finali viene letto, non scartato",
      virgole_finali_nel_json),
     ("il backoff ascolta il server e aspetta secondi",

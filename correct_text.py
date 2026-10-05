@@ -360,10 +360,15 @@ def _stampa_proposte(sessione: str, proposte: dict, vocabolario: dict) -> None:
         return
     accettate = sum(v["n"] for k, v in proposte.items() if not k[2])
     respinte = sum(v["n"] for k, v in proposte.items() if k[2])
+    distinte_acc = sum(1 for k in proposte if not k[2])
+    distinte_res = sum(1 for k in proposte if k[2])
     mai = sum(1 for k in proposte
               if _parola_pulita(k[1]) not in vocabolario)
-    print(f"\n=== {sessione}: {len(proposte)} parole diverse proposte, "
-          f"{accettate} accettate, {respinte} respinte, {mai} mai udite ===")
+    print(f"\n=== {sessione}: {len(proposte)} parole diverse proposte "
+          f"({distinte_acc} accettate, {distinte_res} respinte), "
+          f"in {accettate + respinte} occorrenze "
+          f"({accettate} da correggere, {respinte} bloccate), "
+          f"{mai} mai udite ===")
     for chiave, voce in _ordina(proposte):
         print(_riga_proposta(chiave, voce, vocabolario))
 
@@ -384,7 +389,8 @@ def _stampa_sintesi(proposte: dict, vocabolario: dict,
     mai = sum(1 for k in proposte if _parola_pulita(k[1]) not in vocabolario)
     ordinate = _ordina(proposte)
     print(f"\n=== tutte le sessioni: {len(proposte)} parole diverse, "
-          f"{accettate} accettate, {respinte} respinte dal filtro, "
+          f"{accettate} occorrenze da correggere, "
+          f"{respinte} respinte dal filtro, "
           f"{mai} mai udite in nessuna sessione ===")
     for chiave, voce in ordinate[:limite]:
         print(_riga_proposta(chiave, voce, vocabolario, con_sessioni=True))
