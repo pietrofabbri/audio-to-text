@@ -916,6 +916,46 @@ def parola_bloccata_restare_tracciata() -> None:
             f"il riepilogo conta le proposte e i blocchi: {d}")
 
 
+def la_probabilita_e_registrata_anche_sulle_accettate() -> None:
+    """Ogni parola cambiata deve portare la sua probabilita', non solo le bloccate.
+
+    Il difetto: `prob` veniva impostata solo quando il filtro bloccava la
+    parola. `--solo-proposte` stampava quindi `p=?` su **tutte** le
+    proposte accettate, e quel `p=?` si leggeva come «probabilita'
+    sconosciuta» mentre voleva dire «il filtro ha valutato e ha passato».
+
+    Il costo non e' cosmetico: il numero c'era gia' ed e' quello che
+    serve per tarare la soglia confrontando le proposte buone con quelle
+    cattive. Senza, l'unica occasione di vederlo era dall'altra parte
+    della soglia, e il punto 22 resta «si tarava a occhio» perche' non
+    c'era niente da guardare.
+
+    Qui si verifica che la parola accettata conservi la sua probabilita' e
+    che non venga confusa con una bloccata: stessa probabilita'Recorded,
+    esito opposto.
+    """
+    c = _correttore([_risposta(PROPOSTE)])
+    d = c.correggi_segmento(0, TESTO, PROB).to_dict()
+
+    accettate = [w for w in d["words"] if w["changed"]]
+    require(len(accettate) == 1, f"una parola accettata: {len(accettate)}")
+    w = accettate[0]
+    require(w["prob"] is not None,
+            f"una parola accettata deve avere la sua probabilita': {w}")
+    require(w["prob"] == 0.41,
+            f"la probabilita' e' quella giusta: {w}")
+    require(w["blocked"] is False,
+            f"accettata e non bloccata: {w}")
+
+    # Il blocco non cambia: probabilita' alta, esito opposto. E i due
+    # casi non si confondono.
+    bloccate = [x for x in d["words"] if x["blocked"]]
+    require(len(bloccate) == 1 and bloccate[0]["prob"] == 0.98,
+            f"la bloccata conserva la sua: {bloccate}")
+    require(d["n_blocked"] == 1 and d["n_proposed"] == 2,
+            f"il riepilogo non cambia: {d}")
+
+
 def il_batch_conosce_le_probabilita() -> None:
     """Anche via lista di segmenti il filtro resta attivo."""
     c = _correttore([_risposta(PROPOSTE), _risposta(PROPOSTE)])
@@ -1313,6 +1353,8 @@ CHECKS = [
      parola_spezzata_protetta_solo_se_lo_e),
     ("la parola bloccata resta tracciata nel file",
      parola_bloccata_restare_tracciata),
+    ("la probabilita' resta anche sulle parole accettate",
+     la_probabilita_e_registrata_anche_sulle_accettate),
     ("il batch passa le probabilita' al filtro",
      il_batch_conosce_le_probabilita),
     ("senza consenso il comando non scrive niente",

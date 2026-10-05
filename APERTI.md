@@ -986,7 +986,7 @@ quello che si scrive.
 
 **42 test** sulla correzione (4 sul percorso completo, 2 sul
 backoff, 6 sul report `--solo-proposte`), 2 sulla scrittura di
-`asr_prob`, **212 in tutto su 11 suite**.
+`asr_prob`, **217 in tutto su 11 suite**.
 
 La prima passata asciutta con chiave vera ha mostrato una cosa che i
 test non potevano: su quattro segmenti il modello ha proposto quattro
@@ -1006,8 +1006,8 @@ su tutte le parole, e su testo pulito non cambia nulla) e la maggior
 parte delle proposte e' buona. Il rumore si riduce a un caso solo, la
 **riscrittura dei nomi propri**: «Zia Titti lui, Zia Titti» diventa
 «Gigi D'Alessio» due volte. E due scoperte che valgono di piu': la difesa
-`SOGLIA_PROB = 0,90` **non ha mai sparato** su nessuna delle 331 proposte
-accettate (erano tutte `p=?`, ha bloccato solo le 63 respinte), e il filtro
+`SOGLIA_PROB = 0,90` **ha bloccato 63 proposte** — il 16% di quelle
+proposte, il filtro ha funzionato — e il filtro
 «l'originale deve essere una non-parola» che avevo proposto **e' stato
 provato e non funziona** — tiene 1 correzione buona su 14. Dettaglio e
 conclusione in «l'ordine in cui li farei».
@@ -1065,7 +1065,7 @@ wordfreq, `-149` bigrams, `-0` segmenti (i segmenti del nome vecchio non
 c'erano gia': erano stati sostituiti da quelli del nome nuovo). Le 11
 sessioni valide sono risultate **identiche parola per parola** a prima del
 purge, confronto fatto riga per riga sui 41.782 token e sul wordfreq
-completo. 2 test nuovi, **212 in tutto su 11 suite**.
+completo. 2 test nuovi, **217 in tutto su 11 suite**.
 
 Il primo dei due test e' stato verificato rotto: con la chiamata alla
 potatura disattivata fallisce con «la sessione col nome vecchio
@@ -1112,7 +1112,7 @@ diventerebbe rumore che nessuno legge. E una sessione senza
 disattivato: fallisce con «il file mancante deve essere detto per nome,
 risulta {}». Sul disco, dopo il push, tutte e 11 le sessioni hanno i 12
 file, `tokens.jsonl` compreso, e il controllo notturno non segnala
-nulla. **213 test su 11 suite** (poi 215 con la matrice delle voci, punto 25).
+nulla. **213 test su 11 suite** (poi 215 con la matrice, 217 con la probabilita').
 
 **Una cosa trovata di sfuggita.** Nella repo c'e' `2026-10-02_17-02-36`
 che non esiste ne' in `output/` ne' nel database: una delle prime due
@@ -1165,7 +1165,7 @@ pubblicato. Il file è pushato (`9b08ef3`). I due test nuovi sono stati
 verificati rotti: con la generazione disattivata «la matrice delle voci non
 e' stata pubblicata in .../voices/voice_matrix.json», con il controllo
 artefatti disattivato «la matrice mancante deve essere detta per nome».
-**215 test su 11 suite** (poi 216 con la dichiarazione del confronto, punto 10).
+**215 test su 11 suite** (poi 217 con la probabilita' sulle accettate).
 
 ---
 
@@ -1214,9 +1214,20 @@ che non conosce, lo interpreta e propaga l'interpretazione. Non è
 riallineamento, è riscrittura semantica, ed è irreparabile in modo invisibile
 in un conteggio.
 
-**Una difesa che credevo attiva e non lo era.** Il report del 4 ottobre
-mostra `p=?` su **tutte e 331** le accettate: `SOGLIA_PROB = 0,90` non ha
-mai sparato su nessuna di quelle, ha bloccato solo le 63 respinte.
+**Una difesa che avevo scritto come morta e funziona.** Avevo scritto che
+`SOGLIA_PROB = 0,90` non avesse mai sparato, perché il report del 4 ottobre
+mostra `p=?` su tutte e 331 le accettate. **Era falso**: `prob` veniva
+impostata solo sulle parole bloccate, quindi `p=?` vuol dire «il filtro ha
+valutato e ha passato», non «probabilita' sconosciuta». Il filtro ha
+bloccato **63 proposte su 394**, il 16%, e misurando l'allineamento sulle
+sorgenti reali si vede che il 99,99% delle parole (40.853 su 40.855) ha la
+propria probabilita'. La difesa era attiva, e io l'avevo data per morta
+leggendo una colonna.
+
+Quello che era vero è il difetto di fondo: la probabilita' si vedeva solo
+*dall'altra parte* della soglia, e per tararla non c'era niente da guardare.
+Ora si registra su ogni parola cambiata, accettata o bloccata, cosi' il
+report porta il numero e la soglia si tarata sui dati.
 
 **Il filtro che avevo proposto è stato provato e non funziona.** La regola
 «l'originale deve essere una non-parola, la proposta una parola» tiene 1
@@ -1224,6 +1235,10 @@ correzione buona su 14 e lascia passare 4 rumori su 19; sulle 331 ne
 lascerebbe 32, comprese `notizia → una` e `sfatarmata → per`. Non si
 implementa: un vocabolario scritto a mano è incompleto per costruzione, e
 scarterebbe proprio le correzioni certe.
+
+La taratura della soglia, che prima andava a occhio, ha adesso un dato
+che non aveva: ogni proposta porta la probabilita' con cui Whisper aveva
+udito quella parola, anche quando è stata accettata.
 
 Quindi non è un problema di filtri, è una **decisione di politica**: il
 correttore è abbastanza buono da produrre proposte e non da applicarle da

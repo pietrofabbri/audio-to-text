@@ -757,7 +757,19 @@ class Correttore:
             if f.indice >= len(prob):
                 continue
             p = prob[f.indice]
-            if p is None or p < self.soglia_prob or not f.cambiata:
+            if p is None or not f.cambiata:
+                continue
+            # La probabilita' si registra su **ogni** parola cambiata, non
+            # solo su quelle bloccate. Prima stava solo sulle bloccate, e
+            # `--solo-proposte` stampava `p=?` su tutte le accettate: il
+            # che si leggeva come «probabilita' sconosciuta» mentre voleva
+            # dire «il filtro ha valutato e ha passato». Il numero c'era
+            # gia', ed e' quello che permette di tarare la soglia guardando
+            # la distribuzione delle proposte buone e cattive invece che a
+            # occhio — che e' esattamente quello che resta aperto al punto
+            # 22 di APERTI.md.
+            f.prob = p
+            if p < self.soglia_prob:
                 continue
             # Non si butta via la proposta: resta nel file accanto alla
             # probabilita', perche' «il modello voleva cambiarla e Whisper
@@ -767,7 +779,6 @@ class Correttore:
             # all'originale da sola, e azzerare qui la proposta
             # farebbe sparire l'informazione proprio nel posto in cui
             # la si va a leggere.
-            f.prob = p
             f.bloccata = True
         return parole
 
