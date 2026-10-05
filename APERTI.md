@@ -1,6 +1,6 @@
 # Punti aperti
 
-Stato al 3 ottobre 2026. Ogni punto dice **cosa manca**, **pro e
+Stato al 10 ottobre 2026. Ogni punto dice **cosa manca**, **pro e
 contro**, **perché** e **di chi è la decisione**. La responsabilità è
 dichiarata perché la cosa peggiore di un elenco di cose aperte è non
 sapere quale aspettare e quale fare.
@@ -9,19 +9,35 @@ Convenzione: **Io** = lavoro di codice che posso fare subito.
 **Tu** = serve il registratore, una decisione tua, o un dispositivo che
 non ho ancora.
 
-**Chiusi:** 2 (cache WAV), 3 (finestra notturna), 4 (nomi dei
-parlanti), 5 (punteggiatura come segnale debole), 6 (flag di qualità),
-9 (pubblicazione, provata con una coda finta).
+**Chiusi:** 1 (la prima notte vera), 2 (cache WAV), 3 (finestra
+notturna), 3b (il carico termico: 4 thread sono più veloci di 8),
+4 (nomi dei parlanti), 5 (punteggiatura come segnale debole),
+6 (flag di qualità), 9 (pubblicazione, provata con una coda finta).
 **Archiviato:** 7 (saturazione) — non risolvibile da qui.
-**Chiuso anche:** il carico termico, che è stato il punto 3b ed è
-diventato una scoperta (4 thread sono più veloci di 8).
-**Aperti:** 1 (la prima notte vera), 8 (biometria), 10–14 (da valutare).
 **Chiusi stanotte:** 15 (la prosodia in parallelo, che non terminava
 mai), 16 (rifare la trascrizione perdeva gli interlocutori), 17 (la
 cache dei WAV), 18 (il database locale vuoto), 19 (la sovrasegmentazione
 delle voci: 21 identita' globali su quattro ore di una conversazione
 sono diventate 9). Tutti e cinque scoperti elaborando i file veri: vedi
 la sezione in fondo.
+**Chiusi il 10 ottobre, scoperti guardando i dati veri:** 20 (le parole
+sbagliate), 21 (le voci viste una sessione alla volta), 22 (il
+correttore), 23 (le parole contate due volte: una sessione rinominata
+restava nel corpus), 24 (`tokens.jsonl` mai pubblicato), 25 (la matrice
+delle voci mai pubblicata).
+
+**Aperti:** 8 (biometria — serve l'hardware), 10 (la soglia 0,78: il
+problema non è il numero ma quale grandezza usare come riferimento),
+11 (campione denoise di 180 s), 12 (modello `medium` — decisione tua),
+13 (archivio locale a 7 giorni), 14 (segmenti da ~18 s), e il termico
+vero (servono `powermetrics` con permessi root e una notte di misura).
+
+*L'elenco è stato riallineato il 10 ottobre.* Prima l'intestazione
+prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
+li dava per aperti senza definirli, e il punto 1 restava nell'elenco degli
+aperti sei giorni dopo essere stato chiuso. I punti esistenti sono
+adesso 1–25 e la sezione «sul perché questi sono ancora aperti» copre
+10, 11, 12, 13, 14 e il termico.
 
 ---
 
@@ -474,8 +490,16 @@ cambia a seconda della sessione che scegli di confrontare. Spostare il
 numero non sistema niente, perché il problema non è il numero: è che un
 coseno fra due embedding singoli non è una grandezza sufficiente.
 
-La zona grigia è esplosa da 6 a **31 coppie**, quasi tutte concentrate su
+La zona grigia è esplosa da 6 a **34 coppie**, quasi tutte concentrate su
 poche coppie di voci (`GLOBAL_004 × GLOBAL_018` da sola ne ha 9).
+
+*Il 34 è ricontato, non riportato.* È il default di
+`zona_grigia(margine=0.06)` e coincide con il conteggio a mano: delle 621
+coppie, 54 sono fra voci della stessa sessione e non si decidono qui; delle
+567 rimaste, 4 stanno sopra la soglia e 563 sotto, e **34** cadono entro
+0,06. Qui prima ci stava un 31, che è il numero che si ottiene con un
+margine di 0,055 — due numeri diversi per lo stesso fatto, nella stessa
+stessa risposta a due punti diversi del documento.
 
 **Una cosa che ho verificato e che non reggeva:** pensavo che le voci con
 poco audio fossero quelle più incerte, e che bastasse registrare di piu'.
@@ -495,9 +519,22 @@ voce nuova.
 Il sistema e' coerente: non e' un bug. Ma il numero che vedi nel report
 **non e' quello che il sistema ha usato**, e senza dirlo uno legge 0,848,
 conclude che il sistema ha sbagliato, e magari corregge a mano un merge
-che era giusto. Il report dovrebbe mostrare entrambi i numeri, o dire
-qual è dei due quello che decide. Non l'ho cambiato: quale delle due
-grandezze vuoi usare come riferimento e' una decisione tua.
+che era giusto.
+
+**Chiuso metà il 10 ottobre, metà no.** Il report ora **dichiara quale
+operazione ha fatto**: confronta un campione con l'altro, mentre
+l'assegnazione confronta l'embedding della sessione contro i centroidi
+salvati, e le due righe lo dicono subito, in testa, non in fondo. Non è un
+cambio di comportamento: è la riga che mancava perché il numero fosse
+leggibile per quello che è. Il test che lo blocca verifica che il report
+nomini le due operazioni e avverti che non sono lo stesso numero.
+
+Quello che **resta tuo** è quale delle due grandezze vuoi come
+riferimento: se il report deve decidere sulla campione-campione o
+sull'embedding-contro-centroide, se la soglia 0,78 va confrontata con
+l'una o con l'altra, e cosa succede a una voce che una dice sotto e
+l'altra dice sopra. Il numero non è spostabile in nessuno dei due casi, e
+quindi la domanda è quale misura guardare, non dove mettere la linea.
 
 **11 — campione denoise di 180 s.** Costa 45 s per file, ed è il prezzo
 di non fare una seconda passata ASR su un'ora sola. Su un file la
@@ -524,7 +561,10 @@ di silenzio. Ridurli a 18 significherebbe più segmenti, meno efficienza e
 turni di parlato meno leggibili. Il limite di 29 s è giusto: è il
 vincolo del modello.
 
-**15 — il termico vero.** `thermal_probe.py` esiste e funziona, ma su
+**Termico vero** (senza numero: lo «15» è già la prosodia in parallelo,
+chiusa, e due punti con lo stesso numero in un documento che si legge per
+numeri è il modo più rapido per confonderli). `thermal_probe.py` esiste e
+funziona, ma su
 questa macchina `ioreg` non espone la temperatura e `powermetrics` chiede
 permessi root che non sono stati concessi. Quello che lo strumento fa
 senza permessi è uso CPU e livello termico di macOS, e già segnala la
@@ -1052,7 +1092,7 @@ pubblicato. Il file è pushato (`9b08ef3`). I due test nuovi sono stati
 verificati rotti: con la generazione disattivata «la matrice delle voci non
 e' stata pubblicata in .../voices/voice_matrix.json», con il controllo
 artefatti disattivato «la matrice mancante deve essere detta per nome».
-**215 test su 11 suite.**
+**215 test su 11 suite** (poi 216 con la dichiarazione del confronto, punto 10).
 
 ---
 
@@ -1075,18 +1115,25 @@ tarati), **9** (pubblicazione), e il carico termico.
    numero ma **quale grandezza vuoi come riferimento**: la matrice
    confronta campione con campione, il sistema confronta embedding contro
    centroidi, e il report mostra solo il primo dei due.
-4. **15 — il termico**, con `powermetrics` e una notte di misura.
+4. **Il termico**, con `powermetrics` e una notte di misura.
 5. **8 — biometria.** Quando arriva l'hardware.
 
-Aggiunto dopo: la stima di costo della coda non può prevedere la
-densità di parlato, e non è una cosa che si può correggere prima di
-trascrivere. Va almeno detto dove la coda va a finire quando i file non
-sono tutti uguali.
+*Aggiunto dopo e poi chiuso:* la stima di costo della coda non poteva
+prevedere la densità di parlato. Ora il modello conta il **parlato**, non
+la durata: 482 s di audio e 1.434 parole danno 1.035 s stimate, 482 s di
+audio e 6.492 parole ne danno 1.270. La coda non finisce più dove finiva,
+e su sei file da un'ora indipendenti l'errore va dal +1% al +22%, sempre
+per eccesso — il README non promette più l'1%.
 
-Da fare prima dell'analisi sul testo: girare `correct_text.py` sulle
-quattro sessioni. Tutto quello che segue — conteggio delle parole,
-sentiment, sintesi — va fatto sul testo corretto, perche' sul testo
-grezzo il conteggio delle parole sbaglia.
+*Da fare prima dell'analisi sul testo:* girare `correct_text.py` sulle
+quattro sessioni del 2 ottobre. **Fatto il 10 ottobre in asciutto**, e ha
+detto una cosa che vale più del lavoro: delle 331 proposte accettate, **almeno
+42 sono rumore** — `sono → altrimenti`, `stanza → stronza`, `città → cagate` —
+perché il modello allinea il suo elenco su un testo diverso invece di
+correggere una parola. Non è applicato niente: applicarlo peggiorerebbe il
+corpus, e in un corpus che vuole misurare la propria voce un testo
+inventato è peggio di uno sbagliato. Prima va filtrato il rumore, poi si
+corregga. Vedi il punto 22 e la sezione sul correttore.
 
 Il resto può aspettare che il sistema abbia girato qualche notte e
 accumulato dati su cui decidere.

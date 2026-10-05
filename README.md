@@ -678,6 +678,34 @@ python publish_corpus.py status            # cosa c'è e cosa manca
 python publish_corpus.py reindex           # ricostruisce il database locale
 ```
 
+### Cosa c'è sulla repo
+
+```
+INDEX.md                        # una riga per sessione, con i formati elencati
+sessions/
+└── 2026-10-04_14-43-16/
+    ├── transcript.json  .txt  .srt
+    ├── segments.jsonl          # un segmento per riga
+    ├── tokens.jsonl            # una parola per riga: KWIC, n-grammi
+    ├── prosody.csv  wordfreq.csv  session.json
+    ├── analysis_ready.md
+    ├── speaker_profiles.json   # profilo delle voci (senza vettori)
+    └── speaker_merge.json      # cosa è stato fuso fra i cluster brevi
+voices/
+└── voice_matrix.json           # somiglianza fra le voci, coppia per coppia
+```
+
+`voices/voice_matrix.json` è **un file solo per tutto il corpus**, non uno
+per sessione: riporta la somiglianza fra ogni coppia di voci e, in
+`gray_zone`, le coppie entro 0,06 dalla soglia — quelle che la macchina non
+riesce a decidere. Contiene solo pseudonimi, secondi e somiglianze:
+**nessun embedding**, perché un embedding vocale è un'impronta biometrica.
+
+Il report in forma di testo dice in testa quale operazione ha fatto: la
+matrice confronta un campione con l'altro, mentre l'assegnazione delle
+voci confronta l'embedding della sessione contro i centroidi salvati. Sono
+due numeri diversi per la stessa domanda, e possono dare risposte diverse.
+
 `reindex` non serve nel caso normale — la pipeline aggiorna il database
 appena finisce una sessione. Serve dopo un rilascio che cambia come si
 scrive l'output, dopo un restore, e per riparare un database indietro

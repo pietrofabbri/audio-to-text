@@ -341,6 +341,38 @@ def cartella_vuota() -> None:
 # Il report, perche' e' l'unica parte che leggi davvero
 # ----------------------------------------------------------------------
 
+def report_dichiara_qual_confronto_e() -> None:
+    """Il report deve dire quale operazione ha prodotto i suoi numeri.
+
+    Il caso reale: la matrice confronta campione con campione, mentre
+    `SpeakerDB._best_match()` confronta l'embedding della sessione contro
+    i centroidi salvati. Per `GLOBAL_028` la matrice diceva 0,848 contro
+    `GLOBAL_001` — ben sopra la soglia — mentre il sistema ne aveva visto
+    0,734 e aveva giustamente aperto una voce nuova. Il sistema era
+    coerente: quello che mancava era dirlo.
+
+    Senza questa riga il report invites a una lettura sbagliata: si legge
+    0,848, si conclude che il sistema abbia sbagliato, e si corregge a mano
+    un merge che era giusto.
+
+    Il test non controlla che il numero sia lo stesso — quello dipende
+    dalla soglia e resta una decisione — ma che il report nomini le due
+    operazioni, cosi' chi legge non puo' prendersi l'uno per l'altro.
+    """
+    campioni = [
+        _campione("GLOBAL_001", "S1", "2026-10-01_19-42-33", 300, 0),
+        _campione("GLOBAL_002", "S1", "2026-10-01_19-42-33", 600, 4),
+    ]
+    testo = format_report(build_matrix(campioni, soglia=0.5)).lower()
+
+    require("campione" in testo,
+            "il report non dice che confronta campioni")
+    require("centroid" in testo,
+            "il report non dice che l'assegnazione usa i centroidi")
+    require("non sono lo stesso numero" in testo,
+            "il report non avverte che i due numeri sono diversi")
+
+
 def report_leggibile() -> None:
     """Il report mette in evidenza la zona grigia e resta serializzabile."""
     campioni = [
@@ -392,6 +424,7 @@ CHECKS = [
      checkpoint_incompleti_ignorati),
     ("una cartella vuota dà un report vuoto", cartella_vuota),
     ("il report è leggibile e serializzabile", report_leggibile),
+    ("il report dichiara quale confronto ha fatto", report_dichiara_qual_confronto_e),
 ]
 
 

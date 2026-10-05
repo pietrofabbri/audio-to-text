@@ -222,6 +222,20 @@ def format_report(rep: VoiceReport, mostra_tutto: bool = False) -> str:
         f"{len(rep.coppie)} coppie\n",
     ]
 
+    # Quale operazione e' questa, detto subito e non in fondo. La matrice
+    # confronta campione con campione, mentre l'assegnazione delle voci
+    # confronta l'embedding della sessione contro i centroidi memorizzati:
+    # sono due numeri diversi per la stessa domanda, e possono dare
+    # risposte diverse. Senza questa riga uno legge 0,848, conclude che il
+    # sistema abbia sbagliato a tenere aperta una voce, e corregge a mano
+    # un merge che era giusto — il caso reale di GLOBAL_028.
+    righe.append(
+        "Questi numeri confrontano un campione con l'altro (stessa "
+        "sessione\nfra le due voci). L'assegnazione delle voci usa un "
+        "confronto diverso:\nl'embedding della sessione contro i "
+        "centroidi salvati. Non sono lo stesso numero.\n"
+    )
+
     righe.append("Ogni voce, e dove l'hai sentita:")
     for gid, voci in rep.per_voce().items():
         dove = "  ".join(f"{c.sessione[11:16]}" for c in voci)
@@ -252,7 +266,7 @@ def format_report(rep: VoiceReport, mostra_tutto: bool = False) -> str:
             )
     else:
         righe.append(
-            "\nLe coppi estreme: "
+            "\nLe coppie estreme: "
             f"{len(rep.sicure_stessa_persona())} sopra soglia, "
             f"{len(rep.sicure_persone_diverse())} sotto. "
             "Usa --tutto per vederle tutte."
