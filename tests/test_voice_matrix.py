@@ -362,8 +362,10 @@ def report_dichiara_qual_confronto_e() -> None:
     campioni = [
         _campione("GLOBAL_001", "S1", "2026-10-01_19-42-33", 300, 0),
         _campione("GLOBAL_002", "S1", "2026-10-01_19-42-33", 600, 4),
+        _campione("GLOBAL_002", "S2", "2026-10-02_20-44-03", 400, 3),
     ]
-    testo = format_report(build_matrix(campioni, soglia=0.5)).lower()
+    rep = build_matrix(campioni, soglia=0.5)
+    testo = format_report(rep).lower()
 
     require("campione" in testo,
             "il report non dice che confronta campioni")
@@ -371,6 +373,19 @@ def report_dichiara_qual_confronto_e() -> None:
             "il report non dice che l'assegnazione usa i centroidi")
     require("non sono lo stesso numero" in testo,
             "il report non avverte che i due numeri sono diversi")
+
+    # I due campioni vengono da sessioni diverse: la matrice scarta
+    # apposta le coppie della stessa sessione, perché due voci udite
+    # nella stessa registrazione non si somigliano di piu' per il fatto
+    # di aver coesisto. Prima di questo controllo la dichiarazione diceva
+    # il contrario — «stessa sessione fra le due voci» — cioe' esattamente
+    # l'errore che la riga doveva prevenire.
+    require("sessioni diverse" in testo,
+            "il report non dice che i due campioni vengono da sessioni diverse")
+    n_diverse = sum(1 for p in rep.coppie if not p.same_session())
+    require(n_diverse == len(rep.coppie),
+            f"il report ha {len(rep.coppie)} coppie ma solo {n_diverse} "
+            "fra sessioni diverse: la dichiarazione deve corrispondere")
 
 
 def report_leggibile() -> None:

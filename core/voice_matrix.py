@@ -230,8 +230,9 @@ def format_report(rep: VoiceReport, mostra_tutto: bool = False) -> str:
     # sistema abbia sbagliato a tenere aperta una voce, e corregge a mano
     # un merge che era giusto — il caso reale di GLOBAL_028.
     righe.append(
-        "Questi numeri confrontano un campione con l'altro (stessa "
-        "sessione\nfra le due voci). L'assegnazione delle voci usa un "
+        "Questi numeri confrontano un campione con l'altro, e i due "
+        "campioni\nprovengono da sessioni diverse (le coppie della stessa "
+        "sessione non si\ndecidono qui). L'assegnazione delle voci fa un "
         "confronto diverso:\nl'embedding della sessione contro i "
         "centroidi salvati. Non sono lo stesso numero.\n"
     )
