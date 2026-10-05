@@ -673,15 +673,23 @@ frequenze, markdown di analisi, con `INDEX.md` come punto d'ingresso.
 ```bash
 python publish_corpus.py init              # clona la repo privata in locale
 python publish_corpus.py push              # pubblica le sessioni nuove
+python publish_corpus.py push --dry-run    # cosa cambierebbe, senza scrivere
 python publish_corpus.py push --with-names  # pubblica anche i nomi reali
 python publish_corpus.py status            # cosa c'è e cosa manca
 python publish_corpus.py reindex           # ricostruisce il database locale
 ```
 
+`push` conta solo le sessioni **diverse** da quelle già sulla repo: il
+confronto è sul contenuto che andrebbe scritto, quindi il `--dry-run` e il
+push vero dicono lo stesso numero. Con le 11 sessioni già pubblicate il
+dry-run risponde «Nessuna sessione da pubblicare», e non un elenco di
+pubblicazioni che non ci sono.
+
 ### Cosa c'è sulla repo
 
 ```
 INDEX.md                        # una riga per sessione, con i formati elencati
+.gitignore                      # scritto da publish_corpus.py: niente spazzatura del Finder
 sessions/
 └── 2026-10-04_14-43-16/
     ├── transcript.json  .txt  .srt
@@ -689,6 +697,7 @@ sessions/
     ├── tokens.jsonl            # una parola per riga: KWIC, n-grammi
     ├── prosody.csv  wordfreq.csv  session.json
     ├── analysis_ready.md
+    ├── denoise_decision.json   # quale denoise ha vinto e con quali soglie
     ├── speaker_profiles.json   # profilo delle voci (senza vettori)
     └── speaker_merge.json      # cosa è stato fuso fra i cluster brevi
 voices/
@@ -1263,7 +1272,7 @@ python tests/run_all.py            # test veloci, ~13 secondi
 python tests/run_all.py --full     # anche il ciclo completo, ~2 minuti
 ```
 
-210 test su 11 suite, e nessuno aspetta l'orologio di parete: i tempi
+**220 test su 11 suite**, e nessuno aspetta l'orologio di parete: i tempi
 di attesa sono registrati e confrontati, non dormiti. Prima che fosse
 così, due test aspettavano davvero l'attesa del backoff — 165 secondi,
 per un totale di quasi tre minuti — senza verificare nulla che non

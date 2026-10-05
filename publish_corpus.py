@@ -43,6 +43,7 @@ impostazione dimenticata.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
 import logging
 import shutil
@@ -108,6 +109,20 @@ FORBIDDEN = (
     "speakers_db.json", "corpus.db", "checkpoint.json", ".wav", ".mp3", ".m4a",
 )
 
+# Scritto nel clone prima di `git add -A`. Serve perche' il clone e' una
+# cartella che l'utente puo' aprire nel Finder, e il Finder ci lascia
+# dentro `.DS_Store`: `git add -A` mette in stage tutto quello che trova,
+# e cosi' la spazzatura del desktop finisce sulla repo pubblicata. Non
+# e' un file che `_publish_session` copia — e' entrato da un'altra parte,
+# ed e' per questo che la lista dei vietati non lo intercettava.
+GITIGNORE = """\
+# Scritto da publish_corpus.py. La repo pubblicata contiene solo i
+# file del corpus: questo clone e' una working copy come un'altra.
+.DS_Store
+*.swp
+*~
+"""
+
 # Chiavi da rimuovere o sostituire prima di pubblicare: sono gli unici
 # punti in cui può comparire un nome reale.
 def _scrub(obj):
@@ -164,7 +179,15 @@ def _session_dir(stem: str) -> Path:
 
 
 def _publish_session(stem: str, dry_run: bool = False) -> list[Path]:
-    """Copia gli output di una sessione nella repo, ripuliti."""
+    """Copia gli output di una sessione nella repo, ripuliti.
+
+    Restituisce i file **diversi** da quelli già presenti sulla repo, non
+    quelli toccati: senza questo confronto una sessione già pubblicata
+    verrebbe contata fra le nuove a ogni push, e il messaggio di commit
+    direbbe «corpus: 11 sessioni» quando il contenuto non è cambiato.
+    Confronto il contenuto che andrebbe scritto, quindi il conteggio è
+    lo stesso in dry-run e in scrittura reale.
+    """
     src = OUTPUT_DIR / stem
     if not src.is_dir():
         return []
@@ -179,6 +202,7 @@ def _publish_session(stem: str, dry_run: bool = False) -> list[Path]:
         if any(name.endswith(x) for x in (".wav", ".mp3", ".m4a", ".db")):
             continue
 
+        target = dest / name
         if name.endswith(".json"):
             try:
                 doc = json.loads(s.read_text(encoding="utf-8"))
@@ -186,19 +210,41 @@ def _publish_session(stem: str, dry_run: bool = False) -> list[Path]:
                 logger.warning("%s: %s non leggibile, saltato (%s)", stem, name, exc)
                 continue
             content = json.dumps(_scrub(doc), ensure_ascii=False, indent=2)
-            target = dest / name
+            if _gia_uguale(target, content):
+                continue
             if not dry_run:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
-            written.append(target)
         else:
-            target = dest / name
+            if _gia_uguale(target, None, sorgente=s):
+                continue
             if not dry_run:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(s, target)
-            written.append(target)
+        written.append(target)
 
     return written
+
+
+def _gia_uguale(target: Path, content: str | None = None,
+                sorgente: Path | None = None) -> bool:
+    """Il file sulla repo è già identico a quello che scriverei?
+
+    Confronto i byte: un file assente è sempre diverso. Per i JSON il
+    confronto è sul testo che andrebbe scritto (non sul sorgente, che è
+    lo stesso identico su disco e su repo, ma senza lo scrub — ed è lo
+    scrub a poter cambiare il contenuto).
+    """
+    if not target.exists():
+        return False
+    try:
+        if content is not None:
+            return target.read_text(encoding="utf-8") == content
+        assert sorgente is not None
+        return filecmp.cmp(target, sorgente, shallow=False)
+    except OSError:
+        # Illeggibile: meglio riscriverlo che fingere che sia a posto.
+        return False
 
 
 def _write_voice_matrix(dry_run: bool = False) -> Path | None:
@@ -340,6 +386,23 @@ def _hms(seconds) -> str:
     return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m {s:02d}s"
 
 
+def _write_gitignore() -> Path:
+    """Scrive il `.gitignore` nel clone, se non c'e' gia' quello giusto.
+
+    Va scritto **prima** di `git add -A`, altrimenti e' troppo tardi: il
+    file e' gia' in stage e la pubblicazione lo porta sulla repo.
+    """
+    p = LOCAL_CLONE / ".gitignore"
+    try:
+        if p.exists() and p.read_text(encoding="utf-8") == GITIGNORE:
+            return p
+    except OSError:
+        pass
+    LOCAL_CLONE.mkdir(parents=True, exist_ok=True)
+    p.write_text(GITIGNORE, encoding="utf-8")
+    return p
+
+
 def _guard_repo(names_to_hide: Iterable[str] = ()) -> bool:
     """Controllo finale: niente file vietati, niente nomi reali.
 
@@ -433,17 +496,27 @@ def cmd_push(args) -> int:
         written = _publish_session(d.name, dry_run=args.dry_run)
         if written:
             pushed.append(d.name)
-            logger.info("Pubblicata %s (%d file)", d.name, len(written))
+            verb = "Avrei pubblicato" if args.dry_run else "Pubblicata"
+            logger.info("%s %s (%d file)", verb, d.name, len(written))
 
-    if not pushed and not args.dry_run:
-        print("Nessuna sessione nuova da pubblicare.")
+    if not pushed:
+        # L'indice e la matrice delle voci sono derivati dalle sessioni
+        # gia' presenti sulla repo: con nessuna sessione cambiata
+        # riscriverebbero lo stesso contenuto, e in un push vero
+        # produrrebbero un commit vuoto. Si esce qui in entrambi i casi.
+        if args.dry_run:
+            print("Nessuna sessione da pubblicare: quello che c'e' in "
+                  "output/ e' gia' identico sulla repo.")
+        else:
+            print("Nessuna sessione nuova da pubblicare.")
         return 0
 
     idx = _write_index(dry_run=args.dry_run)
     matrice = _write_voice_matrix(dry_run=args.dry_run)
 
     if args.dry_run:
-        print(f"\n[dry-run] avrei pubblicato {len(pushed)} sessioni e aggiornato {idx.name}")
+        print(f"\n[dry-run] avrei pubblicato {len(pushed)} sessioni "
+              f"e aggiornato {idx.name}. Niente scritto.")
         for s in pushed:
             print(f"  {s}")
         return 0
@@ -451,6 +524,7 @@ def cmd_push(args) -> int:
     if not _guard_repo(_speaker_names_to_hide()):
         return 1
 
+    _write_gitignore()
     _run(["git", "add", "-A"], cwd=LOCAL_CLONE)
     status, out = _run(["git", "status", "--porcelain"], cwd=LOCAL_CLONE)
     if not out:

@@ -600,9 +600,107 @@ def t_status_dichiara_anche_le_sessioni_orfane(tmp: Path) -> None:
     print("    sessione orfana e sessione da pubblicare, entrambe dette")
 
 
+def t_push_ripubblica_solo_cio_che_e_cambiato(tmp: Path) -> None:
+    """Un secondo push senza modifiche non deve dichiarare pubblicazioni.
+
+    Il caso reale: sul disco le 11 sessioni erano gia' identiche alla
+    repo (verificato file per file: zero differenze), e il dry-run
+    rispondeva «avrei pubblicato 11 sessioni» elencandole una per una. Il
+    conteggio veniva da `_publish_session`, che restituiva i file che
+    *scriverebbe* senza chiedersi se differiscano da quelli gia' presenti.
+
+    Due conseguenze, una delle quali arriva nella repo pubblicata: il
+    messaggio di commit diceva «corpus: 11 sessioni» anche quando il
+    contenuto non era cambiato, quindi la storia del corpus raccontava
+    undici pubblicazioni dove non era successo niente.
+    """
+    print("  push conta solo le sessioni davvero diverse")
+    import io
+    import contextlib
+
+    out, clone = _fake_env(tmp)
+    pc.OUTPUT_DIR = out
+    pc.LOCAL_CLONE = clone
+    require(_publish(out, clone) == 0, "prima pubblicazione")
+
+    # Secondo push, senza nessuna modifica: non deve contare sessioni.
+    written = pc._publish_session("2026-10-02_21-44-16", dry_run=True)
+    require(written == [],
+            "una sessione gia' identica sulla repo non deve risultare "
+            f"da pubblicare, ma risultano {len(written)} file")
+
+    # E il dry-run deve dirlo, non elencare sessioni da pubblicare.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        rc = pc.cmd_push(argparse.Namespace(dry_run=True, with_names=False))
+    testo = buf.getvalue()
+    require(rc == 0, f"il dry-run senza modifiche deve uscire con 0, non {rc}")
+    require("avrei pubblicato 0 sessioni" not in testo,
+            f"non deve dichiarare pubblicazioni quando non ce ne sono:\n{testo}")
+    require("Nessuna sessione da pubblicare" in testo,
+            f"deve dire che non c'e' niente da pubblicare:\n{testo}")
+
+    # Una sessione modificata invece deve essere contata, e solo quella.
+    _make_session(out / "2026-10-02_21-44-16", "2026-10-02_21-44-16")
+    (out / "2026-10-02_21-44-16" / "transcript.json").write_text(
+        json.dumps({"meta": {"stem": "2026-10-02_21-44-16", "total_words": 999}},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+    scritti = pc._publish_session("2026-10-02_21-44-16", dry_run=True)
+    require(len(scritti) == 1 and scritti[0].name == "transcript.json",
+            f"la sola sessione cambiata deve risultare da pubblicare, "
+            f"non {scritti}")
+
+    # Il confronto per i JSON e' sul contenuto che andrebbe scritto, non
+    # sul file sorgente: se i nomi reali vengono sostituiti dagli
+    # pseudonimi, il file sulla repo e il sorgente differiscono sempre e
+    # ogni push ripubblicherebbe tutto.
+    _make_session(out / "2026-10-02_21-44-16", "2026-10-02_21-44-16", named=True)
+    require(pc._publish_session("2026-10-02_21-44-16", dry_run=True) == [],
+            "un transcript rigenerato ma identico dopo lo scrub non deve "
+            "risultare diverso: il confronto e' sul contenuto scritto, "
+            "non sul sorgente che contiene i nomi veri")
+    print("    una sessione cambiata resta da pubblicare, le altre no")
+
+
+def t_la_spazzatura_del_finder_non_finisce_sulla_repo(tmp: Path) -> None:
+    """Un `.DS_Store` non deve raggiungere la repo pubblicata.
+
+    Il caso reale: il clone e' una cartella che l'utente puo' aprire nel
+    Finder, il Finder ci lascia dentro `.DS_Store`, e `git add -A` mette
+    in stage **tutto** quello che trova. Il file e' finito in `HEAD` con
+    6.148 byte, entrato da un commit che si chiamava «corpus: 11
+    sessioni».
+
+    Non e' un file che `_publish_session` copia, quindi la lista dei
+    vietati non lo intercetta: entra dalla working copy. Per questo la
+    correzione e' un `.gitignore` scritto **prima** di `git add -A` —
+    dopo sarebbe troppo tardi, il file sarebbe gia' in stage.
+    """
+    print("  la spazzatura del Finder non finisce sulla repo")
+    out, clone = _fake_env(tmp)
+    pc.OUTPUT_DIR = out
+    pc.LOCAL_CLONE = clone
+
+    # Il Finder lascia il suo file nella working copy, prima del push.
+    (clone / ".DS_Store").write_bytes(b"\x00\x01spazzatura\x02")
+    require(_publish(out, clone) == 0, "prima pubblicazione")
+
+    require(".gitignore" in _remote_files(tmp),
+            "il clone deve avere un .gitignore: senza, `git add -A` "
+            "pubblica quello che il Finder lascia nella cartella")
+    require(".DS_Store" not in _remote_files(tmp),
+            f"la spazzatura del Finder non deve finire sulla repo:\n"
+            f"{_remote_files(tmp)}")
+    print("    .gitignore scritto, .DS_Store lasciato fuori")
+
+
 def main() -> int:
     tests = [
         t_nothing_forbidden_lands_on_the_repo,
+        t_push_ripubblica_solo_cio_che_e_cambiato,
+        t_la_spazzatura_del_finder_non_finisce_sulla_repo,
         t_real_names_are_scrubbed_by_default,
         t_guard_catches_a_name_that_slipped_through,
         t_guard_passes_when_there_is_nothing,

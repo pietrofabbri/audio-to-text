@@ -24,7 +24,10 @@ la sezione in fondo.
 sbagliate), 21 (le voci viste una sessione alla volta), 22 (il
 correttore), 23 (le parole contate due volte: una sessione rinominata
 restava nel corpus), 24 (`tokens.jsonl` mai pubblicato), 25 (la matrice
-delle voci mai pubblicata).
+delle voci mai pubblicata), 26 (`push` ripubblicava tutto e lo dichiarava:
+tre commit della repo del corpus hanno un messaggio con un numero che non
+corrisponde a quello che hanno cambiato, e la spazzatura del Finder era
+finita in HEAD).
 
 **Aperti:** 8 (biometria — serve l'hardware), 11 (campione denoise di
 180 s), 12 (modello `medium` — decisione tua), 13 (archivio locale a 7
@@ -42,7 +45,7 @@ decidere a mano. Vedi il punto.
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
 li dava per aperti senza definirli, e il punto 1 restava nell'elenco degli
 aperti sei giorni dopo essere stato chiuso. I punti esistenti sono
-adesso 1–25 e la sezione «sul perché questi sono ancora aperti» copre
+adesso 1–26 e la sezione «sul perché questi sono ancora aperti» copre
 10, 11, 12, 13, 14 e il termico.
 
 ---
@@ -1190,6 +1193,100 @@ artefatti disattivato «la matrice mancante deve essere detta per nome».
 
 ---
 
+### 26. ~~`push` ripubblicava tutto e lo dichiarava~~ — chiuso il 10 ottobre
+
+**Stato.** Chiuso. Trovato eseguendo un comando che non avevo mai
+lanciato, che è il metodo che ha funzionato: le cinque precedenti avevano
+guardato i documenti e avevano trovato solo refusi.
+
+**Il buco.** `_publish_session()` restituiva i file che **scriverebbe**,
+senza chiedersi se differissero da quelli già sulla repo. Quindi ogni
+sessione con un `transcript.json` contava come «pubblicata», identica o
+no. Sul disco: le 11 sessioni erano già identiche alla repo, **zero
+differenze** verificate file per file, e il dry-run rispondeva
+
+```
+[dry-run] avrei pubblicato 11 sessioni e aggiornato INDEX.md
+```
+
+elencandole una per una. E in `--dry-run` le righe iniziali dicevano
+letteralmente **«Pubblicata 2026-10-02_19-42-33 (12 file)»** — un comando
+che dichiara un'azione che non ha eseguito.
+
+**La conseguenza che è già arrivata sulla repo.** Non era un messaggio a
+un futuro impreciso: il messaggio di commit era
+`corpus: {len(pushed)} sessioni`, e la storia del corpus pubblicato
+**contiene già tre dichiarazioni false**. Misurato commit per commit,
+confrontando il numero dichiarato con le sessioni che il commit tocca
+davvero:
+
+| commit | dichiara | tocca | |
+|---|---|---|---|
+| `9b08ef3` | 11 sessioni | **0** | solo INDEX e matrice |
+| `031869b` | 11 sessioni | **7** | |
+| `9e39bab` | 1 sessioni | **0** | solo INDEX |
+| gli altri 7 | — | — | coincidono |
+
+Il caso peggiore è `9b08ef3`: dichiara undici pubblicazioni e non tocca
+**nessuna** sessione, perché gli unici file cambiati sono l'indice e la
+matrice delle voci. È il commit che pubblica la matrice del punto 25 —
+quindi l'operazione più utile della giornata, descritta come se fosse
+stato un ripubblicamento di undici sessioni. **La storia del corpus ha
+raccontato undici pubblicazioni dove non era successo niente.**
+
+**Quei tre messaggi non li riscrivo, e la ragione va detta.** La storia
+di una repo pubblicata si riscrive solo con un force-push che cambia tutti
+gli hash e ogni riferimento a essa: per il testo di un messaggio non vale
+la pena, e il rischio è reale. Quel che conta è che da adesso il numero
+dica il vero e che il confronto resti verificabile con un comando.
+
+**La correzione.** `_publish_session()` confronta il contenuto che
+andrebbe scritto con quello già sulla repo e restituisce solo i file
+**diversi**, quindi il conteggio è lo stesso in dry-run e in scrittura
+reale. Il confronto per i JSON è sul testo *dopo* lo `_scrub`, non sul
+sorgente: i nomi veri vengono sostituiti dai pseudonimi, quindi sorgente e
+repo differiscono sempre e ogni push ripubblicherebbe tutto. Il test
+copre anche questo caso, perché è la trappola che renderebbe la correzione
+inutile.
+
+**Verificato.** Test rotto con il revert esatto della sola modifica:
+«una sessione gia' identica sulla repo non deve risultare da pubblicare,
+ma risultano 5 file», e gli altri 11 della suite restano verdi. Sul disco,
+il dry-run passa da «avrei pubblicato 11 sessioni» a «Nessuna sessione da
+pubblicare: quello che c'e' in `output/` e' gia' identico sulla repo».
+**220 test su 11 suite.**
+
+**Un secondo difetto, trovato misurando il primo.** Per contare le sessioni
+davvero toccate da ogni commit ho dovuto guardare i nomi dei file, ed e'
+saltato fuori che `031869b` aveva pubblicato un **`.DS_Store`**: 6.148
+byte di spazzatura del Finder, in `HEAD` sulla repo pubblicata fino a
+stamattina.
+
+Non e' un file che `_publish_session` copia e quindi non e' un difetto
+della lista dei vietati: entra da `git add -A`, che mette in stage tutto
+quello che trova nella working copy, e il clone e' una cartella che
+l'utente puo' aprire nel Finder. Percio' la correzione non e' una voce in
+`FORBIDDEN` — e' un `.gitignore` scritto nel clone **prima** di
+`git add -A`, perche' dopo sarebbe troppo tardi: il file sarebbe gia' in
+stage e la pubblicazione lo porterebbe lo stesso. Rimosso dalla repo
+(`fd23f89`) e coperto da un test che apre il Finder finto, verifica che
+il `.gitignore` ci sia e che `.DS_Store` non arrivi nel remoto.
+
+**Verificato.** Test rotto con il revert esatto della sola chiamata a
+`_write_gitignore()`: «il clone deve avere un .gitignore: senza, `git add
+-A` pubblica quello che il Finder lascia nella cartella», con gli altri 12
+della suite verdi. Sul disco il dry-run passa da «avrei pubblicato 11
+sessioni» a «Nessuna sessione da pubblicare». **220 test su 11 suite.**
+
+**Una cosa che il test non copre e resta aperta.** Ho contato i test dal
+sorgente con un metodo che dava 125, e sui file che usano convenzioni di
+naming diverse. Il numero dichiarato l'ho preso dal runner stesso
+(`run_all.FAST`, contando l'output di ogni suite), non da un conteggio a
+mano: e' la prima volta che il totale non coincide e la ragione era
+mia, non del codice.
+
+---
+
 ## L'ordine in cui li farei
 
 Fatti: **1** (prima notte vera), **2** (cache WAV), **3** (finestra
@@ -1203,12 +1300,15 @@ tarati), **9** (pubblicazione), e il carico termico.
    `unreliable` al 4,9%, sotto il 5%, e i timestamp per parola hanno
    mostrato che i segmenti segnalati sono davvero peggiori
    (probabilità mediana 0,636 contro 0,960). Le soglie **non** si alzano.
-3. **10 — la soglia**, rivalutata l'8 ottobre con 14 voci e 621 coppie.
-   Il numero non è spostabile: le stesse due voci si somigliano da 0,661
-   a 0,784 a seconda della sessione. La domanda aperta non è più il
-   numero ma **quale grandezza vuoi come riferimento**: la matrice
-   confronta campione con campione, il sistema confronta embedding contro
-   centroidi, e il report mostra solo il primo dei due.
+3. **10 — la soglia**, chiusa all'8 ottobre sul numero e risolta **per
+   misura** il 10 ottobre sulla domanda. Il numero non è spostabile: le
+   stesse due voci si somigliano da 0,661 a 0,784 a seconda della
+   sessione. E la domanda «quale grandezza come riferimento» **non era
+   una scelta**: matrice e sistema facevano la stessa statistica in tre
+   modi, e il centroide è quello che il sistema usa gia'. Il difetto vero
+   era l'unità della decisione — aggregando per coppia di voci, le 34
+   indecisioni diventano 4. Resta da fare l'aggregazione nel report e da
+   decidere a mano le 4 coppie.
 4. **Il termico**, con `powermetrics` e una notte di misura.
 5. **8 — biometria.** Quando arriva l'hardware.
 
