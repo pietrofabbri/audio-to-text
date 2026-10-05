@@ -156,7 +156,8 @@ def cmd_merge(db: SpeakerDB, args) -> int:
     materiale.
     """
     keep, drop = args.gid, args.into
-    if not db.merge_ids(keep, drop):
+    if not db.merge_ids(keep, drop,
+                        dry_run=getattr(args, "dry_run", False)):
         if keep == drop:
             print("Stessa voce", file=sys.stderr)
         else:

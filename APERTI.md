@@ -31,7 +31,9 @@ finita in HEAD). **Chiusi il 5 ottobre, eseguendo i comandi in scrittura:**
 27 (`consolidate` rinumerava le voci senza aver fuso niente: una persona
 registrata in sette sessioni si e' divisa in due identita'), 28 (il report
 del correttore contava parole diverse e occorrenze come se fossero la
-stessa cosa).
+stessa cosa), 29 (`merge --dry-run` cancellava la voce dal database delle
+voci: l'ho scoperto perche' il quarto merge ha detto che una delle due
+voci non esisteva, ed esisteva).
 
 **Aperti:** 8 (biometria — serve l'hardware), 11 (campione denoise di
 180 s), 12 (modello `medium` — decisione tua), 13 (archivio locale a 7
@@ -49,7 +51,7 @@ decidere a mano. Vedi il punto.
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
 li dava per aperti senza definirli, e il punto 1 restava nell'elenco degli
 aperti sei giorni dopo essere stato chiuso. I punti esistenti sono
-adesso 1–28 e la sezione «sul perché questi sono ancora aperti» copre
+adesso 1–29 e la sezione «sul perché questi sono ancora aperti» copre
 10, 11, 12, 13, 14 e il termico.
 
 ---
@@ -1348,7 +1350,49 @@ dichiarazione è:
 
 Test verificato rotto: 43/44 con la formulazione di prima.
 
-**222 test su 11 suite.**
+---
+
+### 29. ~~`merge --dry-run` cancellava la voce dal database~~ — chiuso il 5 ottobre
+
+**Stato.** Chiuso. Il piu' grave dei tre, e l'ho causato io.
+
+**Il buco.** `review_speakers.py merge` chiama `db.merge_ids()`, che fa
+`pop` della voce e `save()`. Il controllo del `--dry-run` arrivava **dopo**.
+Il comando prometteva di non scrivere e scriveva: la voce spariva dal
+database delle voci, e le sessioni che la citavano restavano con un ID che
+non esisteva piu'.
+
+**Come l'ho trovato.** Eseguendo i quattro merge delle coppie in zona
+grigia «per vedere cosa cambierebbe». Il quarto ha risposto «**Una delle due
+voci non esiste**» — e la coppia era `GLOBAL_027 × GLOBAL_028`, che esisteva
+entrambe. Le voci sparite erano esattamente i tre bersagli dei merge
+lanciati in dry-run: `GLOBAL_018`, `GLOBAL_026`, `GLOBAL_028`. Il DB era
+passato da 14 a 11 identita'.
+
+**Il pericolo vero non e' il numero perso.** E' che
+`2026-10-04_10-49-40/session.json` continuava a citare `GLOBAL_028`, che
+non esisteva piu': il corpus era incoerente e niente lo segnalava, perche'
+un ID assente e' semplicemente un ID che nessuno genera piu'. Ho
+ripristinato dal backup e verificato che `output/` e `data/` sono
+identici a prima.
+
+**La correzione.** L'aritmetica della fusione e' in `_merge_into()`, una
+funzione che riceve il dizionario e non sa nulla di file. Con `dry_run`
+lavora su una copia che muore lì: il conto si fa intero, perché una meta'
+fusione scriverebbe gia' i secondi sommati.
+
+**Un tentativo che ho buttato, e perché.** La prima versione creava una
+seconda istanza di `SpeakerDB` con la stessa `path` e le faceva fare il
+merge: la copia aveva lo stesso indirizzo su disco e `save()` finiva
+sull'originale. Il test l'aveva preso — ho verificato sul percorso reale
+prima di fidarmi, e li' si vedeva che `GLOBAL_018` spariva lo stesso.
+
+**Verificato.** Test rotto: «in dry-run le voci non devono cambiare:
+`['GLOBAL_001']` contro `['GLOBAL_001', 'GLOBAL_002']`». Sul percorso reale,
+quattro merge in dry-run lasciano le 14 identita' intatte e il file
+identico bit per bit; il merge vero continua a sommare i secondi.
+
+**223 test su 11 suite.**
 
 **Una cosa che il test non copre e resta aperta.** Ho contato i test dal
 sorgente con un metodo che dava 125, e sui file che usano convenzioni di

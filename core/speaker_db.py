@@ -26,6 +26,7 @@ calcolati, il che lo rende testabile senza audio e senza GPU.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -95,6 +96,37 @@ def cosine_similarity(a, b) -> float:
     if denom == 0.0:
         return 0.0
     return float(np.dot(va, vb) / denom)
+
+
+def _merge_into(data: dict, keep: str, drop: str) -> None:
+    """Versa `drop` dentro `keep` dentro il dizionario passato.
+
+    Funzione pura a parte dal dizionario che riceve: nessun file, nessun
+    salvataggio. Serve perche' `merge_ids` con `dry_run` deve poter fare
+    il conto senza toccare il DB — e il conto non si puo' fare a meta',
+    perche' una meta' fusione scrive gia' i secondi sommati.
+    """
+    src = data["speakers"].pop(drop)
+    dst = data["speakers"][keep]
+    for k, v in src.get("sessions", {}).items():
+        dst.setdefault("sessions", {})
+        if k in dst["sessions"]:
+            dst["sessions"][k]["seconds"] = round(
+                dst["sessions"][k].get("seconds", 0) + v.get("seconds", 0), 2
+            )
+        else:
+            dst["sessions"][k] = v
+    dst["total_seconds"] = round(
+        sum(s.get("seconds", 0) for s in dst.get("sessions", {}).values()), 2
+    )
+    dst["sessions_count"] = len({
+        s.get("stem") for s in dst.get("sessions", {}).values()
+    })
+    for campo, peggio in (("first_seen", min), ("last_seen", max)):
+        if src.get(campo) and dst.get(campo):
+            dst[campo] = peggio(dst[campo], src[campo])
+    if not dst.get("name") and src.get("name"):
+        dst["name"] = src["name"]
 
 
 class SpeakerDB:
@@ -373,38 +405,29 @@ class SpeakerDB:
             self.save()
         return [g for g in vuoti if g not in self._data["speakers"]]
 
-    def merge_ids(self, keep: str, drop: str) -> bool:
+    def merge_ids(self, keep: str, drop: str, dry_run: bool = False) -> bool:
         """Versa tutti i contributi di `drop` dentro `keep`.
 
         La stessa operazione di `review_speakers.py merge`, messa nel
         DB cosi' che anche i programmi possano rifarla: consolidare
         piu' sessioni in una passata sola significa chiamare questa
         funzione, non invocare un altro processo.
+
+        Con `dry_run` il merge avviene su una copia e muore lì: il
+        chiamante riceve la risposta senza che niente sia cambiato.
         """
         if keep == drop or drop not in self._data["speakers"] \
                 or keep not in self._data["speakers"]:
             return False
-        src = self._data["speakers"].pop(drop)
-        dst = self._data["speakers"][keep]
-        for k, v in src.get("sessions", {}).items():
-            dst.setdefault("sessions", {})
-            if k in dst["sessions"]:
-                dst["sessions"][k]["seconds"] = round(
-                    dst["sessions"][k].get("seconds", 0) + v.get("seconds", 0), 2
-                )
-            else:
-                dst["sessions"][k] = v
-        dst["total_seconds"] = round(
-            sum(s.get("seconds", 0) for s in dst.get("sessions", {}).values()), 2
-        )
-        dst["sessions_count"] = len({
-            s.get("stem") for s in dst.get("sessions", {}).values()
-        })
-        for campo, peggio in (("first_seen", min), ("last_seen", max)):
-            if src.get(campo) and dst.get(campo):
-                dst[campo] = peggio(dst[campo], src[campo])
-        if not dst.get("name") and src.get("name"):
-            dst["name"] = src["name"]
+        if dry_run:
+            # Il merge e' possibile ma non deve accadere: l'aritmetica
+            # gira su una copia che muore qui. `--dry-run` che cancella
+            # una voce dal DB e' peggio di non fare niente, perche' le
+            # sessioni che la citano restano con un ID che non esiste
+            # piu' e nessuno se ne accorge.
+            _merge_into(copy.deepcopy(self._data), keep, drop)
+            return True
+        _merge_into(self._data, keep, drop)
         self.save()
         return True
 

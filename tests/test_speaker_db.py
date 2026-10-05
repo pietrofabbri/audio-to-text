@@ -195,6 +195,46 @@ def test_to_vector_shapes(tmp: Path) -> None:
     assert to_vector([[[1.0, 1.0]]]).shape == (2,)
 
 
+def test_merge_in_dry_run_non_scrive_il_db(tmp: Path) -> None:
+    """`merge_ids(dry_run=True)` deve lasciare il file com'era.
+
+    Il caso reale: `review_speakers.py merge --dry-run` cancellava la voce
+    dal database delle voci. Il comando prometteva di non scrivere e
+    scriveva: la voce spariva, e le sessioni che la citavano restavano con
+    un ID che non esisteva piu'. Trovato eseguendo i quattro merge delle
+    coppie in zona grigia «per vedere cosa cambierebbe»: al quarto comando
+    la coppia diceva «una delle due voci non esiste» perche' il dry-run
+    precedente l'aveva già cancellata.
+
+    Il pericolo non e' la perdita di un numero: e' che il corpus diventa
+    incoerente senza che niente lo segnali, perche' un ID assente e'
+    semplicemente un ID che nessuno genera piu'.
+    """
+    rng = random.Random(SEED)
+    path = tmp / "db.json"
+    db = SpeakerDB(path=path)
+    a, b = make_voice(rng), make_voice(rng)
+    mappa = db.resolve("s1", {
+        "SPEAKER_00": {"embedding": approx(a), "seconds": 100.0},
+        "SPEAKER_01": {"embedding": approx(b), "seconds": 200.0},
+    })
+    prima_id = sorted(db._data["speakers"])
+    prima_bytes = path.read_bytes()
+
+    keep, drop = mappa["SPEAKER_00"], mappa["SPEAKER_01"]
+    assert db.merge_ids(keep, drop, dry_run=True), "il merge deve essere possibile"
+    assert sorted(db._data["speakers"]) == prima_id, (
+        f"in dry-run le voci non devono cambiare: {sorted(db._data['speakers'])} "
+        f"contro {prima_id}")
+    assert path.read_bytes() == prima_bytes, "in dry-run il file non si tocca"
+
+    # E il merge vero deve funzionare ancora.
+    assert db.merge_ids(keep, drop), "il merge vero deve riuscire"
+    assert drop not in db._data["speakers"], "il merge vero deve cancellare la voce"
+    assert pytest_approx(db._data["speakers"][keep]["total_seconds"]) == 300.0, (
+        "i secondi delle due voci devono sommarsi")
+
+
 def pytest_approx(x: float) -> float:
     return round(float(x), 5)
 
