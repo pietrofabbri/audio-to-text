@@ -999,6 +999,19 @@ giusta non compare mai nel vocabolario delle quattro notti. Quindi la
 soglia si continua a tarare a occhio, e con `--solo-proposte` si fa
 sulle righe, non sulle pagine.
 
+*Rimando, 10 ottobre.* Sulle quattro sessioni intere la cosa e' andata
+meglio di quanto scrissi allora: ispezionando a mano le risposte grezze,
+l'allineamento e' **corretto** (il modello restituisce `a` e `i` giusti
+su tutte le parole, e su testo pulito non cambia nulla) e la maggior
+parte delle proposte e' buona. Il rumore si riduce a un caso solo, la
+**riscrittura dei nomi propri**: «Zia Titti lui, Zia Titti» diventa
+«Gigi D'Alessio» due volte. E due scoperte che valgono di piu': la difesa
+`SOGLIA_PROB = 0,90` **non ha mai sparato** su nessuna delle 331 proposte
+accettate (erano tutte `p=?`, ha bloccato solo le 63 respinte), e il filtro
+«l'originale deve essere una non-parola» che avevo proposto **e' stato
+provato e non funziona** — tiene 1 correzione buona su 14. Dettaglio e
+conclusione in «l'ordine in cui li farei».
+
 ---
 
 ### 23. ~~Le parole contate due volte~~ — chiuso il 10 ottobre
@@ -1186,14 +1199,36 @@ e su sei file da un'ora indipendenti l'errore va dal +1% al +22%, sempre
 per eccesso — il README non promette più l'1%.
 
 *Da fare prima dell'analisi sul testo:* girare `correct_text.py` sulle
-quattro sessioni del 2 ottobre. **Fatto il 10 ottobre in asciutto**, e ha
-detto una cosa che vale più del lavoro: delle 331 proposte accettate, **almeno
-42 sono rumore** — `sono → altrimenti`, `stanza → stronza`, `città → cagate` —
-perché il modello allinea il suo elenco su un testo diverso invece di
-correggere una parola. Non è applicato niente: applicarlo peggiorerebbe il
-corpus, e in un corpus che vuole misurare la propria voce un testo
-inventato è peggio di uno sbagliato. Prima va filtrato il rumore, poi si
-corregga. Vedi il punto 22 e la sezione sul correttore.
+quattro sessioni del 2 ottobre. **Fatto il 10 ottobre in asciutto**, e le
+risposte grezze hanno smentito quello che avevo scritto: delle 331 proposte
+accettate ho ispezionato a mano una quarantina, e **quasi tutte sono
+buone** — `statole → scatole`, `frasci → frasi`, `perri → però`,
+`cicronano → ciccionano`, `salate spensate → serate spensierate`. Non è
+un allineamento rotto: il modello restituisce `a` e `i` corretti su tutte
+le parole, e su testo pulito non cambia niente.
+
+Il rumore c'è, ma è **uno solo e preciso**: la riscrittura dei nomi propri.
+Su «c'è un po' di Zia Titti lui, Zia Titti ovviamente» il modello
+risponde «Gigi D'Alessio» **per entrambe le occorrenze** — incontra un nome
+che non conosce, lo interpreta e propaga l'interpretazione. Non è
+riallineamento, è riscrittura semantica, ed è irreparabile in modo invisibile
+in un conteggio.
+
+**Una difesa che credevo attiva e non lo era.** Il report del 4 ottobre
+mostra `p=?` su **tutte e 331** le accettate: `SOGLIA_PROB = 0,90` non ha
+mai sparato su nessuna di quelle, ha bloccato solo le 63 respinte.
+
+**Il filtro che avevo proposto è stato provato e non funziona.** La regola
+«l'originale deve essere una non-parola, la proposta una parola» tiene 1
+correzione buona su 14 e lascia passare 4 rumori su 19; sulle 331 ne
+lascerebbe 32, comprese `notizia → una` e `sfatarmata → per`. Non si
+implementa: un vocabolario scritto a mano è incompleto per costruzione, e
+scarterebbe proprio le correzioni certe.
+
+Quindi non è un problema di filtri, è una **decisione di politica**: il
+correttore è abbastanza buono da produrre proposte e non da applicarle da
+solo, e il lavoro che manca non è un filtro ma una superficie di revisione.
+Nessuna correzione è stata applicata. Vedi il punto 22.
 
 Il resto può aspettare che il sistema abbia girato qualche notte e
 accumulato dati su cui decidere.
