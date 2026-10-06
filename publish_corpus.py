@@ -299,6 +299,35 @@ def _write_voice_matrix(dry_run: bool = False) -> Path | None:
     return dest
 
 
+def _recorded_at(session_dir: Path, meta: dict) -> str | None:
+    """Ora di inizio della registrazione, dalla fonte piu' affidabile.
+
+    In `transcript.json` il campo `session_start_wall` resta `None`:
+    l'assembler non conosce l'orologio del registratore, e il valore lo
+    scrive `sync_device.py` al primo livello di `session.json`. L'indice
+    leggeva solo il primo dei due, ed e' per questo che la colonna Data
+    usciva vuota su tutte le sessioni.
+
+    Ordine: `session.json`, poi `transcript.json`, poi il nome della
+    sessione, che il registratore compone come `AAAA-MM-GG_hh-mm-ss`.
+    L'ultimo e' lo stesso orologio letto da un'altra parte, non una
+    stima: se anche quello manca, la data resta vuota e lo si vede.
+    """
+    try:
+        wall = json.loads((session_dir / "session.json").read_text(
+            encoding="utf-8")).get("session_start_wall")
+        if wall:
+            return wall
+    except (json.JSONDecodeError, OSError):
+        pass
+    if meta.get("session_start_wall"):
+        return meta["session_start_wall"]
+    try:
+        return datetime.strptime(session_dir.name[:19], "%Y-%m-%d_%H-%M-%S").isoformat()
+    except ValueError:
+        return None
+
+
 def _write_index(dry_run: bool = False) -> Path:
     """Indice per data: il punto di ingresso di un LLM nel corpus.
 
@@ -319,7 +348,7 @@ def _write_index(dry_run: bool = False) -> Path:
             try:
                 m = json.loads((d / "transcript.json").read_text(encoding="utf-8")).get("meta", {})
                 info.update({
-                    "recorded_at": m.get("session_start_wall"),
+                    "recorded_at": _recorded_at(d, m),
                     "duration_sec": m.get("total_duration_sec"),
                     "speech_sec": m.get("speech_duration_sec"),
                     "speakers": m.get("speakers"),

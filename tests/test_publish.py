@@ -760,8 +760,48 @@ def t_status_dichiara_le_voci_che_il_db_non_conosce(tmp: Path) -> None:
     print("    voce fantasma dichiarata per nome")
 
 
+def t_indice_mostra_la_data_di_registrazione(tmp: Path) -> None:
+    """La colonna Data dell'indice non deve uscire vuota.
+
+    Sul corpus vero usciva «—» su tutte e diciannove le sessioni: l'ora
+    di inizio sta in `session.json`, mentre `transcript.json` ha il campo
+    a `None`, e l'indice leggeva solo quello. Tre casi: data in
+    `session.json`, data solo nel nome della sessione, nessuna data.
+    """
+    old = pc.LOCAL_CLONE
+    pc.LOCAL_CLONE = tmp
+    try:
+        sess = tmp / "sessions"
+        casi = {
+            "2026-10-05_09-39-09": "2026-10-05T09:39:09",   # da session.json
+            "2026-10-04_12-07-22": None,                    # solo dal nome
+            "registrazione-senza-data": None,                # niente
+        }
+        for stem, wall in casi.items():
+            d = sess / stem
+            d.mkdir(parents=True)
+            (d / "transcript.json").write_text(json.dumps(
+                {"meta": {"session_start_wall": None, "speakers": [],
+                          "total_words": 10}, "segments": []}), encoding="utf-8")
+            (d / "session.json").write_text(json.dumps(
+                {"stem": stem, "session_start_wall": wall}), encoding="utf-8")
+
+        testo = pc._write_index().read_text(encoding="utf-8")
+        righe = {r.split("`")[1]: r for r in testo.splitlines() if r.startswith("| ") and "`" in r}
+        require(righe["2026-10-05_09-39-09"].startswith("| 2026-10-05 09:39 |"),
+                f"data da session.json non usata: {righe['2026-10-05_09-39-09']}")
+        require(righe["2026-10-04_12-07-22"].startswith("| 2026-10-04 12:07 |"),
+                f"data dal nome della sessione non usata: {righe['2026-10-04_12-07-22']}")
+        require(righe["registrazione-senza-data"].startswith("| — |"),
+                "senza nessuna data la cella deve restare «—», non inventarne una")
+        print("  ok   la colonna Data legge session.json e, in mancanza, il nome")
+    finally:
+        pc.LOCAL_CLONE = old
+
+
 def main() -> int:
     tests = [
+        t_indice_mostra_la_data_di_registrazione,
         t_nothing_forbidden_lands_on_the_repo,
         t_status_dichiara_le_voci_che_il_db_non_conosce,
         t_push_ripubblica_solo_cio_che_e_cambiato,

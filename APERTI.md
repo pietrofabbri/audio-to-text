@@ -1,6 +1,15 @@
 # Punti aperti
 
-Stato al 10 ottobre 2026. Ogni punto dice **cosa manca**, **pro e
+Stato al 5 ottobre 2026.
+
+> *Nota del 7 ottobre.* In una versione precedente diverse date erano
+> sbagliate in avanti («8 ottobre», «10 ottobre») e cadevano dopo l'ultimo
+> commit. Sono state ricostruite dalla storia git: quanto risultava all'8
+> è stato fatto la sera del 4 (`1dca1a7`, `f821efc`), quanto risultava al 10
+> il 5 (da `15f56dd` a `f51e123`). L'ordine delle fasi successive sta in
+> [`ROADMAP.md`](ROADMAP.md).
+
+Ogni punto dice **cosa manca**, **pro e
 contro**, **perché** e **di chi è la decisione**. La responsabilità è
 dichiarata perché la cosa peggiore di un elenco di cose aperte è non
 sapere quale aspettare e quale fare.
@@ -20,7 +29,7 @@ cache dei WAV), 18 (il database locale vuoto), 19 (la sovrasegmentazione
 delle voci: 21 identita' globali su quattro ore di una conversazione
 sono diventate 9). Tutti e cinque scoperti elaborando i file veri: vedi
 la sezione in fondo.
-**Chiusi il 10 ottobre, scoperti guardando i dati veri:** 20 (le parole
+**Chiusi fra il 3 e il 5 ottobre, scoperti guardando i dati veri:** 20 (le parole
 sbagliate), 21 (le voci viste una sessione alla volta), 22 (il
 correttore), 23 (le parole contate due volte: una sessione rinominata
 restava nel corpus), 24 (`tokens.jsonl` mai pubblicato), 25 (la matrice
@@ -50,7 +59,7 @@ sessioni e' rumore che la normalizzazione peggiora. Resta da fare una
 modifica al report — aggregare per coppia di voci — e quattro coppie da
 decidere a mano. Vedi il punto.
 
-*L'elenco è stato riallineato il 10 ottobre.* Prima l'intestazione
+*L'elenco è stato riallineato il 5 ottobre.* Prima l'intestazione
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
 li dava per aperti senza definirli, e il punto 1 restava nell'elenco degli
 aperti sei giorni dopo essere stato chiuso. I punti esistenti sono
@@ -359,7 +368,7 @@ guarda: la domanda utile non è "quanti segmenti sono brutti" ma "posso
 analizzare questa sessione", e il riassunto è pesato sulle **parole**,
 non sui segmenti.
 
-**Taratura, misurata l'8 ottobre su undici sessioni (1.060 segmenti).**
+**Taratura, misurata il 4 ottobre su undici sessioni (1.060 segmenti).**
 Era la verifica che mancava, e l'aveva rimandata esplicitamente: «se
 `unreliable` è sotto il 5% il flag è tarato bene; se è sopra il 30%, le
 soglie vanno alzate».
@@ -490,7 +499,7 @@ Non sono rimasti indietro: sono in attesa di dati che non esistono
 ancora, e ognuno ha il motivo per cui aspettare.
 
 **10 — soglia 0,78.** ~~Non valutabile, c'era una sola voce.~~
-Rivalutata l'8 ottobre, con quattordici voci e 621 coppie. **La soglia
+Rivalutata il 4 ottobre, con quattordici voci e 621 coppie. **La soglia
 non è spostabile**, e i numeri dicono perché.
 
 Il caso che chiude la questione è `GLOBAL_004 × GLOBAL_018`: quattordici
@@ -539,7 +548,7 @@ Il sistema e' coerente: non e' un bug. Ma il numero che vedi nel report
 conclude che il sistema ha sbagliato, e magari corregge a mano un merge
 che era giusto.
 
-**Chiuso metà il 10 ottobre, metà no.** Il report ora **dichiara quale
+**Chiuso metà il 5 ottobre, metà no.** Il report ora **dichiara quale
 operazione ha fatto**: confronta un campione con l'altro, mentre
 l'assegnazione confronta l'embedding della sessione contro i centroidi
 salvati, e le due righe lo dicono subito, in testa, non in fondo. Non è un
@@ -554,7 +563,7 @@ l'una o con l'altra, e cosa succede a una voce che una dice sotto e
 l'altra dice sopra. Il numero non è spostabile in nessuno dei due casi, e
 quindi la domanda è quale misura guardare, non dove mettere la linea.
 
-**La domanda è caduta il 10 ottobre: misurata, non scelta.** Non era una
+**La domanda è caduta il 5 ottobre: misurata, non scelta.** Non era una
 preferenza, e cercandola come preferenza si rispondeva «dipende». Tre
 numeri per lo stesso confronto di `GLOBAL_001` contro `GLOBAL_028`:
 
@@ -1011,7 +1020,7 @@ giusta non compare mai nel vocabolario delle quattro notti. Quindi la
 soglia si continua a tarare a occhio, e con `--solo-proposte` si fa
 sulle righe, non sulle pagine.
 
-*Rimando, 10 ottobre.* Sulle quattro sessioni intere la cosa e' andata
+*Rimando, 5 ottobre.* Sulle quattro sessioni intere la cosa e' andata
 meglio di quanto scrissi allora: ispezionando a mano le risposte grezze,
 l'allineamento e' **corretto** (il modello restituisce `a` e `i` giusti
 su tutte le parole, e su testo pulito non cambia nulla) e la maggior
@@ -1026,7 +1035,7 @@ conclusione in «l'ordine in cui li farei».
 
 ---
 
-### 23. ~~Le parole contate due volte~~ — chiuso il 10 ottobre
+### 23. ~~Le parole contate due volte~~ — chiuso il 5 ottobre
 
 **Stato.** Chiuso. Trovato guardando i numeri del corpus vero, non da un
 test: il database dichiarava **12 sessioni per 11 cartelle**.
@@ -1088,7 +1097,7 @@ peggio della duplicazione che corregge.
 
 ---
 
-### 24. ~~`tokens.jsonl` non era mai stato pubblicato~~ — chiuso il 10 ottobre
+### 24. ~~`tokens.jsonl` non era mai stato pubblicato~~ — chiuso il 5 ottobre
 
 **Stato.** Chiuso. Le trascrizioni del 4 ottobre erano trascritte,
 indicizzate e pubblicate: quello che mancava era un file per sessione.
@@ -1135,7 +1144,7 @@ piu' una fonte la si tiene o la si lascia nel corpus pubblico?») non ha
 una risposta che si possa scegliere al posto dell'utente.
 
 **E il comando che serve ad accorgersene non se ne accorgeva.** Chiuso il
-10 ottobre. `publish_corpus.py status` guardava solo `locale - published`,
+5 ottobre. `publish_corpus.py status` guardava solo `locale - published`,
 cioe' le sessioni da pubblicare, e ignorava l'altra direzione. Sul disco
 stampava «Sessioni in locale: 11 | sulla repo: 12» e subito sotto «Tutto
 pubblicato»: una contraddizione enunciata e ignorata, nel comando che
@@ -1157,7 +1166,7 @@ comando non puo' dire che e' tutto pubblicato». **218 test su 11 suite.**
 
 ---
 
-### 25. ~~La matrice delle voci non era mai stata pubblicata~~ — chiuso il 10 ottobre
+### 25. ~~La matrice delle voci non era mai stata pubblicata~~ — chiuso il 5 ottobre
 
 **Stato.** Chiuso. Maniottava anche questo, ed è il pezzo che dice *chi* ha
 parlato.
@@ -1202,7 +1211,7 @@ artefatti disattivato «la matrice mancante deve essere detta per nome».
 
 ---
 
-### 26. ~~`push` ripubblicava tutto e lo dichiarava~~ — chiuso il 10 ottobre
+### 26. ~~`push` ripubblicava tutto e lo dichiarava~~ — chiuso il 5 ottobre
 
 **Stato.** Chiuso. Trovato eseguendo un comando che non avevo mai
 lanciato, che è il metodo che ha funzionato: le cinque precedenti avevano
@@ -1475,12 +1484,12 @@ tarati), **9** (pubblicazione), e il carico termico.
 1. ~~**1 — la prima notte vera.**~~ Fatta il 4 ottobre su un
    registratore USB vero: 6 file su 7 passati per la catena intera, e il
    settimo ha fatto trovare il difetto del file troncato.
-2. ~~**6 — taratura dei flag.**~~ Fatta l'8 ottobre su 1.060 segmenti:
+2. ~~**6 — taratura dei flag.**~~ Fatta il 4 ottobre su 1.060 segmenti:
    `unreliable` al 4,9%, sotto il 5%, e i timestamp per parola hanno
    mostrato che i segmenti segnalati sono davvero peggiori
    (probabilità mediana 0,636 contro 0,960). Le soglie **non** si alzano.
-3. **10 — la soglia**, chiusa all'8 ottobre sul numero e risolta **per
-   misura** il 10 ottobre sulla domanda. Il numero non è spostabile: le
+3. **10 — la soglia**, chiusa al 4 ottobre sul numero e risolta **per
+   misura** il 5 ottobre sulla domanda. Il numero non è spostabile: le
    stesse due voci si somigliano da 0,661 a 0,784 a seconda della
    sessione. E la domanda «quale grandezza come riferimento» **non era
    una scelta**: matrice e sistema facevano la stessa statistica in tre
@@ -1499,7 +1508,7 @@ e su sei file da un'ora indipendenti l'errore va dal +1% al +22%, sempre
 per eccesso — il README non promette più l'1%.
 
 *Da fare prima dell'analisi sul testo:* girare `correct_text.py` sulle
-quattro sessioni del 2 ottobre. **Fatto il 10 ottobre in asciutto**, e le
+quattro sessioni del 2 ottobre. **Fatto il 5 ottobre in asciutto**, e le
 risposte grezze hanno smentito quello che avevo scritto: delle 331 proposte
 accettate ho ispezionato a mano una quarantina, e **quasi tutte sono
 buone** — `statole → scatole`, `frasci → frasi`, `perri → però`,
