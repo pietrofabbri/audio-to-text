@@ -1165,6 +1165,10 @@ def cmd_scarica(args) -> int:
                 return 1
             files, volume, label = list(chosen.audio_files), chosen.path, str(chosen.path)
 
+        if volume is not None and not args.dry_run:
+            from core.scarico import attendi_volume_fermo
+            files = attendi_volume_fermo(
+                lambda: list((pick_recorder(discover(args.mounts)) or chosen).audio_files))
         files.sort(key=lambda f: (parse_recording_time(f.name)[0] or datetime.max, f.name))
         logger.info("Registratore %s: %d file da copiare in %s", label, len(files), CODA_DIR)
         if not files:

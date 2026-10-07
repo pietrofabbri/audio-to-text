@@ -252,6 +252,37 @@ def un_solo_scarico_alla_volta() -> None:
         b.lascia()
 
 
+def aspetta_che_il_volume_sia_fermo() -> None:
+    """Un file che cresce ancora non si copia finche' non si ferma."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        f = base / "2026-10-08_09-00-00.MP3"
+        f.write_bytes(b"x" * 100)
+        passi = []
+
+        def dormi(sec):
+            passi.append(sec)
+            if len(passi) <= 2:                  # cresce per due intervalli
+                with open(f, "ab") as h:
+                    h.write(b"x" * 100)
+
+        out = sc.attendi_volume_fermo(lambda: [f], intervallo=0.0, dormi=dormi)
+        require(out == [f] and len(passi) == 3,
+                f"deve attendere finche' la dimensione e' ferma: {len(passi)} attese")
+        require(f.stat().st_size == 300, "il file e' quello finale")
+
+
+def libera_anche_il_file_appledouble() -> None:
+    """Cancellato l'originale, il «._nome» di macOS non deve restare."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        files = _registratore(base, n=1)
+        doppio = files[0].parent / f"._{files[0].name}"
+        doppio.write_bytes(b"\0" * 4096)
+        _scarica(files, base)
+        require(not doppio.exists(), "il ._ dell'originale cancellato va tolto")
+
+
 def notifica_quando_tutto_va_bene() -> None:
     e = sc.Esito(copiati=12, cancellati=12, secondi_audio=12 * 3600, durata=95)
     titolo, testo = sc.descrivi(e)
@@ -272,6 +303,8 @@ CHECKS = [
     ("registratore staccato a meta'", registratore_staccato_a_meta),
     ("i resti di una copia interrotta si puliscono", resti_di_una_copia_interrotta),
     ("un solo scarico alla volta", un_solo_scarico_alla_volta),
+    ("si aspetta che il volume sia fermo", aspetta_che_il_volume_sia_fermo),
+    ("si toglie anche il ._ di macOS", libera_anche_il_file_appledouble),
     ("la notifica quando tutto va bene", notifica_quando_tutto_va_bene),
 ]
 

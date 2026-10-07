@@ -280,6 +280,9 @@ def scarica(
             return False
         try:
             f.unlink()
+            # macOS lascia accanto ai file di un volume exFAT un «._nome»
+            # con gli attributi estesi: senza l'originale non serve a niente.
+            (f.parent / f"._{f.name}").unlink(missing_ok=True)
         except OSError as exc:
             esito.lasciati.append(f.name)
             registra(f, firma, sha256=sha, action="copiato_lasciato",
@@ -369,6 +372,47 @@ def scarica(
 
     esito.durata = time.time() - t0
     return esito
+
+
+# ----------------------------------------------------------------------
+# Attesa che il volume sia fermo
+# ----------------------------------------------------------------------
+
+def _istantanea(file: Iterable[Path]) -> dict[str, int]:
+    out = {}
+    for f in file:
+        try:
+            out[f.name] = f.stat().st_size
+        except OSError:
+            out[f.name] = -1
+    return out
+
+
+def attendi_volume_fermo(elenca: Callable[[], list[Path]], intervallo: float = 2.0,
+                         massimo: float = 30.0,
+                         dormi: Callable[[float], None] = time.sleep) -> list[Path]:
+    """Restituisce i file quando elenco e dimensioni smettono di cambiare.
+
+    Trovato nella prova del 7 ottobre con un registratore finto: launchd
+    lancia lo scarico nell'istante del montaggio, e se qualcuno (o
+    qualcosa) sta ancora scrivendo sul volume, si copiano file a meta'.
+    Il TileRec quando si monta ha gia' chiuso i suoi file, quindi di
+    solito questa attesa costa un solo intervallo; ma una copia di un file
+    incompleto seguita dalla cancellazione dell'originale sarebbe una
+    perdita, e due secondi sono un prezzo piccolo.
+    """
+    prima = _istantanea(elenca())
+    atteso = 0.0
+    while atteso < massimo:
+        dormi(intervallo)
+        atteso += intervallo
+        file = elenca()
+        ora = _istantanea(file)
+        if ora == prima:
+            return file
+        prima = ora
+    logger.warning("Il volume cambia ancora dopo %.0f s: copio lo stesso", massimo)
+    return elenca()
 
 
 # ----------------------------------------------------------------------
