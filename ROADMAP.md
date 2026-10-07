@@ -165,6 +165,23 @@ in 18 sessioni su 19 con 240 minuti, è quasi certamente Pietro.
 
 ---
 
+## Fuori dalle fasi — Import automatico dal TileRec
+
+**Fatto il 7 ottobre** (APERTI 33, README «Inserisci il TileRec»). Il
+registratore serve solo per il tempo della copia: all'inserimento un job
+launchd copia le registrazioni in `input/coda/` con verifica
+dell'impronta, le cancella dal registratore, lo espelle e notifica «puoi
+staccarlo». La trascrizione avviene dopo, dalla coda (passata diurna
+subito, poi passate delle 09:30/15:30/21:30 e la notte, che pubblica).
+
+Da confermare al primo inserimento vero (8 ottobre): velocità USB del
+TileRec, permesso di macOS sui volumi rimovibili, nome del volume.
+
+**Fase 1, parte tua (coppie e nomi): rimandata al 14 ottobre**, su
+richiesta di Pietro; c'è un promemoria programmato.
+
+---
+
 ## Fase 2 — Una cartella per giorno, momenti continui unificati
 
 Taglia: grande (tocca pubblicazione, indice, test, migrazione del

@@ -1559,6 +1559,80 @@ volta sola.
 
 ---
 
+### 33. ~~Il registratore doveva restare collegato per ore~~ — chiuso il 7 ottobre
+
+**Stato.** Chiuso; da confermare al primo inserimento del TileRec vero
+(velocità di lettura USB e permesso di macOS sui volumi rimovibili).
+
+**Il problema.** `pull` leggeva l'audio direttamente dal registratore e lo
+cancellava solo a trascrizione verificata. Era la scelta prudente — il
+registratore resta la fonte di verità finché il lavoro non è finito — ma
+voleva dire tenerlo collegato per tutta l'elaborazione: diciotto file da
+un'ora sono ore, e un registratore collegato non registra. Staccandolo
+prima, il lavoro si rompeva. È successo il 5 ottobre: nel manifest
+`2026-10-05_09-39-09.MP3` risulta elaborato in 5.346 s, poi l'archiviazione
+fallisce con `No such file or directory: '/Volumes/Untitled/RECORD/...'`.
+Il file era sparito dal volume a metà lavoro, e quella sessione oggi non
+ha l'audio originale da nessuna parte (punto 32).
+
+**La regola nuova: il registratore serve solo per il tempo della copia.**
+`sync_device.py scarica` (`core/scarico.py`) copia ogni file in
+`input/coda/` calcolando l'impronta mentre legge, forza la copia su disco,
+la rilegge e confronta le impronte; cancella dal registratore solo i file
+la cui copia coincide; poi lo espelle e manda una notifica «puoi
+staccarlo». La trascrizione legge dalla coda (`pull --source input/coda`),
+con le stesse garanzie di prima: dalla coda si toglie solo ciò che è
+trascritto, verificato e archiviato.
+
+**Perché una sola lettura del registratore.** Rileggerlo per confronto
+raddoppierebbe il tempo in cui deve restare collegato, cioè proprio la
+cosa da ridurre. Il trasporto USB ha già il suo controllo d'errore; i
+rischi reali sono la scrittura locale e l'interruzione a metà, e li copre
+la rilettura della copia sul disco del Mac, che costa una frazione di
+secondo.
+
+**Il troncato non si cancella al primo inserimento.** Un errore di lettura
+può essere il file (registratore spento mentre scriveva, il caso del 4
+ottobre) oppure il cavo. La parte leggibile va comunque in coda e si
+trascrive; l'originale si cancella solo se all'inserimento successivo lo
+stesso file (nome, dimensione, data di modifica) si ferma di nuovo con la
+stessa impronta.
+
+**Automatico.** `setup_launchd.py install-tile` installa
+`it.pietrofabbri.audio-to-text-tile`, un job con `StartOnMount`: parte a
+ogni volume montato e lancia `scarica --auto`, che esce in silenzio se il
+volume non è il registratore. Finito lo scarico avvia subito la passata
+diurna sulla coda (`launchctl kickstart` del job diurno). La notte, se il
+registratore è ancora collegato, lo scarica per primo.
+
+**Due difetti trovati provando, il 7 ottobre**, con un registratore finto
+(immagine disco exFAT `Untitled` con `RECORD/` e tre MP3) e un job di prova
+isolato in `/tmp` con `A2T_ROOT_DIR`:
+
+  - launchd lancia lo scarico nell'istante del montaggio, e un file ancora
+    in scrittura veniva copiato a metà. Ora si aspetta che elenco e
+    dimensioni dei file restino fermi per 2 s (massimo 30). Il TileRec ha
+    già chiuso i suoi file quando si monta, ma una copia incompleta
+    seguita dalla cancellazione dell'originale sarebbe una perdita.
+  - Copia riuscita, espulsione no: `diskutil` sta in `/usr/sbin`, che non
+    è nel PATH dei job launchd. Percorso assoluto come riserva e
+    `/usr/sbin` nel PATH dei plist.
+
+**Verificato.** Prova finale col job di prova: «inserito» alle 11:58:42,
+3 file copiati, impronte identiche agli originali, registratore svuotato
+ed espulso alle 11:58:46. `nightly.py --dry-run` sulla stessa radice vede
+i 3 file in coda. `launchctl kickstart` del job diurno vero parte e legge
+la coda locale. 13 test in `tests/test_scarico.py`, 1 in
+`test_nightly.py`; 13 suite verdi sul Mac.
+
+**Cosa resta da vedere col TileRec vero:** la velocità di lettura (con
+file da 57,6 MB è quella che decide quanto si aspetta), il permesso di
+macOS per l'accesso ai volumi rimovibili da parte di `python3` lanciato
+da launchd (un'immagine disco potrebbe non chiederlo), e che il volume
+si chiami ancora `Untitled` con `RECORD/`.
+
+---
+
 ## L'ordine in cui li farei
 
 Fatti: **1** (prima notte vera), **2** (cache WAV), **3** (finestra

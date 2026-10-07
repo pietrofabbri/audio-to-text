@@ -169,8 +169,10 @@ python run.py --status
 python setup_launchd.py install
 ```
 
-Ogni notte alle **02:00** la pipeline si avvia, importa dal registratore,
-elabora entro un budget di **4 ore** e pubblica il corpus. Viene
+Ogni notte alle **02:00** la pipeline si avvia, scarica il registratore se
+è collegato, trascrive la coda entro un budget di **4 ore** e pubblica il
+corpus. Il terzo job (`it.pietrofabbri.audio-to-text-tile`) parte a ogni
+inserimento del registratore: vedi «Inserisci il TileRec» più sotto. Viene
 installato anche un job diurno: tre passate brevi (09:30, 15:30, 21:30,
 40 minuti, 3 thread, priorità bassa) che fanno avanzare la coda senza
 rubare la macchina.
@@ -527,11 +529,67 @@ per giusto. Finché non arrivano voci che si somiglino davvero, 0,78 resta
 una scelta prudente più che una soglia tarata — e le sei coppie in zona
 grigia sono la misura reale di quanto quella prudenza stia aspettando.
 
-Quando il registratore è collegato, tutto il ciclo è in un comando:
+### Inserisci il TileRec, aspetta la notifica, staccalo
+
+Dal 7 ottobre il registratore serve **solo per il tempo della copia**.
+Una volta installati i job (`python setup_launchd.py install`, oppure
+solo `install-tile`), il giro è questo:
+
+1. **Inserisci il TileRec.** macOS lo monta come `/Volumes/Untitled` e
+   launchd lancia da solo `sync_device.py scarica --auto`. Arriva una
+   notifica: «TileRec collegato — copio N file, non staccarlo».
+2. **Copia verificata in `input/coda/`.** Ogni file si copia calcolandone
+   l'impronta mentre si legge, si scrive su disco, si rilegge la copia e
+   le impronte si confrontano. Solo un file la cui copia coincide byte per
+   byte viene cancellato dal registratore.
+3. **Espulsione e notifica.** «TileRec copiato, puoi staccarlo» con il
+   suono *Glass*. Se qualcosa non va il suono è *Basso* e il testo dice
+   quanti file restano sul registratore (dettagli in `logs/scarico.log`).
+4. **Trascrizione dalla coda.** Subito dopo parte una passata diurna
+   (40 minuti, priorità bassa); quello che non entra lo prendono le
+   passate delle 09:30, 15:30, 21:30 e la notte delle 02:00, che pubblica
+   il corpus. Il registratore può già essere di nuovo al braccio.
+
+Il perché: prima la trascrizione leggeva dal registratore e lo cancellava
+solo a lavoro finito, quindi doveva restare collegato per ore. Il 5
+ottobre è stato staccato a metà e la sessione `2026-10-05_09-39-09` ha
+perso l'audio originale. Misurato con un registratore finto (immagine
+disco exFAT `Untitled/RECORD`, il 7 ottobre): dall'inserimento
+all'espulsione **4 secondi** per 3 file da 1 MB; per i file veri da
+57,6 MB conta la velocità USB del TileRec, da misurare al primo uso.
+
+Casi particolari, tutti coperti da test (`tests/test_scarico.py`):
+
+| Caso | Cosa succede |
+|---|---|
+| Staccato durante la copia | Quello già copiato è intero in coda; il resto è sul registratore; notifica «reinseriscilo» |
+| File troncato (batteria) | La parte leggibile va in coda e si trascrive; l'originale si cancella solo se all'inserimento dopo si ferma allo stesso byte con la stessa impronta |
+| File già trascritto in passato | Non torna in coda; si libera solo lo spazio |
+| Spazzatura (non audio) | Resta sul registratore, non entra in coda |
+| Volume ancora in scrittura | Si aspetta che elenco e dimensioni restino fermi (2 s, massimo 30) |
+| Una chiavetta qualsiasi | Il job parte ma esce in silenzio: non è il registratore |
+
+**Al primo inserimento vero** macOS potrebbe chiedere il permesso di
+accedere ai volumi rimovibili per `python3`: va concesso, una volta sola.
+Se dopo mezzo minuto non arriva nessuna notifica, il motivo è in
+`logs/scarico.log` o `logs/launchd_scarico.log`.
+
+A mano, gli stessi passi:
+
+```bash
+python sync_device.py scarica --dry-run   # cosa copierebbe
+python sync_device.py scarica             # copia, libera, espelli, avvisa
+python sync_device.py scarica --no-delete # copia senza cancellare dal registratore
+python sync_device.py pull --source input/coda   # trascrive la coda
+```
+
+### Il ciclo completo
+
+Tutto il ciclo è in un comando:
 
 ```bash
 python nightly.py --dry-run           # piano della notte: quanti file entrano
-python nightly.py                     # ciclo completo: importa, elabora, pubblica
+python nightly.py                     # ciclo completo: scarica, trascrive la coda, pubblica
 ```
 
 Sotto, i singoli passi:
@@ -547,7 +605,7 @@ python publish_corpus.py push         # pubblica sulla repo privata
 Il ciclo notturno si ferma **fra un file e l'altro** quando il budget
 di tempo (`--max-seconds`, 4h di default) è esaurito: iniziare un file
 che non finisce dentro la finestra costerebbe il suo tempo senza
-produrre nulla. Quello che non entra resta sul device e riparte dalla
+produrre nulla. Quello che non entra resta in coda e riparte dalla
 stessa condizione la notte dopo.
 
 La stima del file successivo non è una tabella: dopo il primo file la
@@ -569,15 +627,15 @@ I **WAV derivati** che la pipeline usa per il VAD stanno in
 ma **non** se il checkpoint è a metà, perché quello serve per riprendere
 dal chunk interrotto. Erano ~4 GB al giorno e non finivano mai da soli.
 
-I file **non** vengono copiati prima di essere elaborati: vengono letti
-dove sono. Il registratore resta la fonte di verità finche il lavoro non
-è finito, e la cancellazione è l'ultimo atto:
+Dalla coda la cancellazione resta l'ultimo atto (prima del 7 ottobre la
+stessa regola valeva per il registratore, che quindi restava collegato
+per ore):
 
 ```
-elboro → verifico l'output → archivio in locale → cancello dal device
+elaboro → verifico l'output → archivio in locale → tolgo dalla coda
 ```
 
-Se una passaggio fallisce, **il file resta sul device**. Non esiste un
+Se un passaggio fallisce, **il file resta in coda**. Non esiste un
 percorso in cui un file viene cancellato senza che la trascrizione esista
 e sia stata verificata (`transcript.json` presente, con segmenti e almeno
 poche parole). Ogni file toccato finisce in `logs/device_manifest.jsonl`
@@ -1363,7 +1421,7 @@ python sync_device.py pull --source /tmp/rec
 audio-to-text/
 ├── run.py                  # entrypoint CLI della pipeline
 ├── nightly.py              # ciclo notturno: importa, elabora, pubblica
-├── sync_device.py          # import dal registratore + cancellazione sicura
+├── sync_device.py          # scarico dal registratore, trascrizione della coda, archivio
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
 ├── review_speakers.py      # chi è chi: nomi, merge, split, sync, matrice, ascolto
 ├── correct_text.py         # correzione delle parole con un LLM (serve --consent)
@@ -1381,6 +1439,7 @@ audio-to-text/
 │   ├── speakers_merge.py   # fusione dei cluster troppo brevi
 │   ├── voice_matrix.py     # somiglianza fra voci, per campione e per coppia di voci
 │   ├── voice_review.py     # estratti da ascoltare e voci da rivedere
+│   ├── scarico.py          # copia verificata dal registratore alla coda locale
 │   ├── text_correction.py  # correzione del testo con Gemini, affiancata
 │   └── corpus_db.py        # indice SQLite locale per le analisi
 ├── pipeline/
@@ -1397,7 +1456,7 @@ audio-to-text/
 │   ├── test_quality.py     # flag di qualità della trascrizione
 │   ├── test_publish.py     # pubblicazione e controllo privacy
 │   └── test_nightly.py     # piano, budget, coda, finestra, carico termico
-├── input/                  # metti qui i file audio/video
+├── input/                  # file audio/video; input/coda/ = copie dal registratore
 ├── output/                 # risultati
 ├── archive/                # originali in attesa di purga (7 giorni)
 ├── data/                   # database voci, corpus, estratti audio (gitignored)
