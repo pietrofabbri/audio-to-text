@@ -23,6 +23,7 @@ env/
 # Log e output
 logs/*.log
 logs/*.jsonl
+logs/*.lock
 
 # File audio/video di input e output (non committiamo media)
 input/*
