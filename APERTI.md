@@ -1633,6 +1633,56 @@ si chiami ancora `Untitled` con `RECORD/`.
 
 ---
 
+### 34. ~~Una giornata era sette cartelle e ottanta file~~ — chiuso il 7 ottobre
+
+**Stato.** Chiuso (ROADMAP Fase 2, decisioni D3 e D4).
+
+**Il problema.** Il corpus pubblicava una cartella per file del
+registratore, cioè una per ora, con dieci-dodici file ciascuna. Il 5
+ottobre erano sette cartelle; una conversazione che attraversava le 10:39
+stava divisa fra due cartelle, con due orologi che ripartivano entrambi da
+00:00:00. Per leggere una giornata bisognava ricucirla a mano.
+
+**La soluzione** (`core/giorno.py`). Alla pubblicazione le sessioni si
+raggruppano per giorno e ogni tipo di file diventa uno solo, con l'ora
+vera: `giorni/AAAA-MM-GG/` con `giorno.json` (manifesto), `transcript.txt`
+e `.srt`, `segments.jsonl`, `tokens.jsonl`, `prosody.csv`, `wordfreq.csv`,
+`analysis_ready.md`, più le viste corrette dove esistono. L'elaborazione
+resta per file: l'unione è una vista.
+
+**Tre scelte che vanno dette.**
+
+  - *I campi originali restano.* Ogni segmento ha `session` e `start`/`end`
+    in secondi dal suo file, accanto a `clock_*` e `day_sec_*`. Senza, non
+    si potrebbe più tornare dal testo all'audio di quel file.
+  - *La prosodia non si ripete in ogni parola.* Per sessione, ogni riga di
+    `tokens.jsonl` copiava i sedici campi di prosodia del suo segmento:
+    unito, il file del 5 ottobre faceva 20 MB, e una giornata da 18 ore si
+    sarebbe avvicinata ai 50 MB a cui GitHub comincia ad avvisare. Ora la
+    parola porta `day_segment_idx` e la prosodia sta una volta sola nel
+    segmento: 10 MB, giornata intera 12 MB.
+  - *Mezzanotte.* Un blocco continuo appartiene al giorno in cui comincia;
+    nell'SRT del giorno l'ora oltre la mezzanotte continua a contare
+    (24:31:00), invece di ripartire da zero.
+
+**La migrazione e la sessione che si sarebbe persa.** Le giornate si
+costruiscono da `output/`. Sulla repo c'era `2026-10-02_17-02-36` (due
+minuti, un'intera registrazione) che in `output/` non c'era più: togliere
+`sessions/` l'avrebbe cancellata dal corpus senza che nessun conteggio lo
+mostrasse, perché la giornata del 2 ottobre sarebbe semplicemente uscita
+con quattro registrazioni invece di cinque. Il primo `push` ora riporta in
+`output/` le sessioni che stanno solo sulla repo, e solo dopo toglie
+`sessions/`. C'è un test che lo blocca.
+
+**Verificato.** Su una copia del corpus vero con un remoto locale: 3
+giornate, conteggi di parole identici alla somma delle sessioni (16.740,
+24.338, 30.665), la sessione orfana riportata e presente nella sua
+giornata, un secondo push che non pubblica niente, `status` «Tutto
+pubblicato». 8 test in `tests/test_giorno.py`, 2 nuovi e 5 riscritti in
+`tests/test_publish.py`, 2 riscritti in `tests/test_nightly.py`.
+
+---
+
 ## L'ordine in cui li farei
 
 Fatti: **1** (prima notte vera), **2** (cache WAV), **3** (finestra

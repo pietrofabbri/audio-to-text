@@ -44,6 +44,7 @@ FAST = [
     ([sys.executable, str(HERE / "test_voice_matrix.py")], "matrice delle voci"),
     ([sys.executable, str(HERE / "test_voice_review.py")], "revisione e ascolto delle voci"),
     ([sys.executable, str(HERE / "test_scarico.py")], "scarico veloce dal registratore"),
+    ([sys.executable, str(HERE / "test_giorno.py")], "giornate unificate"),
     ([sys.executable, str(HERE / "test_text_correction.py")], "correzione del testo"),
 ]
 

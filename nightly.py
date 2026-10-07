@@ -229,32 +229,45 @@ def _log_uscita_male(nome: str, code: int, out: str) -> None:
 
 
 def _sessioni_non_pubblicate() -> dict[str, list[str]]:
-    """Quali file di una sessione completa non sono arrivati nella repo.
+    """Quali sessioni complete non sono arrivate nella loro giornata.
 
-    Confronta `output/` con `corpus_repo/sessions/`, limitandosi ai file
-    che vanno pubblicati: un file che non e' nell'elenco non e' un buco,
-    e `tokens.jsonl` lo era per mesi senza che nessuno se ne accorgesse.
+    Dal 7 ottobre la repo e' per giorno: una sessione e' pubblicata se il
+    manifesto della sua giornata (`giorni/<giorno>/giorno.json`) la elenca
+    e la giornata ha tutti i suoi file. Il controllo esiste perche' il
+    push puo' uscire 0 senza aver pubblicato tutto — `tokens.jsonl` era
+    rimasto fuori per mesi cosi'.
 
-    Restituisce {sessione: [file mancanti]}, vuoto se tutto e' a posto.
+    Restituisce {sessione: [cosa manca]}, vuoto se tutto e' a posto.
     """
-    from publish_corpus import PUBLISHABLE, PUBLISHABLE_AFFIANCO
+    from core.giorno import FILE_GIORNO, inizio_sessione
 
     output_dir = ROOT / "output"
-    repo_sessions = ROOT / "corpus_repo" / "sessions"
-    if not output_dir.is_dir() or not repo_sessions.is_dir():
+    giorni_dir = ROOT / "corpus_repo" / "giorni"
+    if not output_dir.is_dir() or not giorni_dir.is_dir():
         return {}
+    elencate: dict[str, set[str]] = {}
+    for d in giorni_dir.iterdir():
+        try:
+            m = json.loads((d / "giorno.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        elencate[d.name] = {x.get("stem") for x in m.get("sessions") or []}
+    dove = {stem: g for g, stems in elencate.items() for stem in stems}
     out: dict[str, list[str]] = {}
     for d in sorted(x for x in output_dir.iterdir()
                     if x.is_dir() and not x.name.startswith(".")):
         if not (d / "transcript.json").exists():
             continue
-        target = repo_sessions / d.name
-        mancanti = [
-            nome for nome in PUBLISHABLE + PUBLISHABLE_AFFIANCO
-            if (d / nome).exists() and not (target / nome).exists()
-        ]
+        giorno = dove.get(d.name)
+        if giorno is None:
+            inizio = inizio_sessione(d)
+            atteso = inizio.strftime("%Y-%m-%d") if inizio else "?"
+            out[d.name] = [f"giorni/{atteso}/giorno.json non la elenca"]
+            continue
+        mancanti = [n for n in FILE_GIORNO
+                    if not (giorni_dir / giorno / n).exists()]
         if mancanti:
-            out[d.name] = mancanti
+            out[d.name] = [f"giorni/{giorno}/{n}" for n in mancanti]
     return out
 
 

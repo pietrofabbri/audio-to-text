@@ -766,37 +766,71 @@ frequenze, markdown di analisi, con `INDEX.md` come punto d'ingresso.
 
 ```bash
 python publish_corpus.py init              # clona la repo privata in locale
-python publish_corpus.py push              # pubblica le sessioni nuove
+python publish_corpus.py push              # pubblica le giornate nuove o cambiate
 python publish_corpus.py push --dry-run    # cosa cambierebbe, senza scrivere
 python publish_corpus.py push --with-names  # pubblica anche i nomi reali
 python publish_corpus.py status            # cosa c'è e cosa manca
 python publish_corpus.py reindex           # ricostruisce il database locale
 ```
 
-`push` conta solo le sessioni **diverse** da quelle già sulla repo: il
+`push` conta solo le giornate **diverse** da quelle già sulla repo: il
 confronto è sul contenuto che andrebbe scritto, quindi il `--dry-run` e il
-push vero dicono lo stesso numero. Con le 11 sessioni già pubblicate il
-dry-run risponde «Nessuna sessione da pubblicare», e non un elenco di
-pubblicazioni che non ci sono.
+push vero dicono lo stesso numero, e un secondo push senza novità risponde
+«Nessuna giornata nuova da pubblicare».
 
-### Cosa c'è sulla repo
+### Cosa c'è sulla repo: una cartella per giorno
+
+Dal 7 ottobre la repo è organizzata per **giorno**: tutte le registrazioni
+di un giorno stanno in un file per tipo, in fila, con l'**ora vera**
+dell'orologio del registratore al posto del tempo dall'inizio del file
+(`core/giorno.py`).
 
 ```
-INDEX.md                        # una riga per sessione, con i formati elencati
+INDEX.md                        # una riga per giorno: registrazioni, orari, blocchi, parlato, parole, voci
 .gitignore                      # scritto da publish_corpus.py: niente spazzatura del Finder
-sessions/
-└── 2026-10-04_14-43-16/
-    ├── transcript.json  .txt  .srt
-    ├── segments.jsonl          # un segmento per riga
-    ├── tokens.jsonl            # una parola per riga: KWIC, n-grammi
-    ├── prosody.csv  wordfreq.csv  session.json
-    ├── analysis_ready.md
-    ├── denoise_decision.json   # quale denoise ha vinto e con quali soglie
-    ├── speaker_profiles.json   # profilo delle voci (senza vettori)
-    └── speaker_merge.json      # cosa è stato fuso fra i cluster brevi
+giorni/
+└── 2026-10-05/
+    ├── giorno.json             # manifesto: registrazioni, orari, buchi, blocchi continui,
+    │                           # voci, decisioni di denoise, fusioni delle voci
+    ├── transcript.txt  .srt    # il testo del giorno, con l'ora vera
+    ├── segments.jsonl          # un segmento per riga: session + start/end nel file, clock_*/day_sec_*
+    ├── tokens.jsonl            # una parola per riga, con day_segment_idx e speaker_global
+    ├── prosody.csv             # un segmento per riga, con l'ora vera
+    ├── wordfreq.csv            # frequenze del giorno, per voce
+    ├── analysis_ready.md       # il giorno intero, pronto per un LLM
+    └── *.corrected.*           # le stesse viste col testo corretto, dove esiste
 voices/
-└── voice_matrix.json           # somiglianza fra le voci, coppia per coppia
+└── voice_matrix.json           # somiglianza fra le voci, coppie di voci da decidere
 ```
+
+Le regole, misurate sulle registrazioni vere:
+
+- **Blocco continuo** = file consecutivi con un buco fino a 5 minuti. Il
+  TileRec spezza ogni ora e perde da pochi secondi a ~3 minuti fra un file
+  e l'altro; le pause vere del 4 ottobre andavano da 4 a 23 minuti. Nel
+  testo ogni registrazione ha un'intestazione che dice se continua la
+  precedente o arriva dopo una pausa, e di quanto.
+- **Un blocco appartiene al giorno in cui comincia**: una conversazione
+  che passa la mezzanotte resta intera nel giorno prima (nell'SRT l'ora
+  continua oltre le 24).
+- **I campi originali restano**: ogni segmento e ogni parola dicono da
+  quale file vengono (`session`) e in che secondo di quel file
+  (`start`/`end`), accanto all'ora vera.
+- **La prosodia sta nel segmento**, non ripetuta in ogni parola: per il
+  5 ottobre `tokens.jsonl` passa da 20 a 10 MB, la giornata intera pesa
+  12 MB.
+
+Non si pubblicano più, perché ridondanti: `transcript.json` (le stesse
+cose di `segments.jsonl` + `tokens.jsonl`), `speaker_profiles.json` (una
+fotografia del DB delle voci; la vista aggiornata è la matrice) e
+`session.json` (nel manifesto). `denoise_decision.json` e
+`speaker_merge.json` sono dentro `giorno.json`. In locale, in `output/`,
+resta tutto com'era: l'elaborazione è per file, la giornata è una vista
+costruita alla pubblicazione.
+
+**La migrazione** dalla struttura per file (`sessions/`) avviene al primo
+`push`: le sessioni che stanno solo sulla repo vengono prima riportate in
+`output/`, poi `sessions/` sparisce in un unico commit.
 
 `voices/voice_matrix.json` è **un file solo per tutto il corpus**, non uno
 per sessione: riporta la somiglianza fra ogni coppia di voci e, in
@@ -820,12 +854,12 @@ locali, i checkpoint. Non è una scelta di comodità: testo, prosodia e
 statistiche parlarie insieme ricostruiscono un profilo che nessun file
 rivela da solo.
 
-**I nomi reali dei parlanti** stanno in `transcript.json` e
-`session.json` in locale — è materiale che resta sulla tua macchina.
-Sulla repo, per default, vengono sostituiti dagli pseudonimi: un accesso
-alla repo non dà l'identità. `--with-names` li pubblica, ed è una
-decisione che va presa **a ogni push**, non un'impostazione da
-dimenticare: pubblicare nomi veri non si richiama.
+**I nomi reali dei parlanti** stanno nel DB delle voci e in `session.json`
+in locale. Sulla repo, per default, compaiono solo gli pseudonimi: un
+accesso alla repo non dà l'identità. `--with-names` li pubblica (nel testo
+come «Nome (GLOBAL_001)», nel manifesto come mappa), oppure ogni notte con
+`corpus_with_names = True` in `core/config.py`: pubblicare nomi veri non
+si richiama, quindi il default resta spento.
 
 Il controllo finale non guarda solo le estensioni: cerca i nomi reali
 **dentro il contenuto** di ogni file pubblicato, usando l'elenco delle

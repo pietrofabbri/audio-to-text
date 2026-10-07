@@ -34,6 +34,12 @@ persona. Il default resta quello che non espone nulla; accettare
 l'esposizione deve essere una decisione presa ogni volta, non una
 impostazione dimenticata.
 
+Dal 7 ottobre la repo e' organizzata **per giorno**: `giorni/AAAA-MM-GG/`
+con un file per tipo che contiene tutte le sessioni del giorno in fila,
+con l'ora vera (core/giorno.py). La vecchia cartella `sessions/` viene
+migrata al primo `push`: le sessioni che stanno solo sulla repo vengono
+prima riportate in `output/`, cosi' nessuna si perde.
+
     python publish_corpus.py init      # clona la repo privata in locale
     python publish_corpus.py push      # pubblica le sessioni nuove
     python publish_corpus.py push --with-names   # pubblica anche i nomi
@@ -73,40 +79,25 @@ LOCAL_CLONE = ROOT / "corpus_repo"
 # fra le due cose non vuole niente. E' la stessa leva di `LOCAL_CLONE`.
 SPEAKERS_DB = ROOT / "data" / "speakers_db.json"
 
-# File pubblicati per ogni sessione.
-#
-# `tokens.jsonl` sta qui perche' e' il file che rende il corpus
-# interrogabile parola per parola: e' l'unico dove ogni parola ha un
-# timestamp proprio, il che significa KWIC, n-grammi, collocazione e
-# sincronizzazione con dati biometrici al secondo. Senza, la repo
-# pubblicata ha i segmenti ma non puo' rispondere a «questa parola, in
-# che momento», che e' la domanda per cui esiste. Era nell'INDEX.md come
-# formato dichiarato e non nell'elenco di chi va copiato: il file non
-# mancava mai perche' non ci si accorse che non era mai stato
-# pubblicato, dato che anche l'INDEX lo elencava come se lo fosse.
-#
-# `speaker_merge.json` e' la mappa dei cluster locali verso le voci
-# globali: senza, dalla repo non si capisce come due frammenti della
-# stessa persona sono diventati una voce sola.
-PUBLISHABLE = (
-    "transcript.json", "transcript.txt", "transcript.srt",
-    "prosody.csv", "session.json", "segments.jsonl", "tokens.jsonl",
-    "wordfreq.csv", "analysis_ready.md", "speaker_profiles.json",
-    "speaker_merge.json", "denoise_decision.json", "text_correction.json",
-)
-# Le varianti corrette hanno un suffisso proprio invece di stare in
-# elenco: se un giorno non ci sono (nessuna correzione fatta), non si
-# devono pubblicare file di una sessione che non ne ha.
-PUBLISHABLE_AFFIANCO = (
-    "transcript.corrected.txt", "transcript.corrected.srt",
-    "segments.corrected.jsonl",
-)
+# Fino al 7 ottobre si pubblicava una cartella per sessione con 13 file
+# (PUBLISHABLE). Ora si pubblica una cartella per giorno: l'elenco dei
+# file di una giornata sta in core/giorno.py (FILE_GIORNO,
+# FILE_GIORNO_CORRETTI). Due lezioni di quell'elenco restano valide:
+# `tokens.jsonl` e' il file che rende il corpus interrogabile parola per
+# parola, ed era rimasto fuori per mesi perche' l'indice lo dichiarava
+# senza che nessuno lo copiasse; e un formato dichiarato va controllato
+# contro quello che c'e' davvero (lo fa nightly._sessioni_non_pubblicate).
 
 # Artefatti che stanno a livello di corpus e non dentro una cartella di
 # sessione. Il confronto file per file non li vede per costruzione, quindi
 # hanno bisogno di un controllo proprio: e' cosi' che `tokens.jsonl` e la
 # matrice delle voci sono rimasti fuori senza che nessuno se ne accorgesse.
 ARTEFATTI_CORPUS = ("voices/voice_matrix.json",)
+
+# La repo per giorno (dal 7 ottobre). `sessions/` e' la struttura di prima,
+# che il primo push migra e toglie.
+GIORNI = "giorni"
+SESSIONI_VECCHIE = "sessions"
 
 # File che non devono MAI essere copiati, per nome. La lista è volutamente
 # conservativa: più è restrittiva, meglio è.
@@ -118,7 +109,7 @@ FORBIDDEN = (
 # cartella che l'utente puo' aprire nel Finder, e il Finder ci lascia
 # dentro `.DS_Store`: `git add -A` mette in stage tutto quello che trova,
 # e cosi' la spazzatura del desktop finisce sulla repo pubblicata. Non
-# e' un file che `_publish_session` copia — e' entrato da un'altra parte,
+# e' un file che la pubblicazione scrive — e' entrato da un'altra parte,
 # ed e' per questo che la lista dei vietati non lo intercettava.
 GITIGNORE = """\
 # Scritto da publish_corpus.py. La repo pubblicata contiene solo i
@@ -179,58 +170,6 @@ def cmd_init(args) -> int:
     return 0
 
 
-def _session_dir(stem: str) -> Path:
-    return LOCAL_CLONE / "sessions" / stem
-
-
-def _publish_session(stem: str, dry_run: bool = False) -> list[Path]:
-    """Copia gli output di una sessione nella repo, ripuliti.
-
-    Restituisce i file **diversi** da quelli già presenti sulla repo, non
-    quelli toccati: senza questo confronto una sessione già pubblicata
-    verrebbe contata fra le nuove a ogni push, e il messaggio di commit
-    direbbe «corpus: 11 sessioni» quando il contenuto non è cambiato.
-    Confronto il contenuto che andrebbe scritto, quindi il conteggio è
-    lo stesso in dry-run e in scrittura reale.
-    """
-    src = OUTPUT_DIR / stem
-    if not src.is_dir():
-        return []
-
-    dest = _session_dir(stem)
-    written: list[Path] = []
-
-    for name in PUBLISHABLE + PUBLISHABLE_AFFIANCO:
-        s = src / name
-        if not s.exists():
-            continue
-        if any(name.endswith(x) for x in (".wav", ".mp3", ".m4a", ".db")):
-            continue
-
-        target = dest / name
-        if name.endswith(".json"):
-            try:
-                doc = json.loads(s.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("%s: %s non leggibile, saltato (%s)", stem, name, exc)
-                continue
-            content = json.dumps(_scrub(doc), ensure_ascii=False, indent=2)
-            if _gia_uguale(target, content):
-                continue
-            if not dry_run:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
-        else:
-            if _gia_uguale(target, None, sorgente=s):
-                continue
-            if not dry_run:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(s, target)
-        written.append(target)
-
-    return written
-
-
 def _gia_uguale(target: Path, content: str | None = None,
                 sorgente: Path | None = None) -> bool:
     """Il file sulla repo è già identico a quello che scriverei?
@@ -250,6 +189,90 @@ def _gia_uguale(target: Path, content: str | None = None,
     except OSError:
         # Illeggibile: meglio riscriverlo che fingere che sia a posto.
         return False
+
+def _cartelle_sessioni() -> list[Path]:
+    """Le sessioni locali complete: un output a meta' non si pubblica."""
+    if not OUTPUT_DIR.is_dir():
+        return []
+    return sorted(d for d in OUTPUT_DIR.iterdir()
+                  if d.is_dir() and not d.name.startswith(".")
+                  and (d / "transcript.json").exists())
+
+
+def _nomi_da_pubblicare() -> dict[str, str]:
+    """I nomi da mettere nelle giornate: nessuno, salvo `--with-names`."""
+    if not keep_names:
+        return {}
+    try:
+        from core.speaker_db import SpeakerDB
+        from core.speaker_sync import names_from_db
+        return dict(names_from_db(SpeakerDB(SPEAKERS_DB)))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nomi non disponibili, pubblico gli pseudonimi: %s", exc)
+        return {}
+
+
+def _giornate():
+    from core.giorno import giornate
+    return giornate(_cartelle_sessioni(), nomi=_nomi_da_pubblicare())
+
+
+def _publish_day(g, dry_run: bool = False) -> list[Path]:
+    """Scrive i file di una giornata; restituisce solo quelli cambiati.
+
+    Il confronto e' sul contenuto che andrebbe scritto, come per le
+    sessioni prima: una giornata identica sulla repo non si conta, e il
+    messaggio di commit non racconta pubblicazioni che non ci sono state.
+    Un file che la giornata non produce piu' (per esempio il testo
+    corretto ritirato) viene tolto.
+    """
+    from core.giorno import FILE_GIORNO, FILE_GIORNO_CORRETTI
+
+    dest = LOCAL_CLONE / GIORNI / g.giorno
+    cambiati: list[Path] = []
+    contenuti = g.file()
+    for nome, testo in contenuti.items():
+        if nome.endswith(".json"):
+            testo = json.dumps(_scrub(json.loads(testo)), ensure_ascii=False,
+                               indent=2) + "\n"
+        target = dest / nome
+        if _gia_uguale(target, testo):
+            continue
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(testo, encoding="utf-8")
+        cambiati.append(target)
+    for nome in FILE_GIORNO + FILE_GIORNO_CORRETTI:
+        vecchio = dest / nome
+        if nome not in contenuti and vecchio.exists():
+            if not dry_run:
+                vecchio.unlink()
+            cambiati.append(vecchio)
+    return cambiati
+
+
+def _migra_sessioni_vecchie(dry_run: bool = False) -> list[str]:
+    """Prima di togliere `sessions/`, riporta in locale cio' che c'e' solo li'.
+
+    Il caso vero: `2026-10-02_17-02-36` stava sulla repo e non piu' in
+    `output/`. Le giornate si costruiscono da `output/`: senza questo
+    passo, togliere `sessions/` l'avrebbe cancellata dal corpus. Si copia
+    la cartella pubblicata (gia' senza nomi) in `output/`, senza toccare
+    nulla che esista gia'. Restituisce le sessioni riportate.
+    """
+    vecchie = LOCAL_CLONE / SESSIONI_VECCHIE
+    if not vecchie.is_dir():
+        return []
+    riportate = []
+    for d in sorted(vecchie.iterdir()):
+        if not d.is_dir() or (OUTPUT_DIR / d.name / "transcript.json").exists():
+            continue
+        riportate.append(d.name)
+        if not dry_run:
+            shutil.copytree(d, OUTPUT_DIR / d.name, dirs_exist_ok=True)
+            logger.info("Riportata in output/ dalla repo: %s", d.name)
+    return riportate
+
 
 
 def _write_voice_matrix(dry_run: bool = False) -> Path | None:
@@ -331,81 +354,69 @@ def _recorded_at(session_dir: Path, meta: dict) -> str | None:
 
 
 def _write_index(dry_run: bool = False) -> Path:
-    """Indice per data: il punto di ingresso di un LLM nel corpus.
+    """Indice per giorno: il punto di ingresso di un LLM nel corpus.
 
-    Un indice unico in cima, ordinato per data, vale più di mille file
-    in una cartella: un LLM non sa cosa cercare se non gli dici prima
-    che cosa c'è.
+    Si legge dai manifesti `giorni/*/giorno.json` della repo, cioe' da
+    quello che e' davvero pubblicato, non da quello che c'e' in locale.
     """
-    sessions_dir = LOCAL_CLONE / "sessions"
-    entries = []
-    if sessions_dir.is_dir():
-        for d in sorted(sessions_dir.iterdir()):
-            if not d.is_dir():
-                continue
-            info = {"stem": d.name, "files": sorted(f.name for f in d.iterdir() if f.is_file())}
-            # I metadati si leggono da transcript.json, che è il formato
-            # canonico: session.json è una vista derivata e ha una
-            # struttura diversa (duration/speakers/stats piatti).
-            try:
-                m = json.loads((d / "transcript.json").read_text(encoding="utf-8")).get("meta", {})
-                info.update({
-                    "recorded_at": _recorded_at(d, m),
-                    "duration_sec": m.get("total_duration_sec"),
-                    "speech_sec": m.get("speech_duration_sec"),
-                    "speakers": m.get("speakers"),
-                    "n_segments": m.get("segments_count"),
-                    "n_words": m.get("total_words"),
-                    "denoise": m.get("denoise_winner"),
-                })
-            except (json.JSONDecodeError, OSError):
-                pass
-            entries.append(info)
-
-    entries.sort(key=lambda e: (e.get("recorded_at") or "", e["stem"]), reverse=True)
+    righe_giorni = []
+    tot_parole = tot_sess = 0
+    gdir = LOCAL_CLONE / GIORNI
+    for d in sorted((gdir.iterdir() if gdir.is_dir() else []), reverse=True):
+        m = _leggi_json(d / "giorno.json")
+        if not m:
+            continue
+        t = m.get("totals") or {}
+        voci = [v for v in (m.get("speakers") or {}) if v != "UNKNOWN"]
+        tot_parole += t.get("words") or 0
+        tot_sess += t.get("sessions") or 0
+        righe_giorni.append(
+            f"| [{d.name}]({GIORNI}/{d.name}/) | {t.get('sessions', 0)} | "
+            f"{(t.get('first_start') or '')[11:16]}–{(t.get('last_end') or '')[11:16]} | "
+            f"{len(m.get('blocks') or [])} | {_hms(t.get('speech_sec'))} | "
+            f"{t.get('words', 0)} | {len(voci)} |")
 
     lines = [
         "# Corpus — indice",
         "",
-        "> Generato automaticamente. Un file per sessione in `sessions/`.",
-        "> Gli speaker compaiono come pseudonimi `GLOBAL_00x`" + (
-            ": la mappa con i nomi reali e' pubblicata accanto a questi file."
-            if keep_names else
+        f"> Generato automaticamente. Una cartella per giorno in `{GIORNI}/`, "
+        "con un file per tipo che contiene tutte le registrazioni del giorno "
+        "in fila, all'ora dell'orologio del registratore.",
+        "> Le voci compaiono come pseudonimi `GLOBAL_00x`" + (
+            ": dove una voce ha un nome, il nome e' accanto (`giorno.json`, "
+            "`speaker_names`)." if keep_names else
             ": la mappa con i nomi reali sta solo in locale e non viene pubblicata."
         ),
         "",
-        f"Sessioni: **{len(entries)}**",
+        f"Giorni: **{len(righe_giorni)}** · registrazioni: **{tot_sess}** · "
+        f"parole: **{tot_parole}**",
         "",
-        "| Data | Sessione | Parlato | Speaker | Segmenti | Parole | Denoise |",
+        "| Giorno | Registrazioni | Dalle–alle | Blocchi | Parlato | Parole | Voci |",
         "|---|---|---|---|---|---|---|",
-    ]
-    for e in entries:
-        rec = (e.get("recorded_at") or "")[:16].replace("T", " ")
-        lines.append(
-            f"| {rec or '—'} | `{e['stem']}` | "
-            f"{_hms(e.get('speech_sec'))} | {len(e.get('speakers') or [])} | "
-            f"{e.get('n_segments') or 0} | {e.get('n_words') or 0} | "
-            f"{e.get('denoise') or '—'} |"
-        )
-    lines += [
+        *righe_giorni,
         "",
-        "## Formati",
+        "## Dentro ogni giorno",
         "",
-        "- `transcript.txt` — testo leggibile con etichette speaker",
-        "- `segments.jsonl` — un segmento per riga (testo, tempi, prosodia)",
-        "- `tokens.jsonl` — una parola per riga con timestamp (KWIC, n-grammi)",
-        "- `wordfreq.csv` — frequenze per parola e speaker",
-        "- `prosody.csv` — F0, intensità, ritmo per segmento",
-        "- `session.json` — durate, statistiche per speaker",
-        "- `analysis_ready.md` — testo pronto per un LLM",
-        "- `transcript.corrected.txt` / `.srt` — le stesse cose col testo "
+        "- `giorno.json` — il manifesto: registrazioni con ora di inizio e fine, "
+        "buchi fra un file e l'altro, blocchi continui (buchi sotto 5 minuti), "
+        "voci con minuti e parole, decisioni di denoise e fusioni delle voci",
+        "- `transcript.txt` — il testo del giorno, leggibile, con l'ora vera",
+        "- `transcript.srt` — sottotitoli con l'ora del giorno",
+        "- `segments.jsonl` — un segmento per riga: testo, voce, qualità, "
+        "prosodia; `session` + `start`/`end` (secondi dall'inizio del file) e "
+        "`clock_*`/`day_sec_*` (ora vera)",
+        "- `tokens.jsonl` — una parola per riga con tempi, probabilità ASR, voce "
+        "e `day_segment_idx` (la prosodia sta nel segmento)",
+        "- `prosody.csv` — F0, intensità, ritmo per segmento, con l'ora vera",
+        "- `wordfreq.csv` — frequenze del giorno, per voce",
+        "- `analysis_ready.md` — il giorno intero, pronto per un LLM",
+        "- `*.corrected.*`, `text_correction.json` — le stesse viste col testo "
         "corretto dal modello di lingua, dove esiste",
-        "- `segments.corrected.jsonl` — segmenti con testo corretto e "
-        "originale affiancato",
-        "- `text_correction.json` — ogni parola, originale e corretta: "
-        "serve a misurare quanto sbaglia ciascuno dei due",
-        "- `../voices/voice_matrix.json` — somiglianza fra le voci, "
-        "coppia per coppia, e quali coppie la soglia non riesce a decidere",
+        "- `../../voices/voice_matrix.json` — somiglianza fra le voci e coppie "
+        "di voci da decidere",
+        "",
+        "Gli orari sono quelli dell'orologio del registratore, la cui deriva "
+        "non è ancora misurata: valgono al minuto.",
         "",
     ]
     p = LOCAL_CLONE / "INDEX.md"
@@ -413,6 +424,13 @@ def _write_index(dry_run: bool = False) -> Path:
         LOCAL_CLONE.mkdir(parents=True, exist_ok=True)
         p.write_text("\n".join(lines), encoding="utf-8")
     return p
+
+
+def _leggi_json(p: Path):
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _hms(seconds) -> str:
@@ -502,7 +520,7 @@ def _speaker_names_to_hide() -> list[str]:
     try:
         from core.speaker_db import SpeakerDB
         from core.speaker_sync import names_from_db
-        return sorted(set(names_from_db(SpeakerDB())))
+        return sorted(set(names_from_db(SpeakerDB(SPEAKERS_DB))))
     except Exception:  # noqa: BLE001
         return []
 
@@ -521,37 +539,48 @@ def cmd_push(args) -> int:
         )
 
     _, before_sha = _run(["git", "rev-parse", "HEAD"], cwd=LOCAL_CLONE)
+
+    # La struttura di prima (una cartella per file): prima di toglierla si
+    # riportano in locale le sessioni che esistono solo sulla repo.
+    vecchie = LOCAL_CLONE / SESSIONI_VECCHIE
+    da_migrare = vecchie.is_dir()
+    riportate = _migra_sessioni_vecchie(dry_run=args.dry_run)
+    if da_migrare:
+        logger.info("%s alla struttura per giorno: %s sparisce%s",
+                    "Migrerei" if args.dry_run else "Migrazione",
+                    SESSIONI_VECCHIE + "/",
+                    f", {len(riportate)} sessioni riportate in output/ "
+                    f"({', '.join(riportate)})" if riportate else "")
+
     pushed = []
+    for g in _giornate():
+        cambiati = _publish_day(g, dry_run=args.dry_run)
+        if cambiati:
+            pushed.append(g.giorno)
+            verb = "Avrei aggiornato" if args.dry_run else "Aggiornato"
+            logger.info("%s %s: %d registrazioni, %d file cambiati",
+                        verb, g.giorno, len(g.sessioni), len(cambiati))
 
-    for d in sorted(OUTPUT_DIR.iterdir()) if OUTPUT_DIR.is_dir() else []:
-        if not d.is_dir():
-            continue
-        # Solo sessioni con transcript: un output a metà non si pubblica
-        if not (d / "transcript.json").exists():
-            continue
-        written = _publish_session(d.name, dry_run=args.dry_run)
-        if written:
-            pushed.append(d.name)
-            verb = "Avrei pubblicato" if args.dry_run else "Pubblicata"
-            logger.info("%s %s (%d file)", verb, d.name, len(written))
-
-    if not pushed:
-        # L'indice e la matrice delle voci sono derivati dalle sessioni
-        # gia' presenti sulla repo: con nessuna sessione cambiata
+    if not pushed and not da_migrare:
+        # L'indice e la matrice delle voci sono derivati dalle giornate
+        # gia' presenti sulla repo: con nessuna giornata cambiata
         # riscriverebbero lo stesso contenuto, e in un push vero
         # produrrebbero un commit vuoto. Si esce qui in entrambi i casi.
         if args.dry_run:
-            print("Nessuna sessione da pubblicare: quello che c'e' in "
+            print("Nessuna giornata da pubblicare: quello che c'e' in "
                   "output/ e' gia' identico sulla repo.")
         else:
-            print("Nessuna sessione nuova da pubblicare.")
+            print("Nessuna giornata nuova da pubblicare.")
         return 0
+
+    if da_migrare and not args.dry_run:
+        shutil.rmtree(vecchie)
 
     idx = _write_index(dry_run=args.dry_run)
     matrice = _write_voice_matrix(dry_run=args.dry_run)
 
     if args.dry_run:
-        print(f"\n[dry-run] avrei pubblicato {len(pushed)} sessioni "
+        print(f"\n[dry-run] avrei pubblicato {len(pushed)} giorni "
               f"e aggiornato {idx.name}. Niente scritto.")
         for s in pushed:
             print(f"  {s}")
@@ -568,7 +597,13 @@ def cmd_push(args) -> int:
         return 0
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    commit_msg = f"corpus: {len(pushed)} sessioni ({stamp})" if pushed else f"corpus: indice ({stamp})"
+    if da_migrare:
+        commit_msg = (f"corpus: una cartella per giorno, {len(pushed)} giorni "
+                      f"({stamp})")
+    elif pushed:
+        commit_msg = f"corpus: {len(pushed)} giorni aggiornati ({stamp})"
+    else:
+        commit_msg = f"corpus: indice ({stamp})"
     code, out = _run(["git", "commit", "-m", commit_msg], cwd=LOCAL_CLONE)
     if code != 0:
         print("Commit fallito:\n" + out, file=sys.stderr)
@@ -580,7 +615,7 @@ def cmd_push(args) -> int:
         return 1
 
     _, after_sha = _run(["git", "rev-parse", "HEAD"], cwd=LOCAL_CLONE)
-    print(f"Pubblicato: {len(pushed)} sessioni, indice aggiornato.")
+    print(f"Pubblicato: {len(pushed)} giorni, indice aggiornato.")
     if before_sha != after_sha:
         print(f"https://github.com/{REPO_SLUG}/commit/{after_sha[:12]}")
     return 0
@@ -711,20 +746,24 @@ def cmd_status(args) -> int:
     code, out = _run(["git", "log", "--oneline", "-10"], cwd=LOCAL_CLONE)
     print(f"Ultimi commit su {REPO_SLUG}:\n{out or '(nessuno)'}\n")
 
-    local = {d.name for d in OUTPUT_DIR.iterdir() if (d / "transcript.json").exists()} \
-        if OUTPUT_DIR.is_dir() else set()
-    published = set()
-    sd = LOCAL_CLONE / "sessions"
-    if sd.is_dir():
-        published = {d.name for d in sd.iterdir() if d.is_dir()}
+    local = {d.name for d in _cartelle_sessioni()}
+    # Pubblicate = quelle elencate nei manifesti delle giornate sulla repo.
+    published: set[str] = set()
+    gdir = LOCAL_CLONE / GIORNI
+    for d in (gdir.iterdir() if gdir.is_dir() else []):
+        m = _leggi_json(d / "giorno.json") or {}
+        published |= {x.get("stem") for x in m.get("sessions") or [] if x.get("stem")}
+    vecchie = LOCAL_CLONE / SESSIONI_VECCHIE
+    if vecchie.is_dir():
+        published |= {d.name for d in vecchie.iterdir() if d.is_dir()}
+        print(f"La repo ha ancora la struttura per file ({SESSIONI_VECCHIE}/): "
+              "il prossimo push la migra a una cartella per giorno.\n")
 
     missing = sorted(local - published)
     # La direzione opposta: una sessione che sta sulla repo e non ha piu'
     # una cartella in `output/`. Prima non veniva guardata, e il risultato
     # era che il comando stampava «11 in locale | 12 sulla repo» e subito
     # sotto «Tutto pubblicato» — una contraddizione enunciata e ignorata.
-    # E' la stessa classe di difetto di un elenco che dichiara un formato
-    # che non copia: il numero c'era, la conclusione no.
     orfane = sorted(published - local)
     mancanti_artefatti = [rel for rel in ARTEFATTI_CORPUS
                           if not (LOCAL_CLONE / rel).exists()]
@@ -740,7 +779,9 @@ def cmd_status(args) -> int:
         for o in orfane[:20]:
             print(f"  {o}")
         print("  Non sono riproducibili: senza la cartella non si possono")
-        print("  rielaborare ne' ripubblicare. Decidi tu se tenerle.")
+        print("  rielaborare ne' ripubblicare. La loro giornata le perderebbe")
+        print("  alla prossima pubblicazione di quel giorno: decidi tu se tenerle")
+        print("  (riportale in output/ dalla repo) o lasciarle andare.")
     if mancanti_artefatti:
         print(f"\nArtefatti di corpus mancanti ({len(mancanti_artefatti)}):")
         for rel in mancanti_artefatti:
@@ -756,7 +797,7 @@ def cmd_status(args) -> int:
         print("  e nienti lo segnala, perche' un ID assente e' solo un ID")
         print("  che nessuno genera piu'.")
 
-    if missing or orfane or mancanti_artefatti or incoerenti:
+    if missing or orfane or mancanti_artefatti or incoerenti or vecchie.is_dir():
         return 0  # c'e' roba da decidere, ma non e' un errore del comando
     print("\nTutto pubblicato.")
     return 0

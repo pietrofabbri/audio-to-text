@@ -253,6 +253,15 @@ Passi:
 parole e segmenti dopo la migrazione coincide con quello di prima, e una
 notte nuova aggiorna la cartella del giorno invece di crearne una nuova.
 
+**Stato: fatta il 7 ottobre** (APERTI 34, README «Cosa c'è sulla repo»),
+anticipata rispetto alla Fase 1 su richiesta di Pietro. La dipendenza
+dalla Fase 1 non blocca: le giornate si ricostruiscono da `output/` a ogni
+pubblicazione, quindi dopo un `merge` o un nome il push successivo
+riscrive le giornate toccate. `core/giorno.py` compone la giornata;
+`publish_corpus.py` pubblica `giorni/` e migra da solo `sessions/` al
+primo push. Le giornate del corpus vero hanno gli stessi conteggi di
+parole delle sessioni di partenza (16.740, 24.338, 30.665).
+
 ---
 
 ## Fase 3 — Controllo delle parole inverosimili con Gemini
@@ -339,5 +348,5 @@ Queste cose non bloccano le fasi precedenti e non ne sono bloccate.
 |---|---|---|---|
 | D1 | Nel corpus: pseudonimi (oggi) o nomi reali? | Fase 1 | **Decisa il 7/10:** i nomi reali sono ammessi nel corpus privato, a scelta. Il default resta pseudonimi; si attivano con `push --with-names` o, per ogni notte, con `corpus_with_names = True` in `core/config.py`. |
 | D2 | Gemini: si manda il testo a Google? Con quale piano, e informando chi è registrato? Oppure un modello locale? | Fase 3 | **In sospeso:** Pietro chiede prima l'ok alle persone registrate. |
-| D3 | Blocco continuo = buchi sotto i 5 minuti; il blocco appartiene al giorno in cui comincia. Va bene? | Fase 2 |
-| D4 | I pezzi orari spariscono dal corpus, restano solo nel manifesto del giorno. Va bene? | Fase 2 |
+| D3 | Blocco continuo = buchi sotto i 5 minuti; il blocco appartiene al giorno in cui comincia. Va bene? | Fase 2 | **Applicata il 7/10** con la Fase 2 (soglia in `core/giorno.py`, `SOGLIA_CONTINUITA_SEC`). |
+| D4 | I pezzi orari spariscono dal corpus, restano solo nel manifesto del giorno. Va bene? | Fase 2 | **Decisa il 7/10:** Pietro preferisce un file unico per tipo per giorno; le sessioni restano descritte in `giorno.json` e in locale in `output/`. |

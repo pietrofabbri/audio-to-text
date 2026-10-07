@@ -530,111 +530,80 @@ def t_thread_cap_is_measured_not_guessed(tmp: Path) -> None:
           f"giorno {DAYTIME_THREADS}, prosodia {cfg.prosody.num_workers}")
 
 
+def _giornata_pubblicata(tmp: Path, stem: str = "2026-10-04_14-43-16") -> Path:
+    """Una sessione completa in output/ e la sua giornata sulla repo."""
+    from core.giorno import FILE_GIORNO
+    src = tmp / "output" / stem
+    src.mkdir(parents=True)
+    (src / "transcript.json").write_text("{}", encoding="utf-8")
+    (src / "session.json").write_text(json.dumps(
+        {"session_start_wall": "2026-10-04T14:43:16"}), encoding="utf-8")
+    giorno = tmp / "corpus_repo" / "giorni" / "2026-10-04"
+    giorno.mkdir(parents=True)
+    for nome in FILE_GIORNO:
+        (giorno / nome).write_text("x", encoding="utf-8")
+    (giorno / "giorno.json").write_text(json.dumps(
+        {"sessions": [{"stem": stem}]}), encoding="utf-8")
+    return giorno
+
+
 def t_una_pubblicazione_incompleta_viene_detettata(tmp: Path) -> None:
     """Il push che esce 0 non vuol dire che tutto sia pubblicato.
 
     Il caso reale: `tokens.jsonl` era nell'INDEX.md come formato
     dichiarato e non nella lista dei file da copiare. La notte passava,
-    il push usciva 0, e il file — quello che rende il corpus
-    interrogabile parola per parola, con KWIC e sincronizzazione al
-    secondo — non era mai arrivato da nessuna parte. Nessuno se ne
-    accorse perche' nessuno guardava: l'elenco dei formati diceva che
-    c'era.
+    il push usciva 0, e il file non era mai arrivato da nessuna parte.
 
-    Qui si verifica che il controllo notturno trovi il buco. Il file
-    mancante viene tolto dalla copia pubblicata di una sessione, e ci si
-    aspetta che venga detto per nome: un avviso generico o un exit 0
-    farebbero passare la cosa due volte.
+    Con le giornate (dal 7 ottobre) i buchi possibili sono due: la
+    giornata non elenca la sessione, o le manca un file. Tutti e due
+    vanno detti per nome.
     """
     print("  una pubblicazione incompleta viene detta per nome")
     import nightly
 
-    out = tmp / "output"
-    repo = tmp / "corpus_repo" / "sessions"
+    giorno = _giornata_pubblicata(tmp)
     stem = "2026-10-04_14-43-16"
-    src = out / stem
-    dst = repo / stem
-    src.mkdir(parents=True)
-    dst.mkdir(parents=True)
-
-    # Una sessione completa: transcript.json la rende completa, e i
-    # file pubblicabili ci sono tutti.
-    from publish_corpus import PUBLISHABLE
-    (src / "transcript.json").write_text("{}", encoding="utf-8")
-    (dst / "transcript.json").write_text("{}", encoding="utf-8")
-    for nome in PUBLISHABLE:
-        if nome == "transcript.json":
-            continue
-        (src / nome).write_text("x", encoding="utf-8")
-        (dst / nome).write_text("x", encoding="utf-8")
-
     root_reale = nightly.ROOT
     try:
         nightly.ROOT = tmp
         require(nightly._sessioni_non_pubblicate() == {},
-                "una sessione completa e tutta pubblicata non deve "
+                "una sessione elencata in una giornata completa non deve "
                 f"essere segnalata: {nightly._sessioni_non_pubblicate()}")
 
-        # Il buco vero: il file che porta i timestamp parola per parola
-        # resta in output/ e non arriva nella repo.
-        (dst / "tokens.jsonl").unlink()
+        (giorno / "tokens.jsonl").unlink()
         mancanti = nightly._sessioni_non_pubblicate()
-        require(mancanti.get(stem) == ["tokens.jsonl"],
+        require(mancanti.get(stem) == ["giorni/2026-10-04/tokens.jsonl"],
                 f"il file mancante deve essere detto per nome, risulta {mancanti}")
+        (giorno / "tokens.jsonl").write_text("x", encoding="utf-8")
 
-        # Rimesso a posto: da qui in poi la sessione e' interamente
-        # pubblicata e non deve piu' essere segnalata, altrimenti i casi
-        # sotto misurerebbero il buco di prima e non quello che provano.
-        (dst / "tokens.jsonl").write_text("x", encoding="utf-8")
-        require(nightly._sessioni_non_pubblicate() == {},
-                "rimesso il file, la sessione non deve piu' essere segnalata")
-
-        # Un file che non si pubblica non e' un buco: altrimenti il
-        # controllo urlerebbe sempre e diventarebbe rumore.
-        (src / "nota_privata.txt").write_text("x", encoding="utf-8")
-        require(nightly._sessioni_non_pubblicate() == {},
-                "un file non pubblicabile non deve essere segnalato")
-        (src / "nota_privata.txt").unlink()
+        # Una sessione nuova che la giornata non elenca ancora.
+        nuova = tmp / "output" / "2026-10-04_15-48-56"
+        nuova.mkdir()
+        (nuova / "transcript.json").write_text("{}", encoding="utf-8")
+        mancanti = nightly._sessioni_non_pubblicate()
+        require(list(mancanti) == ["2026-10-04_15-48-56"] and
+                "giorni/2026-10-04/giorno.json" in mancanti["2026-10-04_15-48-56"][0],
+                f"la sessione non elencata deve essere detta: {mancanti}")
 
         # Una sessione non finita non si controlla.
-        (src / "2026-10-04_13-30-39").mkdir()
-        (src / "2026-10-04_13-30-39" / "tokens.jsonl").write_text("x", encoding="utf-8")
+        (nuova / "transcript.json").unlink()
         require(nightly._sessioni_non_pubblicate() == {},
                 "una sessione senza transcript.json non va controllata")
     finally:
         nightly.ROOT = root_reale
-    print(f"    {len(PUBLISHABLE)} formati controllati per sessione")
 
 
 def t_una_matrice_delle_voci_mancante_viene_detettata(tmp: Path) -> None:
     """Senza la matrice, la repo non dice chi ha parlato.
 
-    Il buco vero, diverso dagli altri: i file per sessione mancavano di
-    uno, quindi il confronto file per file l'avrebbe trovato. La matrice
-    e' un file solo per tutto il corpus e non sta in nessuna cartella di
-    sessione, quindi nessun confronto per sessione la vede. Serve un
+    La matrice e' un file solo per tutto il corpus e non sta in nessuna
+    giornata, quindi nessun confronto per giornata la vede: serve un
     controllo suo, o il buco si ripete.
     """
     print("  la matrice delle voci mancante viene detta")
     import nightly
 
-    out = tmp / "output"
-    repo = tmp / "corpus_repo" / "sessions"
-    stem = "2026-10-04_14-43-16"
-    src, dst = out / stem, repo / stem
-    src.mkdir(parents=True)
-    dst.mkdir(parents=True)
-
-    from publish_corpus import PUBLISHABLE
-    (src / "transcript.json").write_text("{}", encoding="utf-8")
-    (dst / "transcript.json").write_text("{}", encoding="utf-8")
-    for nome in PUBLISHABLE:
-        if nome == "transcript.json":
-            continue
-        (src / nome).write_text("x", encoding="utf-8")
-        (dst / nome).write_text("x", encoding="utf-8")
-
-    # La matrice sta a livello di corpus, non dentro la sessione.
+    _giornata_pubblicata(tmp)
     matrice = tmp / "corpus_repo" / "voices" / "voice_matrix.json"
     matrice.parent.mkdir(parents=True)
     matrice.write_text("{}", encoding="utf-8")
@@ -642,34 +611,15 @@ def t_una_matrice_delle_voci_mancante_viene_detettata(tmp: Path) -> None:
     root_reale = nightly.ROOT
     try:
         nightly.ROOT = tmp
-        # Tutte le sessioni complete e pubblicate: nessun buco per
-        # sessione, eppure la matrice potrebbe mancare lo stesso.
         require(nightly._sessioni_non_pubblicate() == {},
                 "le sessioni sono a posto, non devono essere segnalate")
-
-        matrice.unlink()
-        require(not (tmp / "corpus_repo" / "voices" / "voice_matrix.json").exists(),
-                "la matrice non e' stata tolta")
-        # Il controllo per sessione, da solo, non la vede: e' un file
-        # che non sta in nessuna cartella di sessione.
-        require(nightly._sessioni_non_pubblicate() == {},
-                "il confronto per sessione non deve accorgersi della matrice")
-
-        # Il controllo degli artefatti, invece, sì: ed è quello che
-        # durante la notte mette a verbale il buco per nome.
-        require(nightly._artefatti_mancanti() == ["voices/voice_matrix.json"],
-                "la matrice mancante deve essere detta per nome")
-    finally:
-        nightly.ROOT = root_reale
-
-    # Rimessa a posto, il controllo non deve più segnalare nulla: se
-    # urlasse sempre, l'avviso diventa rumore che nessuno legge.
-    root_reale = nightly.ROOT
-    try:
-        nightly.ROOT = tmp
-        matrice.write_text("{}", encoding="utf-8")
         require(nightly._artefatti_mancanti() == [],
                 "con la matrice a posto non deve essere segnalata")
+        matrice.unlink()
+        require(nightly._sessioni_non_pubblicate() == {},
+                "il confronto per giornata non deve accorgersi della matrice")
+        require(nightly._artefatti_mancanti() == ["voices/voice_matrix.json"],
+                "la matrice mancante deve essere detta per nome")
     finally:
         nightly.ROOT = root_reale
 

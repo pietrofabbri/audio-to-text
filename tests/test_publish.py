@@ -248,7 +248,8 @@ def t_nothing_forbidden_lands_on_the_repo(tmp: Path) -> None:
                 f"file audio/database sulla repo: {f}")
     # E i file che DEVONo esserci, altrimenti il test passerebbe anche
     # se la pubblicazione non pubblicasse niente.
-    for atteso in ("INDEX.md", "sessions/2026-10-02_21-44-16/transcript.json"):
+    for atteso in ("INDEX.md", "giorni/2026-10-02/transcript.txt",
+                   "giorni/2026-10-02/giorno.json", "giorni/2026-10-02/tokens.jsonl"):
         require(any(f.endswith(atteso) for f in finiti),
                 f"mancava {atteso} nel remoto: {sorted(finiti)}")
     print(f"    {len(finiti)} file pubblicati, nessuno vietato")
@@ -280,13 +281,13 @@ def t_real_names_are_scrubbed_by_default(tmp: Path) -> None:
 
     # E deve restare l'informazione utile: il segmento c'è, con lo
     # pseudonimo. Cancellare tutto non è privacy, è perdita.
-    tr = json.loads((clone / "sessions" / "2026-10-02_21-44-16"
-                     / "transcript.json").read_text(encoding="utf-8"))
-    require(tr["meta"]["speaker_names"] == {},
-            tr["meta"]["speaker_names"])
-    require(tr["meta"]["speakers"] == ["GLOBAL_001", "GLOBAL_002"],
+    giorno = clone / "giorni" / "2026-10-02"
+    m = json.loads((giorno / "giorno.json").read_text(encoding="utf-8"))
+    require(m["speaker_names"] == {}, m["speaker_names"])
+    require(sorted(m["speakers"]) == ["GLOBAL_001", "GLOBAL_002"],
             "gli pseudonimi devono restare")
-    require(len(tr["segments"]) == 2, "i segmenti devono restare")
+    segs = (giorno / "segments.jsonl").read_text(encoding="utf-8").splitlines()
+    require(len(segs) == 2, "i segmenti devono restare")
     print("    pseudonimi presenti, nomi assenti")
 
 
@@ -301,7 +302,7 @@ def t_guard_catches_a_name_that_slipped_through(tmp: Path) -> None:
     # Qualcuno scrive un nome a mano nella copia, come può succedere
     # con uno script, un merge di git, un file lasciato da una versione
     # precedente.
-    (clone / "sessions" / "2026-10-02_21-44-16" / "note.txt").write_text(
+    (clone / "giorni" / "2026-10-02" / "note.txt").write_text(
         "riunione con Pietro e Chiara", encoding="utf-8")
 
     require(not pc._guard_repo(["Pietro", "Chiara"]),
@@ -326,6 +327,13 @@ def t_with_names_publishes_them(tmp: Path) -> None:
     che la protezione sia attiva."""
     print("  --with-names pubblica i nomi, e solo se chiesto")
     out, clone = _fake_env(tmp)
+    # I nomi della giornata vengono dal DB delle voci, che e' la fonte.
+    db = SpeakerDB(path=pc.SPEAKERS_DB)
+    db._data["speakers"] = {
+        "GLOBAL_001": {"name": "Pietro", "centroid": [0.0], "sessions": {}},
+        "GLOBAL_002": {"name": "Chiara", "centroid": [0.0], "sessions": {}},
+    }
+    db.save()
     pc.OUTPUT_DIR = out
     pc.LOCAL_CLONE = clone
     pc.keep_names = True
@@ -333,11 +341,14 @@ def t_with_names_publishes_them(tmp: Path) -> None:
     pc.keep_names = False
     require(rc == 0, "push non riuscito")
 
-    tr = json.loads((clone / "sessions" / "2026-10-02_21-44-16"
-                     / "transcript.json").read_text(encoding="utf-8"))
-    require(tr["meta"]["speaker_names"] == {"GLOBAL_001": "Pietro",
-                                            "GLOBAL_002": "Chiara"},
-            tr["meta"]["speaker_names"])
+    giorno = clone / "giorni" / "2026-10-02"
+    m = json.loads((giorno / "giorno.json").read_text(encoding="utf-8"))
+    require(m["speaker_names"] == {"GLOBAL_001": "Pietro",
+                                   "GLOBAL_002": "Chiara"},
+            m["speaker_names"])
+    testo = (giorno / "transcript.txt").read_text(encoding="utf-8")
+    require("Pietro (GLOBAL_001)" in testo,
+            "con --with-names il testo del giorno deve mostrare nome e pseudonimo")
     # E con i nomi pubblicati, il controllo non deve più bloccare:
     # altrimenti il flag sarebbe incomprensibile per l'utente.
     require(pc._guard_repo.__doc__ is not None, "manca il docstring")
@@ -615,18 +626,13 @@ def t_status_dichiara_anche_le_sessioni_orfane(tmp: Path) -> None:
 def t_push_ripubblica_solo_cio_che_e_cambiato(tmp: Path) -> None:
     """Un secondo push senza modifiche non deve dichiarare pubblicazioni.
 
-    Il caso reale: sul disco le 11 sessioni erano gia' identiche alla
-    repo (verificato file per file: zero differenze), e il dry-run
-    rispondeva «avrei pubblicato 11 sessioni» elencandole una per una. Il
-    conteggio veniva da `_publish_session`, che restituiva i file che
-    *scriverebbe* senza chiedersi se differiscano da quelli gia' presenti.
-
-    Due conseguenze, una delle quali arriva nella repo pubblicata: il
-    messaggio di commit diceva «corpus: 11 sessioni» anche quando il
-    contenuto non era cambiato, quindi la storia del corpus raccontava
-    undici pubblicazioni dove non era successo niente.
+    Il caso reale (quando la repo era per sessione): sul disco le 11
+    sessioni erano gia' identiche alla repo, e il dry-run rispondeva
+    «avrei pubblicato 11 sessioni». Il messaggio di commit raccontava
+    pubblicazioni dove non era successo niente. Con le giornate vale lo
+    stesso: una giornata identica non si conta.
     """
-    print("  push conta solo le sessioni davvero diverse")
+    print("  push conta solo le giornate davvero diverse")
     import io
     import contextlib
 
@@ -635,45 +641,76 @@ def t_push_ripubblica_solo_cio_che_e_cambiato(tmp: Path) -> None:
     pc.LOCAL_CLONE = clone
     require(_publish(out, clone) == 0, "prima pubblicazione")
 
-    # Secondo push, senza nessuna modifica: non deve contare sessioni.
-    written = pc._publish_session("2026-10-02_21-44-16", dry_run=True)
-    require(written == [],
-            "una sessione gia' identica sulla repo non deve risultare "
-            f"da pubblicare, ma risultano {len(written)} file")
+    def cambiati() -> dict[str, list[str]]:
+        return {g.giorno: sorted(p.name for p in pc._publish_day(g, dry_run=True))
+                for g in pc._giornate()}
 
-    # E il dry-run deve dirlo, non elencare sessioni da pubblicare.
+    require(cambiati() == {"2026-10-02": []},
+            f"una giornata gia' identica sulla repo non deve cambiare: {cambiati()}")
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         rc = pc.cmd_push(argparse.Namespace(dry_run=True, with_names=False))
     testo = buf.getvalue()
     require(rc == 0, f"il dry-run senza modifiche deve uscire con 0, non {rc}")
-    require("avrei pubblicato 0 sessioni" not in testo,
-            f"non deve dichiarare pubblicazioni quando non ce ne sono:\n{testo}")
-    require("Nessuna sessione da pubblicare" in testo,
+    require("Nessuna giornata da pubblicare" in testo,
             f"deve dire che non c'e' niente da pubblicare:\n{testo}")
 
-    # Una sessione modificata invece deve essere contata, e solo quella.
-    _make_session(out / "2026-10-02_21-44-16", "2026-10-02_21-44-16")
-    (out / "2026-10-02_21-44-16" / "transcript.json").write_text(
-        json.dumps({"meta": {"stem": "2026-10-02_21-44-16", "total_words": 999}},
-                   ensure_ascii=False),
-        encoding="utf-8",
-    )
-    scritti = pc._publish_session("2026-10-02_21-44-16", dry_run=True)
-    require(len(scritti) == 1 and scritti[0].name == "transcript.json",
-            f"la sola sessione cambiata deve risultare da pubblicare, "
-            f"non {scritti}")
+    # I nomi veri in session.json non cambiano la giornata pubblicata:
+    # senza --with-names i nomi non entrano, quindi il contenuto e' lo stesso.
+    sj = out / "2026-10-02_21-44-16" / "session.json"
+    d = json.loads(sj.read_text(encoding="utf-8"))
+    d["speaker_names"] = {"GLOBAL_001": "Pietro"}
+    sj.write_text(json.dumps(d), encoding="utf-8")
+    require(cambiati() == {"2026-10-02": []},
+            f"un nome in locale non deve cambiare la giornata pubblicata: {cambiati()}")
 
-    # Il confronto per i JSON e' sul contenuto che andrebbe scritto, non
-    # sul file sorgente: se i nomi reali vengono sostituiti dagli
-    # pseudonimi, il file sulla repo e il sorgente differiscono sempre e
-    # ogni push ripubblicherebbe tutto.
-    _make_session(out / "2026-10-02_21-44-16", "2026-10-02_21-44-16", named=True)
-    require(pc._publish_session("2026-10-02_21-44-16", dry_run=True) == [],
-            "un transcript rigenerato ma identico dopo lo scrub non deve "
-            "risultare diverso: il confronto e' sul contenuto scritto, "
-            "non sul sorgente che contiene i nomi veri")
-    print("    una sessione cambiata resta da pubblicare, le altre no")
+    # Il testo di un segmento cambia (per esempio una correzione): la
+    # giornata cambia, nei file che portano il testo, e solo in quelli.
+    seg = out / "2026-10-02_21-44-16" / "segments.jsonl"
+    righe = [json.loads(r) for r in seg.read_text(encoding="utf-8").splitlines()]
+    righe[1]["text"] = "Grazie, cominciamo subito."
+    seg.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in righe) + "\n",
+                   encoding="utf-8")
+    c = cambiati()["2026-10-02"]
+    require("segments.jsonl" in c and "transcript.txt" in c,
+            f"il testo cambiato deve risultare da pubblicare: {c}")
+    require("tokens.jsonl" not in c, f"le parole non sono cambiate: {c}")
+    print("    giornata identica non contata, giornata cambiata contata")
+
+
+def t_migrazione_riporta_le_sessioni_solo_sulla_repo(tmp: Path) -> None:
+    """La vecchia `sessions/` sparisce, ma nessuna sessione con lei.
+
+    Il caso vero: `2026-10-02_17-02-36` stava sulla repo e non piu' in
+    `output/`. Le giornate si costruiscono da `output/`, quindi togliendo
+    `sessions/` senza riportarla in locale sarebbe sparita dal corpus.
+    """
+    print("  la migrazione per giorno non perde le sessioni solo sulla repo")
+    out, clone = _fake_env(tmp)
+    vecchia = clone / "sessions" / "2026-10-02_17-02-36"
+    _make_session(vecchia, "2026-10-02_17-02-36")
+    sj = json.loads((vecchia / "session.json").read_text(encoding="utf-8"))
+    sj["session_start_wall"] = "2026-10-02T17:02:36"
+    (vecchia / "session.json").write_text(json.dumps(sj), encoding="utf-8")
+    for f in ("registrazione.wav", "checkpoint.json", "speakers_db.json",
+              "2026-10-02_17-02-36.checkpoint.json"):
+        (vecchia / f).unlink()
+    (clone / "sessions" / "2026-10-02_21-44-16").mkdir()
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-q", "-m", "struttura vecchia")
+
+    require(_publish(out, clone) == 0, "push non riuscito")
+    require(not (clone / "sessions").exists(), "sessions/ deve sparire")
+    require((out / "2026-10-02_17-02-36" / "transcript.json").exists(),
+            "la sessione che c'era solo sulla repo deve tornare in output/")
+    m = json.loads((clone / "giorni" / "2026-10-02" / "giorno.json").read_text())
+    stems = [x["stem"] for x in m["sessions"]]
+    require(stems == ["2026-10-02_17-02-36", "2026-10-02_21-44-16"],
+            f"la giornata deve contenere entrambe, in ordine: {stems}")
+    require(not any(f.startswith("sessions/") for f in _remote_files(tmp)),
+            "sul remoto non deve restare niente di sessions/")
+    print("    sessions/ migrata, la sessione orfana e' nella sua giornata")
 
 
 def t_la_spazzatura_del_finder_non_finisce_sulla_repo(tmp: Path) -> None:
@@ -760,48 +797,37 @@ def t_status_dichiara_le_voci_che_il_db_non_conosce(tmp: Path) -> None:
     print("    voce fantasma dichiarata per nome")
 
 
-def t_indice_mostra_la_data_di_registrazione(tmp: Path) -> None:
-    """La colonna Data dell'indice non deve uscire vuota.
-
-    Sul corpus vero usciva «—» su tutte e diciannove le sessioni: l'ora
-    di inizio sta in `session.json`, mentre `transcript.json` ha il campo
-    a `None`, e l'indice leggeva solo quello. Tre casi: data in
-    `session.json`, data solo nel nome della sessione, nessuna data.
-    """
+def t_indice_elenca_i_giorni(tmp: Path) -> None:
+    """L'indice ha una riga per giorno, letta dai manifesti pubblicati."""
     old = pc.LOCAL_CLONE
     pc.LOCAL_CLONE = tmp
     try:
-        sess = tmp / "sessions"
-        casi = {
-            "2026-10-05_09-39-09": "2026-10-05T09:39:09",   # da session.json
-            "2026-10-04_12-07-22": None,                    # solo dal nome
-            "registrazione-senza-data": None,                # niente
-        }
-        for stem, wall in casi.items():
-            d = sess / stem
+        for giorno, inizio, fine, parole in (("2026-10-04", "10:49", "19:06", 24338),
+                                              ("2026-10-05", "09:39", "16:21", 30665)):
+            d = tmp / "giorni" / giorno
             d.mkdir(parents=True)
-            (d / "transcript.json").write_text(json.dumps(
-                {"meta": {"session_start_wall": None, "speakers": [],
-                          "total_words": 10}, "segments": []}), encoding="utf-8")
-            (d / "session.json").write_text(json.dumps(
-                {"stem": stem, "session_start_wall": wall}), encoding="utf-8")
-
+            (d / "giorno.json").write_text(json.dumps({
+                "totals": {"sessions": 7, "first_start": f"{giorno}T{inizio}:00",
+                           "last_end": f"{giorno}T{fine}:00", "speech_sec": 15600,
+                           "words": parole},
+                "blocks": [{}], "speakers": {"GLOBAL_001": {}, "UNKNOWN": {}},
+                "sessions": []}), encoding="utf-8")
         testo = pc._write_index().read_text(encoding="utf-8")
-        righe = {r.split("`")[1]: r for r in testo.splitlines() if r.startswith("| ") and "`" in r}
-        require(righe["2026-10-05_09-39-09"].startswith("| 2026-10-05 09:39 |"),
-                f"data da session.json non usata: {righe['2026-10-05_09-39-09']}")
-        require(righe["2026-10-04_12-07-22"].startswith("| 2026-10-04 12:07 |"),
-                f"data dal nome della sessione non usata: {righe['2026-10-04_12-07-22']}")
-        require(righe["registrazione-senza-data"].startswith("| — |"),
-                "senza nessuna data la cella deve restare «—», non inventarne una")
-        print("  ok   la colonna Data legge session.json e, in mancanza, il nome")
+        righe = [r for r in testo.splitlines() if r.startswith("| [")]
+        require(len(righe) == 2, f"due giorni, due righe: {righe}")
+        require(righe[0].startswith("| [2026-10-05](giorni/2026-10-05/) | 7 | 09:39–16:21 |"),
+                f"il giorno piu' recente in cima, con orari: {righe[0]}")
+        require("| 1 |" in righe[0], f"UNKNOWN non conta come voce: {righe[0]}")
+        require("parole: **55003**" in testo, "il totale delle parole")
+        print("  ok   l'indice elenca i giorni dai manifesti")
     finally:
         pc.LOCAL_CLONE = old
 
 
 def main() -> int:
     tests = [
-        t_indice_mostra_la_data_di_registrazione,
+        t_indice_elenca_i_giorni,
+        t_migrazione_riporta_le_sessioni_solo_sulla_repo,
         t_nothing_forbidden_lands_on_the_repo,
         t_status_dichiara_le_voci_che_il_db_non_conosce,
         t_push_ripubblica_solo_cio_che_e_cambiato,
