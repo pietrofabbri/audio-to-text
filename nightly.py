@@ -95,6 +95,63 @@ def _artefatti_mancanti() -> list[str]:
             if not (ROOT / "corpus_repo" / rel).exists()]
 
 
+def _publish_cmd() -> list[str]:
+    """Il comando di pubblicazione, con i nomi solo se la config lo dice.
+
+    `corpus_with_names` (core/config.py) e' la decisione D1 della ROADMAP.
+    Sta in config e non in un argomento di nightly perche' launchd lancia
+    sempre lo stesso comando: un interruttore che vive nel plist si
+    dimentica, uno che vive in config si legge accanto al suo perche'.
+    """
+    from core.config import config
+    cmd = [sys.executable, str(ROOT / "publish_corpus.py"), "push"]
+    if config.corpus_with_names:
+        cmd.append("--with-names")
+    return cmd
+
+
+def _voci_da_rivedere(dry_run: bool) -> dict | None:
+    """Ultimo passo: promemoria delle voci nuove ed estratti da ascoltare.
+
+    Gli estratti si tagliano adesso perche' l'audio originale resta
+    nell'archivio solo 7 giorni: dopo, una voce non si puo' piu' sentire
+    e quindi nemmeno nominare a ragion veduta. Il promemoria finisce in
+    output/voci_da_rivedere.md, in locale: ha estratti di testo e nomi
+    di file audio, e non va nel corpus.
+
+    Non solleva: l'elaborazione della notte e' gia' finita e pubblicata,
+    e un difetto qui non deve farla sembrare fallita.
+    """
+    if dry_run:
+        logger.info("Voci da rivedere: saltato (--dry-run)")
+        return None
+    try:
+        from core.config import config
+        from core.speaker_db import SpeakerDB
+        from core.voice_review import prepara_revisione_notturna
+
+        db = SpeakerDB(config.speaker_id.db_path,
+                       threshold=config.speaker_id.match_threshold)
+        r = prepara_revisione_notturna(
+            db, DATA_ROOT / "output" / "voci_da_rivedere.md",
+            output_dir=DATA_ROOT / "output")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Voci da rivedere non preparate: %s: %s",
+                       type(exc).__name__, exc)
+        return None
+    if r["voci"]:
+        logger.info(
+            "Voci da rivedere: %d, %d estratti pronti in data/ascolto%s. "
+            "Elenco: %s — oppure: python review_speakers.py nuove",
+            r["voci"], r["estratti"],
+            f" ({r['senza_audio']} senza audio originale)" if r["senza_audio"] else "",
+            r["file"],
+        )
+    else:
+        logger.info("Voci da rivedere: nessuna")
+    return r
+
+
 def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
     proc = subprocess.run(
         cmd, cwd=str(ROOT), capture_output=True, text=True,
@@ -277,7 +334,7 @@ def main() -> int:
     if cooldown > 0:
         pull += ["--cooldown-sec", str(cooldown)]
 
-    logger.info("--- 1/2 import ed elaborazione ---")
+    logger.info("--- 1/3 import ed elaborazione ---")
     code_pull, out_pull = _run(pull)
     if code_pull != 0:
         # L'import può uscire non-zero per un file fallito, non per un
@@ -289,12 +346,11 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 3. Pubblicazione del corpus
     # ------------------------------------------------------------------
-    logger.info("--- 2/2 pubblicazione del corpus ---")
+    logger.info("--- 2/3 pubblicazione del corpus ---")
     if args.no_publish:
         logger.info("Saltata (--no-publish)")
     else:
-        code_pub, out_pub = _run(
-            [sys.executable, str(ROOT / "publish_corpus.py"), "push"])
+        code_pub, out_pub = _run(_publish_cmd())
         if code_pub != 0:
             _log_uscita_male("publish_corpus push", code_pub, out_pub)
         else:
@@ -315,7 +371,13 @@ def main() -> int:
             )
 
     # ------------------------------------------------------------------
-    # 4. Bilancio
+    # 4. Voci da rivedere
+    # ------------------------------------------------------------------
+    logger.info("--- 3/3 voci da rivedere ---")
+    _voci_da_rivedere(args.dry_run)
+
+    # ------------------------------------------------------------------
+    # 5. Bilancio
     # ------------------------------------------------------------------
     elapsed = time.time() - started
     leftover = _leftover()

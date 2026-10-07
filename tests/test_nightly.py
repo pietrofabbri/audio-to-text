@@ -674,6 +674,68 @@ def t_una_matrice_delle_voci_mancante_viene_detettata(tmp: Path) -> None:
         nightly.ROOT = root_reale
 
 
+def t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice(tmp: Path) -> None:
+    """D1: nomi reali ammessi, ma solo con l'interruttore acceso.
+
+    Il default deve restare pseudonimi: un nome pubblicato non si
+    ritira (resta nella storia della repo), quindi l'errore costoso e'
+    pubblicarlo per sbaglio, non dimenticare di pubblicarlo.
+    """
+    print("  i nomi reali si pubblicano solo con corpus_with_names")
+    import nightly
+    from core.config import config
+
+    originale = config.corpus_with_names
+    try:
+        config.corpus_with_names = False
+        cmd = nightly._publish_cmd()
+        require(cmd[-1] == "push" and "--with-names" not in cmd,
+                f"di default niente nomi: {cmd}")
+        config.corpus_with_names = True
+        cmd = nightly._publish_cmd()
+        require(cmd[-2:] == ["push", "--with-names"],
+                f"con l'interruttore acceso i nomi devono passare: {cmd}")
+    finally:
+        config.corpus_with_names = originale
+    require(originale is False, "il default in config deve restare False")
+
+
+def t_la_notte_prepara_le_voci_da_rivedere(tmp: Path) -> None:
+    """L'ultimo passo scrive il promemoria, e in --dry-run non scrive.
+
+    Un DB delle voci finto con una voce lunga e senza nome: il
+    promemoria deve nominarla. In --dry-run non si scrive niente, come
+    per il resto del ciclo.
+    """
+    print("  la notte prepara le voci da rivedere")
+    import nightly
+    from core.config import config
+    from core.speaker_db import SpeakerDB
+
+    db_path = tmp / "data" / "speakers_db.json"
+    db = SpeakerDB(db_path)
+    db._register("GLOBAL_035", "2026-10-05_11-43-50", "SPEAKER_00",
+                 [0.0, 1.0, 0.0], 1750)
+    db.save()
+
+    radice, db_reale = nightly.DATA_ROOT, config.speaker_id.db_path
+    try:
+        nightly.DATA_ROOT = tmp
+        config.speaker_id.db_path = db_path
+        require(nightly._voci_da_rivedere(dry_run=True) is None,
+                "in --dry-run il passo non deve fare niente")
+        require(not (tmp / "output" / "voci_da_rivedere.md").exists(),
+                "in --dry-run non si scrive il promemoria")
+        r = nightly._voci_da_rivedere(dry_run=False)
+        md = (tmp / "output" / "voci_da_rivedere.md")
+        require(r is not None and r["voci"] == 1, f"una voce da rivedere: {r}")
+        require(md.exists() and "GLOBAL_035" in md.read_text(encoding="utf-8"),
+                "il promemoria deve nominare la voce nuova")
+    finally:
+        nightly.DATA_ROOT = radice
+        config.speaker_id.db_path = db_reale
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -691,6 +753,8 @@ def main() -> int:
         t_thread_cap_is_measured_not_guessed,
         t_una_pubblicazione_incompleta_viene_detettata,
         t_una_matrice_delle_voci_mancante_viene_detettata,
+        t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice,
+        t_la_notte_prepara_le_voci_da_rivedere,
     ]
     failed = 0
     for fn in tests:

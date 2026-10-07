@@ -283,7 +283,8 @@ def _write_voice_matrix(dry_run: bool = False) -> Path | None:
         logger.info("Matrice delle voci: nessun campione, non scritta")
         return None
 
-    rep = build_matrix(campioni, soglia=SpeakerDB().threshold)
+    sdb = SpeakerDB()
+    rep = build_matrix(campioni, soglia=sdb.threshold, centroidi=sdb.centroids())
     dest = LOCAL_CLONE / "voices" / "voice_matrix.json"
     if not dry_run:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -292,9 +293,10 @@ def _write_voice_matrix(dry_run: bool = False) -> Path | None:
             encoding="utf-8",
         )
     logger.info(
-        "Matrice delle voci: %d voci, %d coppie, %d in zona grigia",
+        "Matrice delle voci: %d voci, %d coppie, %d in zona grigia, "
+        "%d coppie di voci da decidere",
         rep.to_dict()["n_voices"], rep.to_dict()["n_pairs"],
-        len(rep.zona_grigia()),
+        len(rep.zona_grigia()), len(rep.coppie_da_decidere()),
     )
     return dest
 

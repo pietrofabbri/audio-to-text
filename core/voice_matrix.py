@@ -86,12 +86,128 @@ class Pair:
 
 
 @dataclass
+class VoicePairSummary:
+    """Due **voci** messe a confronto, non due campioni.
+
+    Perche' esiste (APERTI 10). La matrice pone la domanda «questi due
+    campioni sono la stessa persona?» una volta per ogni coppia di
+    sessioni: sulle voci vere del 4 ottobre la poneva 14 volte per la
+    stessa coppia `GLOBAL_004 × GLOBAL_018`, e la risposta andava da 0,661
+    a 0,784 — 1 sopra la soglia e 13 sotto. Nessuno decide sui campioni:
+    si decide sulle voci. Aggregando, le 34 indecisioni diventavano 4.
+
+    Il numero che decide e' `centroide`: il coseno fra i due centroidi,
+    cioe' **lo stesso confronto che fa il sistema** quando assegna le
+    identita' (`SpeakerDB._best_match`). Cosi' il report e il sistema non
+    possono contraddirsi per costruzione. Media, massimo e quante volte
+    un campione ha superato la soglia restano accanto, come contesto:
+    dicono quanto la coppia e' stabile da una sessione all'altra.
+
+    `insieme` conta le sessioni in cui le due voci compaiono **nella
+    stessa registrazione**. E' l'indizio piu' forte che esista che siano
+    due persone diverse: la diarizzazione le ha separate mentre parlavano
+    nello stesso file, probabilmente l'una all'altra. Non e' una prova
+    (una persona puo' essere spezzata in due dentro un file), ma sposta
+    il giudizio.
+    """
+
+    a: str
+    b: str
+    n: int                 # confronti campione-campione fra sessioni diverse
+    media: float | None
+    massimo: float | None
+    sopra: int             # quanti di quei confronti superano la soglia
+    centroide: float       # coseno centroide-centroide: il numero del sistema
+    insieme: int           # sessioni in cui compaiono tutte e due
+
+    def to_dict(self) -> dict[str, Any]:
+        def r(x: float | None) -> float | None:
+            return None if x is None else round(x, 4)
+        return {
+            "a": self.a, "b": self.b,
+            "centroid_similarity": r(self.centroide),
+            "n_cross_session": self.n,
+            "mean": r(self.media), "max": r(self.massimo),
+            "above_threshold": self.sopra,
+            "sessions_together": self.insieme,
+        }
+
+
+@dataclass
 class VoiceReport:
     """Tutto quello che la matrice dice, in forma leggibile."""
 
     soglia: float
     campioni: list[VoiceSample] = field(default_factory=list)
     coppie: list[Pair] = field(default_factory=list)
+    # Centroidi del DB delle voci, se il chiamante li ha. Senza, si
+    # ricavano dai campioni come media pesata per i secondi, che e' come
+    # il DB li costruisce: misurato sulle voci vere, il coseno fra il
+    # centroide salvato e la media dei campioni vale 1,0000 per le voci
+    # con un solo campione e 0,934-0,989 per le altre (APERTI 10).
+    centroidi: dict[str, list[float]] = field(default_factory=dict)
+
+    def _centroide(self, gid: str) -> list[float]:
+        if self.centroidi.get(gid):
+            return list(self.centroidi[gid])
+        voci = [c for c in self.campioni if c.gid == gid and c.embedding]
+        if not voci:
+            return []
+        dim = len(voci[0].embedding)
+        somma = [0.0] * dim
+        peso_tot = 0.0
+        for c in voci:
+            if len(c.embedding) != dim:
+                continue
+            p = max(c.secondi, 1.0)
+            peso_tot += p
+            for i, x in enumerate(c.embedding):
+                somma[i] += x * p
+        return [x / peso_tot for x in somma] if peso_tot else []
+
+    def per_coppia_di_voci(self) -> list[VoicePairSummary]:
+        """Una riga per coppia di voci, dalla piu' somigliante.
+
+        I confronti fra campioni della **stessa sessione** non entrano
+        nelle statistiche: due voci nello stesso file le ha gia' separate
+        la diarizzazione, e non e' la domanda che qui si fa. Entrano pero'
+        nel conteggio `insieme`, perche' sono un indizio.
+        """
+        gruppi: dict[tuple[str, str], list[Pair]] = {}
+        insieme: dict[tuple[str, str], set[str]] = {}
+        for p in self.coppie:
+            k = tuple(sorted((p.a.gid, p.b.gid)))
+            if p.same_session():
+                insieme.setdefault(k, set()).add(p.a.sessione)
+            else:
+                gruppi.setdefault(k, []).append(p)
+
+        out = []
+        for k in sorted(set(gruppi) | set(insieme)):
+            ps = gruppi.get(k, [])
+            sims = [p.simiglianza for p in ps]
+            out.append(VoicePairSummary(
+                a=k[0], b=k[1], n=len(sims),
+                media=(sum(sims) / len(sims)) if sims else None,
+                massimo=max(sims) if sims else None,
+                sopra=sum(1 for s in sims if s >= self.soglia),
+                centroide=cosine(self._centroide(k[0]), self._centroide(k[1])),
+                insieme=len(insieme.get(k, ())),
+            ))
+        return sorted(out, key=lambda s: -s.centroide)
+
+    def coppie_da_decidere(self, margine: float = 0.06) -> list[VoicePairSummary]:
+        """Le coppie di voci che la soglia non chiude da sola.
+
+        Una coppia e' da decidere se il numero del sistema (centroide
+        contro centroide) cade entro `margine` dalla soglia o la supera,
+        oppure se almeno un campione l'ha superata. Le coppie che parlano
+        nella stessa registrazione restano nell'elenco ma marcate: sono le
+        piu' probabilmente due persone diverse.
+        """
+        return [s for s in self.per_coppia_di_voci()
+                if s.centroide >= self.soglia - margine
+                or (s.massimo is not None and s.massimo >= self.soglia)]
 
     def per_voce(self) -> dict[str, list[VoiceSample]]:
         out: dict[str, list[VoiceSample]] = {}
@@ -134,6 +250,12 @@ class VoiceReport:
                 key=lambda d: -d["similarity"],
             ),
             "gray_zone": [p.to_dict() for p in self.zona_grigia()],
+            # Per coppia di voci, con il numero del sistema. Nessun
+            # embedding: solo pseudonimi e coseni, come il resto.
+            "voice_pairs_to_decide": [
+                s.to_dict() for s in self.coppie_da_decidere()
+            ],
+            "voice_pairs": [s.to_dict() for s in self.per_coppia_di_voci()],
         }
 
 
@@ -193,6 +315,7 @@ def load_samples(output_dir: Path) -> list[VoiceSample]:
 def build_matrix(
     campioni: Iterable[VoiceSample],
     soglia: float = 0.78,
+    centroidi: dict[str, list[float]] | None = None,
 ) -> VoiceReport:
     """Confronta tutte le coppie che vengono da voci diverse.
 
@@ -203,7 +326,8 @@ def build_matrix(
     mischiarla qui nasconderebbe le coppie che contano.
     """
     campioni = [c for c in campioni if c.embedding]
-    rep = VoiceReport(soglia=soglia, campioni=campioni)
+    rep = VoiceReport(soglia=soglia, campioni=campioni,
+                      centroidi=dict(centroidi or {}))
     for i, a in enumerate(campioni):
         for b in campioni[i + 1:]:
             if a.gid == b.gid:
@@ -243,11 +367,37 @@ def format_report(rep: VoiceReport, mostra_tutto: bool = False) -> str:
         totale = sum(c.secondi for c in voci)
         righe.append(f"  {gid}  {totale/60:6.1f} min  in {dove}")
 
+    # Prima la decisione, per coppia di voci e con il numero del sistema;
+    # poi, sotto, il dettaglio campione per campione da cui viene.
+    da_decidere = rep.coppie_da_decidere()
+    if da_decidere:
+        righe.append(
+            f"\nCoppie di VOCI da decidere ({len(da_decidere)}) — il numero "
+            f"e' centroide contro centroide,\ncioe' lo stesso confronto che "
+            f"fa il sistema quando assegna le voci:"
+        )
+        righe.append("  centroide  media  max   sopra/confronti  coppia")
+        for s in da_decidere:
+            media = f"{s.media:.3f}" if s.media is not None else "  -  "
+            massimo = f"{s.massimo:.3f}" if s.massimo is not None else "  -  "
+            nota = (f"   parlano insieme in {s.insieme} sessioni: "
+                    "probabilmente due persone" if s.insieme else "")
+            righe.append(
+                f"  {s.centroide:.3f}     {media}  {massimo}  "
+                f"{s.sopra:>3d}/{s.n:<3d}          {s.a} x {s.b}{nota}"
+            )
+        righe.append(
+            "  Stessa persona: review_speakers.py merge <tenere> <unire>. "
+            "Due persone: lascia cosi'."
+        )
+    else:
+        righe.append("\nNessuna coppia di voci da decidere.")
+
     zona = rep.zona_grigia()
     if zona:
         righe.append(
-            f"\nCoppie entro 0,06 dalla soglia — quelle che la macchina "
-            f"non puo' decidere ({len(zona)}):"
+            f"\nDettaglio: coppie di CAMPIONI entro 0,06 dalla soglia "
+            f"({len(zona)}):"
         )
         for p in sorted(zona, key=lambda x: -x.simiglianza):
             righe.append(

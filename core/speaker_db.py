@@ -471,6 +471,44 @@ class SpeakerDB:
         rec = self._data["speakers"].get(gid, {})
         return rec.get("name") or gid
 
+    def centroids(self) -> dict[str, list[float]]:
+        """I centroidi salvati, voce per voce.
+
+        Servono alla matrice per confrontare le voci con lo stesso numero
+        che usa `_best_match`. Restano in memoria: sono impronte
+        biometriche, e chi li riceve ne pubblica solo i coseni.
+        """
+        return {gid: list(rec["centroid"])
+                for gid, rec in self._data["speakers"].items()
+                if rec.get("centroid")}
+
+    # ------------------------------------------------------------------
+    # Revisione: quali voci hai gia' guardato
+    # ------------------------------------------------------------------
+
+    def mark_reviewed(self, gid: str, reviewed: bool = True) -> None:
+        """Segna una voce come gia' vista da te, con o senza nome.
+
+        Serve all'elenco `review_speakers.py nuove`: dopo ogni notte deve
+        proporre solo le voci che non hai ancora guardato. Una voce con un
+        nome e' gia' vista per definizione; una senza nome puo' esserlo
+        lo stesso — un passante, la televisione, qualcuno che non vuoi
+        nominare — e `ignora` la toglie dall'elenco senza inventarle un
+        nome.
+        """
+        if gid not in self._data["speakers"]:
+            raise KeyError(f"Voce sconosciuta: {gid}")
+        rec = self._data["speakers"][gid]
+        if reviewed:
+            rec["reviewed_at"] = _now_iso()
+        else:
+            rec.pop("reviewed_at", None)
+        self.save()
+
+    def is_reviewed(self, gid: str) -> bool:
+        rec = self._data["speakers"].get(gid, {})
+        return bool(rec.get("name") or rec.get("reviewed_at"))
+
     def profiles(self) -> dict[str, dict[str, Any]]:
         """Profilo aggregato per voce globale, senza i vettori grezzi."""
         out = {}
@@ -481,6 +519,7 @@ class SpeakerDB:
                 "sessions_count": rec.get("sessions_count", 0),
                 "first_seen": rec.get("first_seen"),
                 "last_seen": rec.get("last_seen"),
+                "reviewed": bool(rec.get("name") or rec.get("reviewed_at")),
                 "sessions": sorted({s["stem"] for s in rec.get("sessions", {}).values()}),
             }
         return out

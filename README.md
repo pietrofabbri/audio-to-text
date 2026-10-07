@@ -389,9 +389,45 @@ python review_speakers.py sync                 # riallinea i nomi ovunque
 python review_speakers.py sync --dry-run       # cosa cambierebbe
 python review_speakers.py consolidate          # rifonde i cluster troppo brevi
 python review_speakers.py consolidate --dry-run
-python review_speakers.py voices               # ogni voce, e dove l'hai sentita
-python review_speakers.py voices --tutto       # anche tutte le coppie
+python review_speakers.py voices               # coppie di voci da decidere, e dove l'hai sentita
+python review_speakers.py voices --tutto       # anche tutte le coppie di campioni
+python review_speakers.py nuove                # voci che non hai ancora guardato
+python review_speakers.py ascolta GLOBAL_035 --play  # 4 estratti da sentire, con il testo
+python review_speakers.py ignora GLOBAL_051    # vista, resta senza nome
 ```
+
+### Dare un nome alle voci: il giro dopo una notte
+
+Ogni notte, dopo la pubblicazione, il ciclo scrive
+`output/voci_da_rivedere.md`: le voci senza nome, mai viste, con almeno un
+minuto di parlato, ciascuna con la voce piu' somigliante e tre estratti
+gia' tagliati in `data/ascolto/`. Il giro e' questo:
+
+1. `python review_speakers.py nuove` — chi e' comparso.
+2. `python review_speakers.py ascolta <voce> --play` — tre o quattro
+   frasi di quella voce, da registrazioni diverse, con il testo accanto.
+3. Poi una delle tre: `name <voce> <Nome>` se la riconosci, `merge
+   <tenere> <unire>` se e' una voce che hai gia', `ignora <voce>` se non
+   vuoi nominarla (passanti, televisione). In tutti e tre i casi sparisce
+   dall'elenco.
+
+Gli estratti si tagliano la notte stessa perche' l'audio originale resta
+nell'archivio solo 7 giorni: un estratto tagliato resta, l'originale no.
+Stanno in `data/`, fuori dal repo e fuori dal corpus, come il DB delle
+voci: sono audio di persone.
+
+**I nomi nel corpus.** Di default il corpus pubblica pseudonimi
+(`GLOBAL_035`). I nomi reali sono ammessi (decisione D1 della
+[ROADMAP](ROADMAP.md)): si pubblicano con `publish_corpus.py push
+--with-names`, oppure ogni notte mettendo `corpus_with_names = True` in
+`core/config.py`. Un nome pubblicato resta nella storia della repo.
+
+**Le coppie da decidere.** `voices` mette in testa le coppie di **voci**
+(non di campioni) che la soglia non chiude, con il coseno fra centroidi:
+lo stesso numero che il sistema usa per assegnare le voci, quindi report
+e sistema non si contraddicono. Accanto, quante volte le due voci hanno
+parlato nella stessa registrazione: se succede, sono quasi certamente due
+persone diverse.
 
 ### La stessa persona, vista da tutte le sessioni
 
@@ -1329,7 +1365,7 @@ audio-to-text/
 ├── nightly.py              # ciclo notturno: importa, elabora, pubblica
 ├── sync_device.py          # import dal registratore + cancellazione sicura
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
-├── review_speakers.py      # chi è chi: nomi, merge, split, sync, matrice
+├── review_speakers.py      # chi è chi: nomi, merge, split, sync, matrice, ascolto
 ├── correct_text.py         # correzione delle parole con un LLM (serve --consent)
 ├── thermal_probe.py        # misura il riscaldamento durante una run
 ├── setup_env.sh            # installa dipendenze
@@ -1343,7 +1379,8 @@ audio-to-text/
 │   ├── speaker_db.py       # identità vocali persistenti cross-file
 │   ├── speaker_sync.py     # allineamento dei nomi al materiale già scritto
 │   ├── speakers_merge.py   # fusione dei cluster troppo brevi
-│   ├── voice_matrix.py     # somiglianza fra voci di sessioni diverse
+│   ├── voice_matrix.py     # somiglianza fra voci, per campione e per coppia di voci
+│   ├── voice_review.py     # estratti da ascoltare e voci da rivedere
 │   ├── text_correction.py  # correzione del testo con Gemini, affiancata
 │   └── corpus_db.py        # indice SQLite locale per le analisi
 ├── pipeline/
@@ -1363,7 +1400,7 @@ audio-to-text/
 ├── input/                  # metti qui i file audio/video
 ├── output/                 # risultati
 ├── archive/                # originali in attesa di purga (7 giorni)
-├── data/                   # database voci e corpus (biometrico, gitignored)
+├── data/                   # database voci, corpus, estratti audio (gitignored)
 └── logs/                   # log di esecuzione e manifest del device
 ```
 

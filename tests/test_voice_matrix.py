@@ -424,6 +424,123 @@ def report_leggibile() -> None:
             f"le coppie vanno dalla più somigliante, sono {sim}")
 
 
+# ----------------------------------------------------------------------
+# Per coppia di voci (APERTI 10): la decisione si prende sulle voci
+# ----------------------------------------------------------------------
+
+def _vettore(x: float, y: float) -> list[float]:
+    return [x, y] + [0.0] * 6
+
+
+def aggrega_per_coppia_di_voci() -> None:
+    """Quattordici confronti della stessa coppia diventano una riga.
+
+    E' il caso vero di GLOBAL_004 x GLOBAL_018: la stessa domanda posta
+    per ogni coppia di sessioni, con risposte diverse. Qui due voci in
+    tre sessioni ciascuna danno 9 confronti campione-campione, e il
+    report deve restituirne una sola riga con media, massimo e quanti
+    stanno sopra la soglia.
+    """
+    import math
+    campioni = []
+    for i, s in enumerate(["2026-10-01_10-00-00", "2026-10-02_10-00-00",
+                           "2026-10-03_10-00-00"]):
+        campioni.append(VoiceSample("GLOBAL_004", "SPEAKER_00", s, 300,
+                                    _vettore(1.0, 0.0)))
+        ang = [0.55, 0.65, 0.75][i]          # coseni 0.85, 0.80, 0.73
+        campioni.append(VoiceSample("GLOBAL_018", "SPEAKER_01",
+                                    s.replace("10-00", "11-00"), 300,
+                                    _vettore(math.cos(ang), math.sin(ang))))
+    rep = build_matrix(campioni, soglia=0.78)
+    righe = rep.per_coppia_di_voci()
+    require(len(righe) == 1, f"una coppia di voci, risultano {len(righe)}")
+    r = righe[0]
+    require((r.a, r.b) == ("GLOBAL_004", "GLOBAL_018"),
+            f"coppia sbagliata: {r.a} x {r.b}")
+    require(r.n == 9, f"9 confronti fra sessioni diverse, risultano {r.n}")
+    require(r.sopra == 6, f"sopra 0,78 stanno 6 confronti, risultano {r.sopra}")
+    require(abs(r.massimo - math.cos(0.55)) < 1e-6, f"massimo sbagliato: {r.massimo}")
+    require(r.insieme == 0, "non compaiono mai nella stessa sessione")
+
+
+def centroide_e_il_numero_del_sistema() -> None:
+    """Il numero che decide e' centroide contro centroide.
+
+    Se il DB delle voci da' i centroidi, si usano quelli: e' lo stesso
+    confronto di `SpeakerDB._best_match`, e il report non puo' dire una
+    cosa diversa da quella che il sistema ha fatto. Qui il caso di
+    GLOBAL_028: un campione fortunato sta sopra la soglia, il centroide
+    no — e il report deve mostrare il centroide.
+    """
+    import math
+    campioni = [
+        VoiceSample("GLOBAL_001", "SPEAKER_00", "2026-10-01_10-00-00", 600,
+                    _vettore(1.0, 0.0)),
+        VoiceSample("GLOBAL_028", "SPEAKER_00", "2026-10-02_10-00-00", 60,
+                    _vettore(math.cos(0.5), math.sin(0.5))),   # 0.878
+    ]
+    centroidi = {"GLOBAL_001": _vettore(1.0, 0.0),
+                 "GLOBAL_028": _vettore(math.cos(0.75), math.sin(0.75))}
+    rep = build_matrix(campioni, soglia=0.78, centroidi=centroidi)
+    r = rep.per_coppia_di_voci()[0]
+    require(abs(r.centroide - math.cos(0.75)) < 1e-6,
+            f"il centroide deve venire dal DB: {r.centroide:.4f}")
+    require(r.massimo > 0.78 > r.centroide,
+            "il caso e' costruito con il campione sopra e il centroide sotto")
+    require(rep.coppie_da_decidere() == [r],
+            "un campione sopra la soglia basta a renderla da decidere")
+
+    # Senza centroidi dal DB, si ricavano dai campioni: con un campione
+    # per voce coincidono con il campione stesso.
+    rep2 = build_matrix(campioni, soglia=0.78)
+    r2 = rep2.per_coppia_di_voci()[0]
+    require(abs(r2.centroide - math.cos(0.5)) < 1e-6,
+            f"centroide ricavato dai campioni sbagliato: {r2.centroide:.4f}")
+
+
+def coppie_lontane_non_sono_da_decidere() -> None:
+    """Due voci chiaramente diverse non devono comparire nell'elenco."""
+    campioni = [
+        VoiceSample("GLOBAL_001", "SPEAKER_00", "2026-10-01_10-00-00", 600,
+                    _vettore(1.0, 0.0)),
+        VoiceSample("GLOBAL_002", "SPEAKER_00", "2026-10-02_10-00-00", 600,
+                    _vettore(0.0, 1.0)),
+    ]
+    rep = build_matrix(campioni, soglia=0.78)
+    require(len(rep.per_coppia_di_voci()) == 1, "una coppia nel totale")
+    require(rep.coppie_da_decidere() == [], "coseno 0: niente da decidere")
+
+
+def parlano_insieme_e_un_indizio() -> None:
+    """Due voci nella stessa registrazione: contate in `insieme`.
+
+    I confronti della stessa sessione non entrano nelle statistiche
+    (la diarizzazione le ha gia' separate) ma il report deve dire che
+    hanno parlato insieme, perche' e' l'indizio piu' forte che siano
+    due persone.
+    """
+    import math
+    v = _vettore(math.cos(0.4), math.sin(0.4))
+    campioni = [
+        VoiceSample("GLOBAL_031", "SPEAKER_00", "2026-10-05_10-41-30", 600,
+                    _vettore(1.0, 0.0)),
+        VoiceSample("GLOBAL_035", "SPEAKER_01", "2026-10-05_10-41-30", 600, v),
+        VoiceSample("GLOBAL_035", "SPEAKER_00", "2026-10-05_11-43-50", 600, v),
+    ]
+    rep = build_matrix(campioni, soglia=0.78)
+    r = rep.per_coppia_di_voci()[0]
+    require(r.insieme == 1, f"insieme in una sessione, risulta {r.insieme}")
+    require(r.n == 1, f"un solo confronto fra sessioni diverse, risultano {r.n}")
+    testo = format_report(rep)
+    require("parlano insieme" in testo,
+            "il report deve dire che le due voci hanno parlato insieme")
+    d = rep.to_dict()
+    require(d["voice_pairs_to_decide"][0]["sessions_together"] == 1,
+            "il JSON deve portare sessions_together")
+    require("embedding" not in json.dumps(d["voice_pairs"]),
+            "nessun embedding nel JSON delle coppie")
+
+
 CHECKS = [
     ("una persona in tre giornate resta una persona",
      raggruppa_una_voce_fra_sessioni),
@@ -440,6 +557,11 @@ CHECKS = [
     ("una cartella vuota dà un report vuoto", cartella_vuota),
     ("il report è leggibile e serializzabile", report_leggibile),
     ("il report dichiara quale confronto ha fatto", report_dichiara_qual_confronto_e),
+    ("i confronti si aggregano per coppia di voci", aggrega_per_coppia_di_voci),
+    ("decide il centroide, come il sistema", centroide_e_il_numero_del_sistema),
+    ("le coppie lontane non sono da decidere",
+     coppie_lontane_non_sono_da_decidere),
+    ("parlare insieme e' un indizio, e si vede", parlano_insieme_e_un_indizio),
 ]
 
 

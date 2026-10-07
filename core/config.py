@@ -447,6 +447,16 @@ class PipelineConfig:
     # Se True, salta i file che hanno già un output completo in output/
     skip_completed: bool = True
 
+    # Nomi reali nel corpus pubblicato. Decisione D1 della ROADMAP, presa
+    # il 7 ottobre 2026: i nomi reali sono ammessi nella repo privata del
+    # corpus, «volendo». Questo e' il «volendo»: con False il giro
+    # notturno pubblica pseudonimi (GLOBAL_00x) come sempre; con True
+    # passa `--with-names` e chi accede alla repo legge chi ha detto cosa.
+    # Le voci senza nome restano pseudonimi in entrambi i casi. Il default
+    # resta False perche' cambiarlo e' una scelta che riguarda anche le
+    # persone registrate, e va fatta qui, a mano, sapendolo.
+    corpus_with_names: bool = False
+
 
 # Istanza di default — importa questa nei moduli della pipeline
 config = PipelineConfig()

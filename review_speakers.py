@@ -6,6 +6,15 @@ Rivedi le identità vocali: vedi chi è chi, metti i nomi, correggi gli errori.
     python review_speakers.py merge GLOBAL_003 GLOBAL_004
     python review_speakers.py threshold 0.70
     python review_speakers.py sync            # allinea i nomi a tutto il materiale già scritto
+    python review_speakers.py voices          # coppie di voci da decidere (stessa persona?)
+    python review_speakers.py nuove           # voci che non hai ancora guardato
+    python review_speakers.py ascolta GLOBAL_035 --play   # sentila prima di nominarla
+    python review_speakers.py ignora GLOBAL_051           # vista, resta senza nome
+
+Il giro tipico dopo una notte: `nuove` dice chi e' comparso, `ascolta`
+fa sentire tre o quattro frasi di ciascuno, e poi `name`, `merge` o
+`ignora`. Il giro notturno prepara gia' gli estratti e lo stesso elenco
+in output/voci_da_rivedere.md.
 
 Perché esiste. Il riconoscimento automatico lavora su una soglia di
 coseno, e su quattro registrazioni reali i numeri sono ambigui in una
@@ -26,6 +35,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -469,7 +480,7 @@ def cmd_voices(db: SpeakerDB, args) -> int:
               "sessione con diarizzazione e identita' globali.")
         return 1
 
-    rep = build_matrix(campioni, soglia=db.threshold)
+    rep = build_matrix(campioni, soglia=db.threshold, centroidi=db.centroids())
     print(format_report(rep, mostra_tutto=getattr(args, "tutto", False)))
 
     out = getattr(args, "json", None)
@@ -480,10 +491,93 @@ def cmd_voices(db: SpeakerDB, args) -> int:
         )
         print(f"\nScritto: {out}")
 
-    zona = rep.zona_grigia()
-    if zona:
-        print(f"\n{zona and len(zona)} coppie aspettano una decisione tua. "
-              "Con `merge` o `split` le chiudi; senza, restano aperte.")
+    da_decidere = rep.coppie_da_decidere()
+    if da_decidere:
+        print(f"\n{len(da_decidere)} coppie di voci aspettano una decisione tua. "
+              "Prima di unire, ascoltale: review_speakers.py ascolta <voce>.")
+    return 0
+
+
+def cmd_ascolta(db: SpeakerDB, args) -> int:
+    """Estratti brevi di una voce, da sentire prima di darle un nome.
+
+    Gli estratti finiscono in data/ascolto/ (fuori dal repo e dal corpus)
+    e si riusano: tagliati una volta, restano anche quando l'archivio ha
+    cancellato l'audio originale.
+    """
+    from core.voice_review import CLIP_DIR, prepara_ascolto
+
+    gid = args.gid
+    if gid not in db._data["speakers"]:
+        print(f"Voce sconosciuta: {gid}", file=sys.stderr)
+        return 1
+    pronti, senza_audio = prepara_ascolto(gid, n=args.n, rifai=args.rifai)
+    nome = db._data["speakers"][gid].get("name")
+    print(f"\n{gid}" + (f" ({nome})" if nome else " (senza nome)")
+          + f" — {len(pronti)} estratti in {CLIP_DIR}\n")
+    if not pronti:
+        print("Nessun estratto: " + (
+            f"l'audio originale di {senza_audio} candidati non c'e' piu' "
+            "(archivio oltre 7 giorni?)." if senza_audio else
+            "nessuna corsa di parole abbastanza lunga e pulita di questa voce."))
+        return 1
+    for i, a in enumerate(pronti, 1):
+        e = a.estratto
+        print(f"  {i}. {e.sessione}  {e.inizio/60:5.1f} min  {e.durata:4.1f}s  {a.file.name}")
+        print(f"     «{e.testo}»")
+    if senza_audio:
+        print(f"\n  ({senza_audio} candidati saltati: audio originale non piu' disponibile)")
+
+    if args.play:
+        player = shutil.which("afplay")
+        if not player:
+            print("\n--play funziona solo sul Mac (afplay). Apri i file a mano.")
+            return 0
+        for i, a in enumerate(pronti, 1):
+            print(f"\n> {i}/{len(pronti)} «{a.estratto.testo}»")
+            subprocess.run([player, str(a.file)], check=False)
+    print(f"\nSe la riconosci: python review_speakers.py name {gid} <Nome>")
+    return 0
+
+
+def cmd_nuove(db: SpeakerDB, args) -> int:
+    """Le voci che non hai ancora guardato, dalla piu' presente."""
+    from core.voice_review import MIN_SECONDI_DA_RIVEDERE, voci_da_rivedere
+
+    minimo = args.min_minuti * 60 if args.min_minuti is not None \
+        else MIN_SECONDI_DA_RIVEDERE
+    voci = voci_da_rivedere(db, min_secondi=minimo)
+    if not voci:
+        print(f"Nessuna voce da rivedere (senza nome, mai vista, almeno "
+              f"{minimo/60:.0f} min di parlato).")
+        return 0
+    print(f"\n{len(voci)} voci da rivedere (senza nome, mai viste, almeno "
+          f"{minimo/60:.0f} min di parlato):\n")
+    for v in voci:
+        giorni = sorted({x[:10] for x in v["sessioni"]})
+        riga = (f"  {v['gid']}  {v['secondi']/60:6.1f} min  "
+                f"{len(v['sessioni'])} sessioni  {', '.join(giorni)}")
+        if v["vicina"]:
+            chi = v["vicina_nome"] or v["vicina"]
+            riga += f"   piu' simile: {chi} {v['somiglianza']:.2f}"
+            if v["somiglianza"] >= db.threshold - 0.06:
+                riga += "  <- vicina alla soglia"
+        print(riga)
+    print("\n  ascolta:  python review_speakers.py ascolta <voce> --play")
+    print("  nome:     python review_speakers.py name <voce> <Nome>")
+    print("  unisci:   python review_speakers.py merge <tenere> <unire>")
+    print("  lascia:   python review_speakers.py ignora <voce>")
+    return 0
+
+
+def cmd_ignora(db: SpeakerDB, args) -> int:
+    """Segna una voce come vista senza darle un nome."""
+    if args.gid not in db._data["speakers"]:
+        print(f"Voce sconosciuta: {args.gid}", file=sys.stderr)
+        return 1
+    db.mark_reviewed(args.gid, reviewed=not args.annulla)
+    print(f"{args.gid}: " + ("di nuovo fra le voci da rivedere" if args.annulla
+                            else "vista, resta senza nome"))
     return 0
 
 
@@ -534,6 +628,22 @@ def main() -> int:
     v.add_argument("--json", default=None,
                    help="scrivi la matrice anche in JSON")
 
+    a = sub.add_parser("ascolta", help="estratti audio di una voce, da sentire")
+    a.add_argument("gid")
+    a.add_argument("--n", type=int, default=4, help="quanti estratti (default 4)")
+    a.add_argument("--play", action="store_true", help="riproducili subito (Mac)")
+    a.add_argument("--rifai", action="store_true",
+                   help="ritaglia anche gli estratti gia' presenti")
+
+    nu = sub.add_parser("nuove", help="le voci che non hai ancora guardato")
+    nu.add_argument("--min-minuti", type=float, default=None,
+                    help="parlato minimo per proporre una voce (default 1)")
+
+    ig = sub.add_parser("ignora", help="segna una voce come vista, senza nome")
+    ig.add_argument("gid")
+    ig.add_argument("--annulla", action="store_true",
+                    help="rimettila fra le voci da rivedere")
+
     y = sub.add_parser(
         "sync",
         help="allinea i nomi a corpus.db e alle sessioni già scritte",
@@ -559,6 +669,7 @@ def main() -> int:
         "list": cmd_list, "name": cmd_name, "merge": cmd_merge,
         "split": cmd_split, "threshold": cmd_threshold, "sync": cmd_sync,
         "consolidate": cmd_consolidate, "voices": cmd_voices,
+        "ascolta": cmd_ascolta, "nuove": cmd_nuove, "ignora": cmd_ignora,
     }[cmd](db, args)
 
 
