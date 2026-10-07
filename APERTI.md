@@ -55,9 +55,10 @@ giorni), 14 (segmenti da ~18 s), e il termico vero (servono
 grandezza come riferimento» era falsa, e misurando l'ha sciolta: i tre
 numeri discordanti sono la stessa statistica in tre aggregazioni, la
 soglia 0,78 sta al 99º percentile della distribuzione, e la varianza fra
-sessioni e' rumore che la normalizzazione peggiora. Resta da fare una
-modifica al report — aggregare per coppia di voci — e quattro coppie da
-decidere a mano. Vedi il punto.
+sessioni e' rumore che la normalizzazione peggiora. **La modifica al
+report e' fatta il 7 ottobre** (punto 32): `voices` aggrega per coppia di
+voci con il numero del sistema. Restano le coppie da decidere a mano, che
+sulle 37 voci del 7 ottobre sono 10. Vedi il punto.
 
 *L'elenco è stato riallineato il 5 ottobre.* Prima l'intestazione
 prometteva i punti 10–14, che il documento non scriveva da nessuna parte:
@@ -616,6 +617,22 @@ centroide-contro-centroide, cioe' lo stesso del sistema: il report e il
 sistema smettono di contraddirsi per costruzione, e la decisione passa da
 34 a 4. Non l'ho implementata: e' un cambio di comportamento del report, e
 l'ho scritta qui per deciderla con te.
+
+**Implementata il 7 ottobre** (ROADMAP Fase 1, punto 32). `voices` mette
+in testa le coppie di **voci** da decidere, con il coseno
+centroide-centroide preso dal DB delle voci, e sotto il dettaglio per
+campione. Una coppia e' da decidere se il centroide sta entro 0,06 dalla
+soglia o la supera, oppure se almeno un campione l'ha superata. Sui dati
+del 7 ottobre (37 voci, 78 campioni, 2.816 coppie di campioni): **49
+coppie di campioni in zona grigia diventano 10 coppie di voci**. Le
+quattro del 4 ottobre ci sono tutte (`004 × 018` ora 0,760 di centroide,
+`024 × 026` 0,744, `001 × 028` 0,753, `027 × 028` 0,735). Le altre sei
+sono `037 × 042` (0,774), `018 × 023` (0,771), `006 × 033` (0,758),
+`001 × 032` (0,743), `029 × 033` (0,733) e `006 × 026`, che ha il
+centroide a 0,648 ma un campione a 0,786. Una
+sola, `001 × 032`, ha parlato nella stessa registrazione: quasi
+certamente due persone. Lo stesso elenco va anche in
+`voices/voice_matrix.json` del corpus (`voice_pairs_to_decide`).
 
 **11 — campione denoise di 180 s.** Costa 45 s per file, ed è il prezzo
 di non fare una seconda passata ASR su un'ora sola. Su un file la
@@ -1472,6 +1489,73 @@ naming diverse. Il numero dichiarato l'ho preso dal runner stesso
 (`run_all.FAST`, contando l'output di ogni suite), non da un conteggio a
 mano: e' la prima volta che il totale non coincide e la ragione era
 mia, non del codice.
+
+---
+
+### 32. ~~Nessun momento per dare un nome alle voci~~ — chiuso il 7 ottobre
+
+**Stato.** Chiuso come strumento; restano le decisioni, che sono tue.
+Gli strumenti per nominare una voce c'erano dall'inizio (`name`, `merge`,
+`split`, `sync`), ma al 7 ottobre su 37 voci **nessuna aveva un nome**.
+Non mancava un comando: mancava il momento in cui il sistema chiede «chi
+e' questa voce?», e mancava il modo di **sentirla** prima di rispondere.
+Un nome dato leggendo `GLOBAL_035` in una tabella e' tirato a indovinare.
+
+**Cosa c'e' adesso** (`core/voice_review.py`, `review_speakers.py`):
+
+  - `nuove` — le voci senza nome, mai viste, con almeno un minuto di
+    parlato, dalla piu' presente, ciascuna con la voce piu' somigliante e
+    il coseno fra centroidi. Al primo giro sono 33 su 37: e' normale,
+    nessuna era mai stata guardata.
+  - `ascolta <voce> [--play]` — fino a 4 estratti di 3-12 secondi in cui
+    parla **solo** quella voce, da registrazioni diverse, con il testo
+    trascritto accanto. `--play` li fa sentire in fila con `afplay`.
+  - `ignora <voce>` — vista, resta senza nome (passanti, televisione,
+    chi non vuoi nominare). `--annulla` la rimette nell'elenco.
+  - Il giro notturno, dopo la pubblicazione, scrive
+    `output/voci_da_rivedere.md` e taglia subito tre estratti per ogni
+    voce da rivedere.
+
+**Il perche' del taglio notturno.** L'originale resta nell'archivio 7
+giorni. Il 7 ottobre la sessione `2026-10-05_09-39-09` non aveva gia'
+piu' l'audio da nessuna parte, a due giorni dalla registrazione, e
+`2026-10-02_17-02-36` non c'era piu' nemmeno in `output/`. Un estratto
+tagliato la notte stessa resta in `data/ascolto/` e si riusa; una voce
+senza estratti e senza originale non si puo' piu' sentire.
+
+**Un difetto trovato strada facendo, che conta.** Le parole di
+`transcript.json` portano l'etichetta locale del parlante com'era
+**prima** della fusione dei frammenti (punto 19): nella sessione
+`2026-10-05_14-47-58` 1.570 parole su 7.573 portano un'etichetta diversa
+da quella del loro segmento, perche' `SPEAKER_04` e `SPEAKER_05` sono
+stati assorbiti in `SPEAKER_03`. Chi sceglie gli estratti deve seguire
+la catena di `speaker_merge.json`, altrimenti perde proprio i pezzi che
+la fusione ha restituito alla voce. C'e' un test che lo blocca.
+
+**Dove sta l'audio.** Gli originali erano in tre posti: `archive/`,
+`input/` e `input/today/`. `trova_audio` li cerca tutti, sottocartelle
+comprese. Gli estratti stanno in `data/ascolto/`, fuori dal repo e dal
+corpus come il DB delle voci, con il nome `<sessione>_<decimi>.mp3` in
+una cartella piatta: dopo un `merge` non si sposta niente, perche' di chi
+sia un estratto si ricalcola ogni volta dalla trascrizione.
+
+**I nomi nel corpus (ROADMAP D1).** Decisione del 7 ottobre: i nomi reali
+sono ammessi nella repo privata, «volendo». `config.corpus_with_names`
+(default `False`) fa passare `--with-names` al giro notturno. Il default
+resta pseudonimi perche' un nome pubblicato resta nella storia della repo:
+l'errore costoso e' pubblicarlo per sbaglio.
+
+**Verificato sui dati veri, il 7 ottobre.** 12 suite verdi sul Mac. 24
+estratti tagliati per le 8 voci con piu' parlato (1,8 MB), quasi tutti
+fra 10 e 12 secondi; i due piu' brevi (3,6 e 4,4 s) sono di `GLOBAL_006`,
+che negli estratti puliti parla per frasi brevi. 10 test in
+`test_voice_review.py`, 4 nuovi in `test_voice_matrix.py`, 2 in
+`test_nightly.py`.
+
+**Quello che resta, ed e' tuo:** ascoltare e decidere le 10 coppie di
+`voices`, poi dare un nome (o `ignora`) alle voci di `nuove`. Conviene
+in quest'ordine: unire prima, nominare dopo, cosi' un nome si da' una
+volta sola.
 
 ---
 

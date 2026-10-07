@@ -540,6 +540,10 @@ def cmd_ascolta(db: SpeakerDB, args) -> int:
     return 0
 
 
+def _sessioni(n: int) -> str:
+    return f"{n} sessione " if n == 1 else f"{n} sessioni"
+
+
 def cmd_nuove(db: SpeakerDB, args) -> int:
     """Le voci che non hai ancora guardato, dalla piu' presente."""
     from core.voice_review import MIN_SECONDI_DA_RIVEDERE, voci_da_rivedere
@@ -556,7 +560,7 @@ def cmd_nuove(db: SpeakerDB, args) -> int:
     for v in voci:
         giorni = sorted({x[:10] for x in v["sessioni"]})
         riga = (f"  {v['gid']}  {v['secondi']/60:6.1f} min  "
-                f"{len(v['sessioni'])} sessioni  {', '.join(giorni)}")
+                f"{_sessioni(len(v['sessioni']))}  {', '.join(giorni)}")
         if v["vicina"]:
             chi = v["vicina_nome"] or v["vicina"]
             riga += f"   piu' simile: {chi} {v['somiglianza']:.2f}"

@@ -21,8 +21,9 @@ Tre pezzi:
   - `prepara_revisione_notturna(...)` lo fa dopo il giro di notte, e
     taglia subito gli estratti delle voci nuove. **Il perche' del
     subito:** l'audio originale vive nell'archivio solo 7 giorni
-    (`sync_device.py purge`), e il 7 ottobre due sessioni su diciannove
-    non avevano gia' piu' l'audio da nessuna parte. Un estratto tagliato
+    (`sync_device.py purge`), e il 7 ottobre la sessione
+    2026-10-05_09-39-09 non aveva gia' piu' l'originale da nessuna parte,
+    a due giorni dalla registrazione. Un estratto tagliato
     la notte stessa resta; uno chiesto fra tre settimane no.
 
 Dove vanno gli estratti. In `data/ascolto/`, accanto al DB delle voci, e
@@ -368,8 +369,9 @@ def formatta_promemoria(voci: list[dict[str, Any]], soglia: float,
     for v in voci:
         sess = v["sessioni"]
         giorni = sorted({s[:10] for s in sess})
+        quante = "1 sessione" if len(sess) == 1 else f"{len(sess)} sessioni"
         righe.append(f"## {v['gid']} — {v['secondi']/60:.1f} min in "
-                     f"{len(sess)} sessioni ({', '.join(giorni)})")
+                     f"{quante} ({', '.join(giorni)})")
         if v["vicina"]:
             chi = v["vicina_nome"] or v["vicina"]
             vicino = v["somiglianza"] >= soglia - 0.06

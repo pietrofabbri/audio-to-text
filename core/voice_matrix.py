@@ -380,7 +380,8 @@ def format_report(rep: VoiceReport, mostra_tutto: bool = False) -> str:
         for s in da_decidere:
             media = f"{s.media:.3f}" if s.media is not None else "  -  "
             massimo = f"{s.massimo:.3f}" if s.massimo is not None else "  -  "
-            nota = (f"   parlano insieme in {s.insieme} sessioni: "
+            dove = "1 sessione" if s.insieme == 1 else f"{s.insieme} sessioni"
+            nota = (f"   parlano insieme in {dove}: "
                     "probabilmente due persone" if s.insieme else "")
             righe.append(
                 f"  {s.centroide:.3f}     {media}  {massimo}  "

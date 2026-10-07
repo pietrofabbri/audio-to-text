@@ -88,6 +88,18 @@ Taglia: piccola. Nessuna dipendenza.
 **Fatto quando:** l'indice mostra le date, `APERTI.md` non contiene date
 successive all'ultimo commit, `git status` sul Mac è pulito.
 
+**Stato: fatta il 7 ottobre.**
+
+- Colonna Data: corretta in `publish_corpus.py` (commit `32440b9`, con
+  test); l'indice del corpus è stato rigenerato e pubblicato (corpus
+  `de5c074`). La data ora si legge da `session.json`, poi da
+  `transcript.json`, poi dal nome della sessione.
+- Date in `APERTI.md`: ricostruite da `git log` (4 e 5 ottobre) nello
+  stesso commit; corretto anche il documento hardware del Project.
+- Mac: `git status` pulito. Le modifiche a `nightly.py` citate nel
+  messaggio di `d00b6ab` erano già nel commit stesso. La copia sul Mac
+  era indietro di due commit ed è stata aggiornata; 11 suite verdi.
+
 ---
 
 ## Fase 1 — Dare un nome alle voci
@@ -133,6 +145,23 @@ Passi:
 **Fatto quando:** le voci ricorrenti hanno un nome, le coppie in zona
 grigia sono decise, e dopo una notte nuova il sistema chiede solo delle
 voci davvero nuove.
+
+**Stato al 7 ottobre: strumenti fatti, decisioni da prendere** (commit
+`d918d9c` e successivo; dettaglio in APERTI 32 e nel README, sezione
+«Dare un nome alle voci»).
+
+| Passo | Stato |
+|---|---|
+| 1. Aggregazione per coppia | **Fatta.** `review_speakers.py voices`: 49 coppie di campioni in zona grigia → **10 coppie di voci** da decidere |
+| 2. Ascolto prima del nome | **Fatto.** `review_speakers.py ascolta <voce> --play`; 24 estratti già tagliati per le 8 voci con più parlato |
+| 3. Il rito dopo la notte | **Fatto.** `review_speakers.py nuove` e `ignora`; la notte scrive `output/voci_da_rivedere.md` e taglia gli estratti |
+| 4. Nomi nel corpus (D1) | **Fatto.** `corpus_with_names` in `core/config.py`, default `False` |
+| Decidere le 10 coppie | **Tuo.** Ascoltarle e usare `merge` dove sono la stessa persona |
+| Dare i nomi | **Tuo.** Dopo le unioni: `nuove`, poi `name` o `ignora` |
+
+Ordine consigliato per la parte tua: prima le 10 coppie (unire), poi i
+nomi, così ogni persona si nomina una volta sola. `GLOBAL_001`, presente
+in 18 sessioni su 19 con 240 minuti, è quasi certamente Pietro.
 
 ---
 
@@ -291,7 +320,7 @@ Queste cose non bloccano le fasi precedenti e non ne sono bloccate.
 
 | # | Domanda | Serve per | Stato |
 |---|---|---|---|
-| D1 | Nel corpus: pseudonimi (oggi) o nomi reali? | Fase 1 | **Decisa il 7/10:** i nomi reali sono ammessi nel corpus privato, a scelta. Il default resta pseudonimi; si attivano con `push --with-names` o con l'impostazione di configurazione. |
+| D1 | Nel corpus: pseudonimi (oggi) o nomi reali? | Fase 1 | **Decisa il 7/10:** i nomi reali sono ammessi nel corpus privato, a scelta. Il default resta pseudonimi; si attivano con `push --with-names` o, per ogni notte, con `corpus_with_names = True` in `core/config.py`. |
 | D2 | Gemini: si manda il testo a Google? Con quale piano, e informando chi è registrato? Oppure un modello locale? | Fase 3 | **In sospeso:** Pietro chiede prima l'ok alle persone registrate. |
 | D3 | Blocco continuo = buchi sotto i 5 minuti; il blocco appartiene al giorno in cui comincia. Va bene? | Fase 2 |
 | D4 | I pezzi orari spariscono dal corpus, restano solo nel manifesto del giorno. Va bene? | Fase 2 |
