@@ -207,7 +207,9 @@ def _common_plist_fields() -> dict:
         "StandardOutPath": str(LOGS_DIR / "launchd_stdout.log"),
         "StandardErrorPath": str(LOGS_DIR / "launchd_stderr.log"),
         "EnvironmentVariables": {
-            "PATH": f"{VENV_PYTHON.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            # /usr/sbin per diskutil (espulsione del registratore).
+            "PATH": f"{VENV_PYTHON.parent}:/opt/homebrew/bin:/usr/local/bin:"
+                    "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": str(Path.home()),
         },
         "KeepAlive": False,

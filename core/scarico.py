@@ -457,7 +457,11 @@ def espelli(volume: Path, tentativi: int = 3) -> tuple[bool, str]:
     volume per qualche secondo: un rifiuto immediato non vuol dire che
     l'espulsione sia impossibile.
     """
-    diskutil = shutil.which("diskutil")
+    # /usr/sbin non e' nel PATH che launchd da' ai job utente: senza il
+    # percorso assoluto, la prova del 7 ottobre copiava tutto e poi non
+    # riusciva a espellere.
+    diskutil = shutil.which("diskutil") or (
+        "/usr/sbin/diskutil" if Path("/usr/sbin/diskutil").exists() else None)
     if not diskutil:
         return False, "diskutil non disponibile (non e' un Mac?)"
     ultimo = ""
@@ -473,7 +477,8 @@ def espelli(volume: Path, tentativi: int = 3) -> tuple[bool, str]:
 
 def notifica(titolo: str, testo: str, suono: str | None = "Glass") -> None:
     """Notifica di macOS. Se non si puo', resta solo il log."""
-    osascript = shutil.which("osascript")
+    osascript = shutil.which("osascript") or (
+        "/usr/bin/osascript" if Path("/usr/bin/osascript").exists() else None)
     if not osascript:
         return
 
