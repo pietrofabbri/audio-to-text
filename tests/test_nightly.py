@@ -736,6 +736,53 @@ def t_la_notte_prepara_le_voci_da_rivedere(tmp: Path) -> None:
         config.speaker_id.db_path = db_reale
 
 
+def t_la_notte_trascrive_dalla_coda(tmp: Path) -> None:
+    """Prima lo scarico (se c'e' il registratore), poi la coda locale.
+
+    Dal 7 ottobre il registratore non si legge piu' durante
+    l'elaborazione: si scarica in coda e si stacca. La notte deve quindi
+    (1) provare a scaricarlo, senza far partire un'altra elaborazione,
+    e (2) trascrivere da `input/coda/`. Con la coda vuota non deve
+    lanciare `pull` per niente.
+    """
+    print("  la notte scarica e poi trascrive dalla coda")
+    import nightly
+
+    comandi: list[list[str]] = []
+
+    def finto_run(cmd, timeout=None):
+        comandi.append([str(c) for c in cmd])
+        return 0, ""
+
+    radice, run_vero, argv = nightly.DATA_ROOT, nightly._run, sys.argv
+    try:
+        nightly.DATA_ROOT = tmp
+        nightly._run = finto_run
+        sys.argv = ["nightly.py", "--dry-run", "--no-publish"]
+
+        nightly.main()
+        scarico = [c for c in comandi if "scarica" in c]
+        require(scarico and "--auto" in scarico[0] and "--no-elabora" in scarico[0]
+                and "--dry-run" in scarico[0],
+                f"la notte deve provare a scaricare, senza avviare altro: {comandi}")
+        require(not [c for c in comandi if "pull" in c],
+                f"con la coda vuota non si lancia pull: {comandi}")
+
+        coda = tmp / "input" / "coda"
+        coda.mkdir(parents=True)
+        (coda / "2026-10-08_09-00-00.MP3").write_bytes(b"x" * 4096)
+        comandi.clear()
+        nightly.main()
+        pull = [c for c in comandi if "pull" in c]
+        require(pull and pull[0][pull[0].index("--source") + 1] == str(coda),
+                f"pull deve leggere dalla coda locale: {pull}")
+        require(comandi.index(pull[0]) > comandi.index(
+            [c for c in comandi if "scarica" in c][0]),
+            "lo scarico deve venire prima della trascrizione")
+    finally:
+        nightly.DATA_ROOT, nightly._run, sys.argv = radice, run_vero, argv
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -755,6 +802,7 @@ def main() -> int:
         t_una_matrice_delle_voci_mancante_viene_detettata,
         t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice,
         t_la_notte_prepara_le_voci_da_rivedere,
+        t_la_notte_trascrive_dalla_coda,
     ]
     failed = 0
     for fn in tests:

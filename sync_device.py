@@ -8,6 +8,16 @@ Uso tipico (il device è collegato da almeno 3 ore):
     python sync_device.py pull --dry-run    # cosa verrebbe fatto?
     python sync_device.py pull              # importa, processa, archivia
     python sync_device.py purge             # svuota l'archivio oltre i 7 giorni
+    python sync_device.py scarica           # copia in coda, libera ed espelle il registratore
+
+Dal 7 ottobre il percorso normale e' `scarica`, lanciato da solo da
+launchd a ogni inserimento (setup_launchd.py): copia verificata in
+input/coda/, cancellazione dal registratore, espulsione, notifica «puoi
+staccarlo». Poi `pull --source input/coda` (lo fanno la notte e le
+passate diurne) trascrive dalla coda. Leggere `pull` direttamente dal
+registratore resta possibile, ma lo tiene collegato per ore: e' il motivo
+per cui il 5 ottobre una sessione ha perso l'audio quando e' stato
+staccato a meta'.
 
 Filosofia: il registratore resta la fonte di verità finché il lavoro non
 è finito. I file NON vengono copiati prima di elaborarli — vengono letti
@@ -1077,6 +1087,134 @@ def _try_delete(f: Path, digest: str, reason: str, args) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# scarica — il registratore serve solo per il tempo della copia
+# ---------------------------------------------------------------------------
+
+def _avvia_elaborazione() -> str:
+    """Fa partire subito una passata diurna, senza aspettare l'orario.
+
+    La passata diurna e' lo stesso ciclo della notte con un budget breve,
+    pochi thread e priorita' bassa (core/config.py, DAYTIME_*): elabora la
+    coda senza rubare la macchina. Si avvia con `launchctl kickstart` sul
+    job gia' installato, cosi' gira con le stesse impostazioni di quando
+    parte da solo. Se il job non c'e' (setup_launchd non eseguito), la
+    coda aspetta la notte.
+    """
+    try:
+        from setup_launchd import LABEL_DAYTIME
+    except Exception as exc:  # noqa: BLE001
+        return f"passata diurna non avviata ({exc})"
+    launchctl = shutil.which("launchctl")
+    if not launchctl:
+        return "launchctl non disponibile: la coda aspetta la notte"
+    r = subprocess.run([launchctl, "kickstart", f"gui/{os.getuid()}/{LABEL_DAYTIME}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return (f"passata diurna non avviata ({(r.stderr or r.stdout).strip()}): "
+                "la coda aspetta la prossima passata")
+    return "elaborazione avviata"
+
+
+def cmd_scarica(args) -> int:
+    """Copia il registratore in coda, lo libera, lo espelle, avvisa.
+
+    Con `--auto` (cosi' lo lancia launchd a ogni volume montato) un volume
+    che non e' il registratore fa uscire in silenzio: il job parte anche
+    per una chiavetta o un'immagine disco, e non deve far rumore.
+    """
+    from core.scarico import CODA_DIR, Lucchetto, descrivi, espelli, notifica, scarica
+
+    if args.auto:
+        # Lo scarico automatico gira senza terminale: il log va su file.
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(LOGS_DIR / "scarico.log", encoding="utf-8")
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logging.getLogger().addHandler(fh)
+
+    lucchetto = Lucchetto()
+    if not lucchetto.prendi():
+        logger.info("Uno scarico e' gia' in corso: esco")
+        return 0
+    try:
+        if args.source:
+            src = Path(args.source)
+            if not src.is_dir():
+                print(f"Non esiste: {src}", file=sys.stderr)
+                return 1
+            from core.device import MIN_AUDIO_BYTES
+            files = [f for f in src.rglob("*") if f.is_file()
+                     and f.suffix.lower() in AUDIO_EXTENSIONS
+                     and not f.name.startswith(".")
+                     and f.stat().st_size >= MIN_AUDIO_BYTES]
+            volume, label = None, str(src)
+        else:
+            # Il volume puo' comparire un attimo prima che il suo
+            # contenuto sia leggibile: qualche tentativo prima di dire
+            # che non c'e'.
+            chosen = None
+            for _ in range(3 if args.auto else 1):
+                chosen = pick_recorder(discover(args.mounts))
+                if chosen:
+                    break
+                time.sleep(2)
+            if not chosen:
+                if args.auto:
+                    return 0
+                print("Nessun registratore collegato.", file=sys.stderr)
+                return 1
+            files, volume, label = list(chosen.audio_files), chosen.path, str(chosen.path)
+
+        files.sort(key=lambda f: (parse_recording_time(f.name)[0] or datetime.max, f.name))
+        logger.info("Registratore %s: %d file da copiare in %s", label, len(files), CODA_DIR)
+        if not files:
+            if volume is not None and not args.no_eject and not args.dry_run:
+                espelli(volume)
+            notifica("TileRec: niente di nuovo", "Nessuna registrazione da copiare.",
+                     suono=None)
+            return 0
+        if not args.dry_run:
+            notifica("TileRec collegato",
+                     f"Copio {len(files)} file: non staccarlo finché non te lo dico.",
+                     suono=None)
+
+        esito = scarica(
+            files, coda=CODA_DIR, manifest=MANIFEST_PATH, etichetta=label,
+            cancella=not args.no_delete, dry_run=args.dry_run,
+            gia_elaborati=already_processed_hashes(),
+        )
+        logger.info(
+            "Scarico: %d copiati (%.1f h di audio, %.0f MB) in %.0f s, %d gia' presenti, "
+            "%d cancellati dal registratore, %d lasciati, %d troncati, %d spazzatura, "
+            "%d errori%s",
+            esito.copiati, esito.secondi_audio / 3600, esito.byte / 1e6, esito.durata,
+            esito.gia_presenti, esito.cancellati, len(esito.lasciati),
+            len(esito.troncati), len(esito.spazzatura), len(esito.errori),
+            " — INTERROTTO (registratore staccato?)" if esito.interrotto else "",
+        )
+        for e in esito.errori:
+            logger.warning("  %s", e)
+        if args.dry_run:
+            return 0
+
+        titolo, testo = descrivi(esito)
+        if volume is not None and not args.no_eject and not esito.interrotto:
+            ok, msg = espelli(volume)
+            if ok:
+                logger.info("Registratore espulso")
+            else:
+                logger.warning("Espulsione non riuscita: %s", msg)
+                titolo = "Copia finita: espelli il TileRec dal Finder"
+        notifica(titolo, testo, suono="Glass" if esito.tutto_a_posto else "Basso")
+
+        if esito.copiati and not args.no_elabora:
+            logger.info("Coda: %s", _avvia_elaborazione())
+        return 0 if not esito.errori else 1
+    finally:
+        lucchetto.lascia()
+
+
+# ---------------------------------------------------------------------------
 # purge
 # ---------------------------------------------------------------------------
 
@@ -1141,6 +1279,24 @@ def main() -> int:
              "macchina resta usabile di giorno. 0 = disattivata",
     )
     p.set_defaults(func=cmd_pull)
+
+    sc = sub.add_parser(
+        "scarica",
+        help="copia il registratore in coda, verifica, lo libera e lo espelle "
+             "(la trascrizione avviene dopo, dalla coda)",
+    )
+    sc.add_argument("--mounts", default="/Volumes")
+    sc.add_argument("--source", help="cartella esplicita invece del registratore")
+    sc.add_argument("--auto", action="store_true",
+                    help="modalita' launchd: esce in silenzio se non c'e' il "
+                         "registratore, log in logs/scarico.log")
+    sc.add_argument("--no-delete", action="store_true",
+                    help="copia senza cancellare dal registratore")
+    sc.add_argument("--no-eject", action="store_true", help="non espellere alla fine")
+    sc.add_argument("--no-elabora", action="store_true",
+                    help="non avviare subito la passata diurna sulla coda")
+    sc.add_argument("--dry-run", action="store_true")
+    sc.set_defaults(func=cmd_scarica)
 
     g = sub.add_parser("purge", help="svuota l'archivio locale oltre i giorni indicati")
     g.add_argument("--days", type=int, default=0, help=f"default {ARCHIVE_DAYS}")

@@ -2,8 +2,15 @@
 """
 nightly.py — la notte, in un comando.
 
-    import dal device → elaborazione entro un budget di tempo →
-    pubblicazione del corpus → bilancio
+    scarico dal registratore (se collegato) → elaborazione della coda
+    entro un budget di tempo → pubblicazione del corpus → voci da
+    rivedere → bilancio
+
+Dal 7 ottobre l'elaborazione legge dalla coda locale (`input/coda/`),
+non dal registratore: il registratore si scarica in pochi minuti a ogni
+inserimento (`sync_device.py scarica`, lanciato da launchd) e si stacca.
+Se e' ancora collegato quando parte la notte, lo scarico si fa qui per
+primo.
 
 È questo che il job launchd esegue. Esiste perché i tre passi hanno
 vincoli diversi e falliscono in modi diversi: l'import cancella file,
@@ -16,7 +23,7 @@ M1 Pro danno circa 3,3x realtime per l'ASR: 18 file da un'ora sono
 ~8 ore di elaborazione, e la finestra notturna è di 3. Il sistema
 non può finire tutto in una notte, e non è un errore: è il punto in
 cui la coda deve poter avanzare di un pezzo alla volta, in ordine,
-senza perdere niente. I file non elaborati restano sul device e
+senza perdere niente. I file non elaborati restano in coda e
 ripartono dalla stessa identica condizione la notte dopo.
 """
 
@@ -93,6 +100,45 @@ def _artefatti_mancanti() -> list[str]:
     """Artefatti di corpus che non sono arrivati nella repo."""
     return [rel for rel in ARTEFATTI_CORPUS
             if not (ROOT / "corpus_repo" / rel).exists()]
+
+
+def _coda_dir() -> Path:
+    from core.scarico import CODA_DIR
+    # La coda segue DATA_ROOT, come output e log: un test che sposta la
+    # radice non deve leggere la coda di produzione.
+    return DATA_ROOT / CODA_DIR.relative_to(ROOT_DIR)
+
+
+def _file_in_coda() -> list[Path]:
+    from core.device import AUDIO_EXTENSIONS, MIN_AUDIO_BYTES
+    coda = _coda_dir()
+    if not coda.is_dir():
+        return []
+    return sorted(f for f in coda.rglob("*")
+                  if f.is_file() and not f.name.startswith(".")
+                  and f.suffix.lower() in AUDIO_EXTENSIONS
+                  and f.stat().st_size >= MIN_AUDIO_BYTES)
+
+
+def _scarica_se_collegato(dry_run: bool) -> None:
+    """Se il registratore e' collegato, lo si scarica prima di tutto.
+
+    Di solito l'ha gia' fatto launchd al momento dell'inserimento; questo
+    copre il caso in cui il job all'inserimento non sia partito (Mac in
+    stop, job non installato). `--no-elabora`: l'elaborazione la fa
+    questo stesso ciclo, subito dopo.
+    """
+    cmd = [sys.executable, str(ROOT / "sync_device.py"), "scarica",
+           "--auto", "--no-elabora"]
+    if dry_run:
+        cmd.append("--dry-run")
+    code, out = _run(cmd)
+    if code != 0:
+        _log_uscita_male("sync_device scarica", code, out)
+    elif out:
+        righe = [r for r in out.splitlines() if "Scarico:" in r]
+        if righe:
+            logger.info(righe[-1].split("sync_device: ", 1)[-1])
 
 
 def _publish_cmd() -> list[str]:
@@ -284,6 +330,12 @@ def main() -> int:
     logger.info("=" * 60)
 
     # ------------------------------------------------------------------
+    # 0. Il registratore, se e' collegato, si scarica in coda per primo
+    # ------------------------------------------------------------------
+    if not args.source:
+        _scarica_se_collegato(args.dry_run)
+
+    # ------------------------------------------------------------------
     # 1. Stato di partenza: cosa c'è da fare e cosa manca
     # ------------------------------------------------------------------
     plan = _plan(args)
@@ -321,9 +373,8 @@ def main() -> int:
     # codice di uscita. Fuori da launchd l'ambiente non e' nel PATH e
     # il fallimento e' immediato ma silenzioso.
     pull = [sys.executable, str(ROOT / "sync_device.py"), "pull",
-            "--max-seconds", str(args.max_seconds)]
-    if args.source:
-        pull += ["--source", args.source]
+            "--max-seconds", str(args.max_seconds),
+            "--source", args.source or str(_coda_dir())]
     if args.limit:
         pull += ["--limit", str(args.limit)]
     if args.dry_run:
@@ -334,8 +385,12 @@ def main() -> int:
     if cooldown > 0:
         pull += ["--cooldown-sec", str(cooldown)]
 
-    logger.info("--- 1/3 import ed elaborazione ---")
-    code_pull, out_pull = _run(pull)
+    logger.info("--- 1/3 elaborazione della coda ---")
+    if not args.source and not _file_in_coda():
+        logger.info("Coda vuota: niente da trascrivere")
+        code_pull, out_pull = 0, ""
+    else:
+        code_pull, out_pull = _run(pull)
     if code_pull != 0:
         # L'import può uscire non-zero per un file fallito, non per un
         # errore generale: si prosegue comunque a pubblicare quello che
@@ -383,15 +438,13 @@ def main() -> int:
     leftover = _leftover()
     logger.info("=" * 60)
     logger.info("Ciclo terminato in %s", _hms(elapsed))
-    if leftover is None:
-        logger.info("Nessun device rilevato: niente da fare")
-    elif leftover:
+    if leftover:
         logger.info(
-            "Restano %d file sul device: verranno presi la notte dopo, "
-            "dal più vecchio", leftover,
+            "Restano %d file da trascrivere: verranno presi alla prossima "
+            "passata, dal più vecchio", leftover,
         )
     else:
-        logger.info("Device svuotato: niente rimane da elaborare")
+        logger.info("Coda vuota: niente rimane da elaborare")
     logger.info("=" * 60)
 
     _write_report(started_iso, elapsed, plan, leftover, code_pull)
@@ -406,21 +459,20 @@ def _hms(seconds: float) -> str:
 def _plan(args) -> dict:
     """Stima il lavoro della notte prima di iniziare a farlo."""
     sys.path.insert(0, str(ROOT))
-    from core.device import AUDIO_EXTENSIONS, discover, pick_recorder, parse_recording_time
+    from core.device import AUDIO_EXTENSIONS, parse_recording_time
 
     files: list[Path] = []
     device = None
-    if args.source:
+    if not args.source:
+        # Il percorso normale: la coda locale, gia' riempita dallo scarico.
+        files = _file_in_coda()
+        device = f"coda locale ({_coda_dir()})"
+    else:
         src = Path(args.source)
         device = str(src)
         if src.is_dir():
             files = [f for f in sorted(src.rglob("*"))
                      if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
-    else:
-        vol = pick_recorder(discover())
-        if vol:
-            device = str(vol.path)
-            files = vol.audio_files
 
     # I file già elaborati non si contano: il ciclo notturno è
     # incrementale, non ripete la coda da capo ogni sera.
@@ -514,14 +566,17 @@ def _duration_sec(path: Path) -> float | None:
 
 
 def _leftover() -> int | None:
-    """Quanti file audio ci sono ancora sul device, esclusi quelli già
-    elaborati. È il numero che dice se la coda avanza o è ferma.
-    None significa che nessun device è collegato, che è una situazione
-    diversa da "device svuotato"."""
+    """Quanti file aspettano ancora: in coda e, se collegato, sul registratore.
+
+    È il numero che dice se la coda avanza o è ferma. Dal 7 ottobre il
+    grosso sta nella coda locale; il registratore conta solo se e' rimasto
+    collegato con file non ancora scaricati.
+    """
     from core.device import AUDIO_EXTENSIONS, discover, pick_recorder, parse_recording_time
+    in_coda = len(_file_in_coda())
     vol = pick_recorder(discover())
     if not vol:
-        return None
+        return in_coda
     done = {d.name for d in (DATA_ROOT / "output").iterdir()
             if d.is_dir() and (d / "transcript.json").exists()} \
         if (DATA_ROOT / "output").is_dir() else set()
@@ -532,7 +587,7 @@ def _leftover() -> int | None:
         if stem and stem in done:
             continue
         n += 1
-    return n
+    return n + in_coda
 
 
 def _write_report(started: str, elapsed: float, plan: dict,

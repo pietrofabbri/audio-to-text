@@ -8,7 +8,8 @@ launchd è il sistema di scheduling nativo di macOS: più affidabile di cron,
 funziona anche se il Mac era in sleep (si attiva al risveglio).
 
 Uso:
-    python setup_launchd.py install    # installa il job
+    python setup_launchd.py install    # installa i job (notte, giorno, inserimento)
+    python setup_launchd.py install-tile  # solo il job all'inserimento del registratore
     python setup_launchd.py uninstall  # rimuove il job
     python setup_launchd.py status     # mostra stato
     python setup_launchd.py run-now    # esegue subito (test)
@@ -58,6 +59,9 @@ LOGS_DIR     = PROJECT_DIR / "logs"
 # Identificatori univoci dei LaunchAgent (stile reverse-DNS)
 LABEL         = "it.pietrofabbri.audio-to-text"
 LABEL_DAYTIME = "it.pietrofabbri.audio-to-text-daytime"
+# Il job che parte quando si inserisce il registratore (StartOnMount).
+LABEL_TILE    = "it.pietrofabbri.audio-to-text-tile"
+SYNC_SCRIPT   = PROJECT_DIR / "sync_device.py"
 
 # --- Finestra notturna: pieno regime -------------------------------------
 # La macchina è libera e serve: 02:00 → 06:00.
@@ -77,6 +81,7 @@ DAYTIME_BUDGET_MIN = DAYTIME_BUDGET_SEC // 60   # minuti per passata
 PLIST_DIR  = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = PLIST_DIR / f"{LABEL}.plist"
 PLIST_PATH_DAYTIME = PLIST_DIR / f"{LABEL_DAYTIME}.plist"
+PLIST_PATH_TILE = PLIST_DIR / f"{LABEL_TILE}.plist"
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +148,58 @@ def build_plist_daytime() -> dict:
     }
 
 
+def build_plist_tile() -> dict:
+    """Il job dell'inserimento: parte a ogni volume montato.
+
+    `StartOnMount` fa partire il job ogni volta che macOS monta un
+    filesystem — il registratore, ma anche una chiavetta o un'immagine
+    disco. Per questo il comando e' `scarica --auto`: se il volume non e'
+    il registratore esce in un paio di secondi senza fare niente. Se lo
+    e', copia in coda, libera il registratore, lo espelle e avvisa con una
+    notifica che si puo' staccare; poi fa partire la passata diurna sulla
+    coda (`launchctl kickstart` del job diurno).
+
+    Priorita' normale e nessun limite di thread: qui non si elabora, si
+    copia, e la cosa che conta e' finire presto perche' il registratore
+    torni al braccio.
+    """
+    campi = _common_plist_fields()
+    campi["StandardOutPath"] = str(LOGS_DIR / "launchd_scarico.log")
+    campi["StandardErrorPath"] = str(LOGS_DIR / "launchd_scarico.log")
+    return {
+        "Label": LABEL_TILE,
+        "ProgramArguments": [
+            str(VENV_PYTHON), str(SYNC_SCRIPT), "scarica", "--auto",
+        ],
+        "StartOnMount": True,
+        "RunAtLoad": False,
+        **campi,
+        "ProcessType": "Interactive",
+        "TimeOut": 3600,
+    }
+
+
+def install_tile() -> None:
+    """Installa (o reinstalla) solo il job dell'inserimento."""
+    if not VENV_PYTHON.exists():
+        print(f"ERRORE: venv Python non trovato: {VENV_PYTHON}")
+        sys.exit(1)
+    PLIST_DIR.mkdir(parents=True, exist_ok=True)
+    if PLIST_PATH_TILE.exists():
+        subprocess.run(["launchctl", "unload", "-w", str(PLIST_PATH_TILE)],
+                       capture_output=True)
+    with open(PLIST_PATH_TILE, "wb") as f:
+        plistlib.dump(build_plist_tile(), f)
+    r = subprocess.run(["launchctl", "load", "-w", str(PLIST_PATH_TILE)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"ERRORE launchctl load (tile): {r.stderr}")
+        sys.exit(1)
+    print(f"✓ Job all'inserimento installato: {LABEL_TILE}")
+    print("  Quando inserisci il registratore: copia in input/coda/, lo libera,")
+    print("  lo espelle e ti avvisa che puoi staccarlo. Log: logs/scarico.log")
+
+
 def _common_plist_fields() -> dict:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     return {
@@ -194,6 +251,7 @@ def install() -> None:
     # Il passaggio diurno va installato con lo stesso comando: due job
     # con due plist, non uno che fa due cose in momenti diversi.
     install_daytime()
+    install_tile()
     print(f"\nPer rimuoverli: python setup_launchd.py uninstall")
 
 
@@ -222,7 +280,8 @@ def install_daytime() -> None:
 
 
 def uninstall() -> None:
-    for path, label in ((PLIST_PATH, LABEL), (PLIST_PATH_DAYTIME, LABEL_DAYTIME)):
+    for path, label in ((PLIST_PATH, LABEL), (PLIST_PATH_DAYTIME, LABEL_DAYTIME),
+                        (PLIST_PATH_TILE, LABEL_TILE)):
         if not path.exists():
             continue
         subprocess.run(["launchctl", "unload", "-w", str(path)], capture_output=True)
@@ -231,7 +290,7 @@ def uninstall() -> None:
 
 
 def status() -> None:
-    for label in (LABEL, LABEL_DAYTIME):
+    for label in (LABEL, LABEL_DAYTIME, LABEL_TILE):
         result = subprocess.run(
             ["launchctl", "list", label],
             capture_output=True, text=True,
@@ -259,6 +318,7 @@ def run_now() -> None:
 
 COMMANDS = {
     "install":   install,
+    "install-tile": install_tile,
     "uninstall": uninstall,
     "status":    status,
     "run-now":   run_now,
@@ -271,7 +331,8 @@ def main() -> None:
         print(f"  install    Installa i job: notturno ({START_HOUR:02d}:00, "
               f"{MAX_RUNTIME_HOURS:g}h) e daytime ({DAYTIME_BUDGET_MIN}min x "
               f"{len(DAYTIME_HOURS)})")
-        print("  uninstall  Rimuove entrambi i job")
+        print("  install-tile  Installa solo il job che scarica il registratore all'inserimento")
+        print("  uninstall  Rimuove tutti i job")
         print("  status     Mostra stato dei job e ultime righe di log")
         print("  run-now    Esegue il ciclo subito (test)")
         sys.exit(1)
