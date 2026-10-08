@@ -58,16 +58,23 @@ import hashlib
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from core.config import OUTPUT_DIR  # noqa: E402
+from core.glossario import Glossario  # noqa: E402
 from core.text_correction import (  # noqa: E402
     MODELLO, PUNTEGGIATURA, SOGLIA_PROB, Correttore, allinea_probabilita,
     scrivi_varianti,
 )
+
+# Quanti segmenti prima e dopo mandare come contesto. Due per parte sono
+# circa una trentina di secondi di conversazione: abbastanza per capire
+# di cosa si parla, poco abbastanza da non moltiplicare il costo.
+CONTESTO = 2
 
 logger = logging.getLogger("correct_text")
 
@@ -399,6 +406,29 @@ def _stampa_sintesi(proposte: dict, vocabolario: dict,
               f"una volta ciascuna o poche")
 
 
+def _contesti(tutti: list[dict], n: int) -> dict[int, tuple[list[str], list[str]]]:
+    """Per ogni segmento, il testo dei vicini nella stessa sessione.
+
+    I vicini sono presi dalla sessione intera e non solo dai segmenti da
+    correggere in questa passata: un giro ripreso a meta' deve vedere lo
+    stesso contesto di un giro fatto tutto in una volta, altrimenti la
+    stessa frase verrebbe corretta in modo diverso a seconda di quando
+    la notte si e' interrotta.
+    """
+    if n <= 0:
+        return {}
+    testi = [s.get("text", "") for s in tutti]
+    out = {}
+    for k, s in enumerate(tutti):
+        out[int(s.get("idx", 0))] = (testi[max(0, k - n):k], testi[k + 1:k + 1 + n])
+    return out
+
+
+def _giorno(d: Path) -> str:
+    """La data della sessione, `AAAA-MM-GG`, dal nome della cartella."""
+    return d.name[:10]
+
+
 def _sessioni_da_elaborare(args, out_dir: Path) -> list[Path]:
     """Le cartelle da guardare, con `--session` che accetta l'ora sola.
 
@@ -445,6 +475,22 @@ def main() -> int:
                          "quante volte la proposta compare")
     ap.add_argument("--out-dir", default=str(OUTPUT_DIR),
                     help="cartella delle sessioni")
+    ap.add_argument("--contesto", type=int, default=CONTESTO,
+                    help=f"segmenti vicini mandati come contesto, per parte "
+                         f"(default {CONTESTO}; 0 per nessuno)")
+    ap.add_argument("--no-glossario", action="store_true",
+                    help="non usare data/glossario.txt ne' i nomi delle voci "
+                         "(la regola della maiuscola resta)")
+    ap.add_argument("--escludi-giorno", action="append", default=[],
+                    metavar="AAAA-MM-GG",
+                    help="non correggere le sessioni di questo giorno "
+                         "(ripetibile): per i giorni in attesa di consenso")
+    ap.add_argument("--max-seconds", type=float, default=0,
+                    help="fermati dopo questo tempo (0 = nessun limite); "
+                         "le sessioni restanti si riprendono al giro dopo")
+    ap.add_argument("--sintetico", action="store_true",
+                    help="niente confronto riga per riga: una riga per "
+                         "sessione (per il giro notturno)")
     args, avanzi = ap.parse_known_args()
 
     # Le righe con un commento in coda si copiano dal README, e in zsh
@@ -476,6 +522,15 @@ def main() -> int:
     sessioni = _sessioni_da_elaborare(args, out_dir)
     if not sessioni:
         raise SystemExit(f"nessuna sessione in {out_dir}")
+    esclusi = {g.strip() for g in args.escludi_giorno if g.strip()}
+    if esclusi:
+        saltate = [d.name for d in sessioni if _giorno(d) in esclusi]
+        sessioni = [d for d in sessioni if _giorno(d) not in esclusi]
+        if saltate:
+            print(f"Escluse (giorni senza consenso): {', '.join(saltate)}")
+        if not sessioni:
+            print("Nessuna sessione da correggere dopo le esclusioni.")
+            return 0
 
     # Unocchiata a cosa ci sarebbe da correggere, prima di qualsiasi
     # decisione sulla chiave API.
@@ -503,16 +558,33 @@ def main() -> int:
     # Il vocabolario si costruisce solo se serve, e una volta sola: sono
     # quattro checkpoint da rileggere, e serve a una colonna sola.
     vocabolario = _vocabolario(sessioni) if args.solo_proposte else {}
+    glossario = None if args.no_glossario else Glossario.carica()
+    if glossario is not None:
+        print(f"Glossario: {len(glossario)} nomi protetti"
+              + ("" if glossario else
+                 " (aggiungili in data/glossario.txt, uno per riga)"))
     correttore = Correttore(modello=args.model, consentito=True,
-                            pausa=args.pausa, soglia_prob=args.soglia_prob)
+                            pausa=args.pausa, soglia_prob=args.soglia_prob,
+                            glossario=glossario)
     pronto, motivo = correttore.pronto()
     if not pronto:
         raise SystemExit(f"non posso procedere: {motivo}")
 
+    inizio = time.monotonic()
+    interrotto = False
     for d in sessioni:
+        if args.max_seconds and time.monotonic() - inizio > args.max_seconds:
+            # Si ferma fra una sessione e l'altra, mai a meta': il file di
+            # correzione si scrive alla fine della sessione, e il lavoro
+            # gia' fatto resta. La sessione successiva riprende da qui.
+            print(f"\nTempo esaurito ({args.max_seconds:.0f}s): le sessioni "
+                  f"restanti si correggono al prossimo giro.")
+            interrotto = True
+            break
         segmenti = _leggi_sessione(d)
         if not segmenti:
             continue
+        contesti = _contesti(segmenti, args.contesto)
         if not args.riscorri:
             gia = _carica_precedente(d)
             segmenti = [s for s in segmenti
@@ -529,7 +601,8 @@ def main() -> int:
             logger.warning("%s: nessuna probabilita' per parola, il filtro "
                            "--soglia-prob non puo' agire", d.name)
         da_inviare = [(int(s.get("idx", 0)), s.get("text", ""),
-                       probabilita.get(int(s.get("idx", 0))))
+                       probabilita.get(int(s.get("idx", 0))),
+                       contesti.get(int(s.get("idx", 0))))
                       for s in segmenti]
         risultati = correttore.correggi(da_inviare)
         esiti = [res.to_dict() for res in risultati]
@@ -543,7 +616,7 @@ def main() -> int:
             r["firma"] = _firma(seg.get("text", ""))
             out_segmenti.append(r)
             righe.append((seg, r))
-            if not args.dry and not args.solo_proposte:
+            if not args.dry and not args.solo_proposte and not args.sintetico:
                 print(f"  [{seg.get('idx'):>4}] {r['n_changed']:>3} correzioni"
                       + ("  SCARTATO" if r["discarded"] else ""))
 
@@ -551,6 +624,12 @@ def main() -> int:
             raccolte = _raccogli_proposte(esiti, d.name)
             _unisci(proposte_totali, raccolte)
             _stampa_proposte(d.name, raccolte, vocabolario)
+        elif args.sintetico:
+            cambiate = sum(r["n_changed"] for r in esiti)
+            nomi = sum(r.get("n_blocked_names", 0) for r in esiti)
+            scartati = sum(1 for r in esiti if r["discarded"])
+            print(f"  {d.name}: {len(esiti)} segmenti, {cambiate} parole "
+                  f"corrette, {nomi} nomi protetti, {scartati} scartati")
         else:
             _mostra_confronto(righe)
 
@@ -584,6 +663,8 @@ def main() -> int:
 
     if args.dry:
         print("\n[dry-run] niente scritto. Con --consent si scrive.")
+    if interrotto:
+        print("Correzione parziale: riprende al prossimo giro.")
     return 0
 
 

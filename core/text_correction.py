@@ -126,6 +126,33 @@ Rispondi SOLO con un oggetto JSON {"correzioni": [...]}. Nient'altro. \
 Se non c'e' niente da correggere, rispondi con {"correzioni": []}.
 """
 
+# I nomi propri, aggiunti alle istruzioni. Sulla prova del 2 ottobre il
+# modello ha riscritto «Zia Titti» in «Gigi D'Alessio»: incontra un nome
+# che non conosce e lo sostituisce con uno famoso. La regola nel prompt
+# non basta da sola (il codice blocca comunque, vedi `_filtra`), ma
+# riduce le proposte da respingere e soprattutto permette il contrario:
+# correggere una storpiatura *verso* un nome che il glossario conosce.
+ISTRUZIONI_NOMI = """\
+5. NOMI PROPRI: non sostituire MAI un nome di persona, di luogo o un \
+soprannome con un altro nome, neppure se quello che leggi ti sembra \
+strano: e' quasi sempre una persona che non conosci. Non trasformare \
+mai una parola in un nome famoso.
+"""
+
+ISTRUZIONI_GLOSSARIO = """\
+Questi sono nomi propri che compaiono davvero nelle conversazioni. \
+Scritti cosi' sono giusti: non cambiarli. Se nel testo trovi una \
+storpiatura evidente di uno di questi, puoi correggerla verso il nome \
+dell'elenco.
+Nomi: {nomi}
+"""
+
+ISTRUZIONI_CONTESTO = """\
+Ti do anche qualche frase prima e dopo, SOLO come contesto per capire \
+di cosa si parla. Correggi esclusivamente il "Testo da correggere": gli \
+indici "i" si riferiscono alle sue parole, contate da 0.
+"""
+
 
 def correggi_segmenti(segmenti: Iterable[dict], correzioni: dict) -> list[dict]:
     """I segmenti con il testo da analizzare, senza toccare gli originali.
@@ -309,6 +336,11 @@ class WordFix:
     proposta: str
     prob: float | None = None
     bloccata: bool = False
+    # Perche' e' stata bloccata: "prob" (Whisper era sicuro), "glossario"
+    # (nome protetto), "nome" (maiuscola fuori da inizio frase, o un nome
+    # nuovo che il modello voleva introdurre). Serve a leggere il file
+    # dopo: le tre difese hanno errori diversi e si tarano separatamente.
+    motivo_blocco: str = ""
 
     @property
     def scelta(self) -> str:
@@ -387,10 +419,13 @@ class SegmentResult:
             "discard_reason": self.motivo_scarto,
             "n_proposed": self.n_proposte,
             "n_blocked": self.n_bloccate,
+            "n_blocked_names": sum(1 for f in self.parole if f.bloccata
+                                   and f.motivo_blocco in ("glossario", "nome")),
             "words": [
                 {"i": f.indice, "raw": f.originale, "fixed": f.scelta,
                  "proposta": f.proposta, "changed": f.cambiata,
-                 "prob": f.prob, "blocked": f.bloccata}
+                 "prob": f.prob, "blocked": f.bloccata,
+                 "blocked_reason": f.motivo_blocco}
                 for f in self.parole
             ],
         }
@@ -580,8 +615,15 @@ class Correttore:
         pausa: float = 0.5,
         tentativi: int = 3,
         soglia_prob: float = SOGLIA_PROB,
+        glossario=None,
+        proteggi_nomi: bool = True,
     ) -> None:
         self.modello = modello
+        # `Glossario` (core/glossario.py) o None. Anche senza glossario la
+        # regola della maiuscola resta attiva: e' `proteggi_nomi`, e non si
+        # spegne se non per misurare quanto blocca.
+        self.glossario = glossario
+        self.proteggi_nomi = proteggi_nomi
         self.consentito = consentito
         self.pausa = pausa
         self.tentativi = tentativi
@@ -589,7 +631,22 @@ class Correttore:
         self._client = None
 
     def _chiave(self) -> str | None:
-        return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        """La chiave API: dall'ambiente, o dal file in `data/`.
+
+        Il file serve al giro notturno: launchd non legge `~/.zshrc`, e
+        una chiave esportata li' esiste nel Terminale ma non alle 2 di
+        notte. `data/` e' fuori dalla repo (vedi `.gitignore`).
+        """
+        chiave = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if chiave:
+            return chiave
+        from core.config import ROOT_DIR
+        f = ROOT_DIR / "data" / "gemini_api_key.txt"
+        try:
+            testo = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return testo or None
 
     def pronto(self) -> tuple[bool, str]:
         """Se si puo' procedere, e perche' no se non si puo'."""
@@ -600,7 +657,8 @@ class Correttore:
         # che il percorso di correzione si puo' provare per intero senza
         # rete e senza chiavi vere.
         if self._client is None and not self._chiave():
-            return False, "manca GOOGLE_API_KEY"
+            return False, ("manca GOOGLE_API_KEY (nell'ambiente o in "
+                           "data/gemini_api_key.txt)")
         return True, ""
 
     def _ottieni_client(self):
@@ -615,11 +673,41 @@ class Correttore:
         self._client = genai.Client(api_key=self._chiave())
         return self._client
 
+    def prompt(self, testo: str,
+               contesto: tuple[list[str], list[str]] | None = None) -> str:
+        """Le istruzioni complete per un segmento.
+
+        `contesto` e' (frasi prima, frasi dopo) dello stesso blocco: il
+        correttore capisce meglio una parola storpiata se sa di cosa si
+        stava parlando, ma le correzioni restano limitate al segmento
+        centrale, perche' gli indici delle parole sono i suoi.
+        """
+        parti = [ISTRUZIONI, ISTRUZIONI_NOMI]
+        if self.glossario:
+            parti.append(ISTRUZIONI_GLOSSARIO.format(
+                nomi=self.glossario.per_prompt()))
+        prima, dopo = contesto or ([], [])
+        prima = [t for t in prima if t and t.strip()]
+        dopo = [t for t in dopo if t and t.strip()]
+        if prima or dopo:
+            parti.append(ISTRUZIONI_CONTESTO)
+            if prima:
+                parti.append("Contesto prima (non correggere):\n"
+                             + "\n".join(prima) + "\n")
+            parti.append(f"Testo da correggere:\n{testo}\n")
+            if dopo:
+                parti.append("Contesto dopo (non correggere):\n"
+                             + "\n".join(dopo) + "\n")
+            return "\n".join(parti)
+        parti.append(f"Testo:\n{testo}")
+        return "\n".join(parti)
+
     def correggi_segmento(
         self,
         idx: int,
         testo: str,
         prob: list[float | None] | None = None,
+        contesto: tuple[list[str], list[str]] | None = None,
     ) -> SegmentResult:
         """Corregge un segmento, o lo dichiara non correggibile.
 
@@ -637,7 +725,7 @@ class Correttore:
             raise RuntimeError(f"non posso correggere: {motivo}")
 
         client = self._ottieni_client()
-        prompt = f"{ISTRUZIONI}\n\nTesto:\n{testo}"
+        prompt = self.prompt(testo, contesto)
         ultimo: Exception | None = None
         for tentativo in range(self.tentativi):
             try:
@@ -723,10 +811,47 @@ class Correttore:
 
         _, parole = applicato
         proposte = sum(1 for f in parole if f.scelta != f.originale)
+        parole = self._proteggi_nomi(parole)
         parole = self._filtra(parole, prob)
         corretto = " ".join(f.scelta for f in parole)
         return SegmentResult(idx, testo, corretto, parole=parole,
                              n_proposte=proposte)
+
+    def _proteggi_nomi(self, parole: list[WordFix]) -> list[WordFix]:
+        """I nomi propri non si cambiano, e non se ne inventano di nuovi.
+
+        Tre casi bloccati (vedi `core/glossario.py` per il perche'):
+
+        - la parola originale e' nel glossario;
+        - la parola originale ha la maiuscola fuori da inizio frase:
+          Whisper l'ha riconosciuta come nome;
+        - la proposta introduce una parola maiuscola fuori da inizio
+          frase che prima non c'era e che non e' nel glossario: il
+          modello sta inventando un nome. E' il caso «Titti» →
+          «D'Alessio».
+
+        Una correzione *verso* un nome del glossario resta permessa: e'
+        l'unico modo di sistemare un nome che Whisper ha storpiato.
+        """
+        if not self.proteggi_nomi:
+            return parole
+        from core.glossario import e_nome_proprio
+
+        originali = [f.originale for f in parole]
+        proposte = [f.scelta for f in parole]
+        for f in parole:
+            if not f.cambiata:
+                continue
+            i = f.indice
+            g = self.glossario
+            if g and g.contiene(f.originale):
+                f.bloccata, f.motivo_blocco = True, "glossario"
+            elif e_nome_proprio(originali, i):
+                f.bloccata, f.motivo_blocco = True, "nome"
+            elif (e_nome_proprio(proposte, i)
+                  and not (g and g.contiene(f.proposta))):
+                f.bloccata, f.motivo_blocco = True, "nome"
+        return parole
 
     def _filtra(
         self,
@@ -757,7 +882,7 @@ class Correttore:
             if f.indice >= len(prob):
                 continue
             p = prob[f.indice]
-            if p is None or not f.cambiata:
+            if p is None or not (f.cambiata or f.bloccata):
                 continue
             # La probabilita' si registra su **ogni** parola cambiata, non
             # solo su quelle bloccate. Prima stava solo sulle bloccate, e
@@ -780,6 +905,7 @@ class Correttore:
             # farebbe sparire l'informazione proprio nel posto in cui
             # la si va a leggere.
             f.bloccata = True
+            f.motivo_blocco = f.motivo_blocco or "prob"
         return parole
 
     def correggi(self, segmenti: Iterable[Any]) -> list[SegmentResult]:
@@ -797,7 +923,8 @@ class Correttore:
         for n,voce in enumerate(segmenti):
             idx, testo = voce[0], voce[1]
             prob = voce[2] if len(voce) > 2 else None
-            r = self.correggi_segmento(idx, testo, prob)
+            contesto = voce[3] if len(voce) > 3 else None
+            r = self.correggi_segmento(idx, testo, prob, contesto)
             out.append(r)
             if r.scartato:
                 logger.warning("Segmento %d scartato: %s", idx, r.motivo_scarto)

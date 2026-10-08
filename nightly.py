@@ -156,6 +156,25 @@ def _publish_cmd() -> list[str]:
     return cmd
 
 
+def _correzione_cmd() -> list[str] | None:
+    """Il comando di correzione del testo, o None se e' spento.
+
+    E' un passo separato fra la trascrizione e la pubblicazione: cosi'
+    le varianti `*.corrected.*` sono gia' nelle sessioni quando
+    `publish_corpus` ricompone le giornate. Un fallimento (rete, chiave,
+    quota) non ferma il giro: si pubblica il testo grezzo e la notte dopo
+    `correct_text` riprende dai segmenti non ancora corretti.
+    """
+    from core.config import config
+    if not config.correzione_notturna:
+        return None
+    cmd = [sys.executable, str(ROOT / "correct_text.py"), "--consent",
+           "--sintetico", "--max-seconds", str(config.correzione_budget_sec)]
+    for giorno in config.correzione_giorni_esclusi:
+        cmd += ["--escludi-giorno", giorno]
+    return cmd
+
+
 def _voci_da_rivedere(dry_run: bool) -> dict | None:
     """Ultimo passo: promemoria delle voci nuove ed estratti da ascoltare.
 
@@ -196,6 +215,17 @@ def _voci_da_rivedere(dry_run: bool) -> dict | None:
     else:
         logger.info("Voci da rivedere: nessuna")
     return r
+
+
+def _timeout_correzione() -> int:
+    """Il budget della correzione, piu' un margine per l'ultima sessione.
+
+    `correct_text` si ferma fra una sessione e l'altra, quindi puo'
+    sforare il budget di una sessione intera (~200 segmenti): il timeout
+    duro serve solo a non restare appesi a una rete morta.
+    """
+    from core.config import config
+    return int(config.correzione_budget_sec) + 1800
 
 
 def _run(cmd: list[str], timeout: int | None = None) -> tuple[int, str]:
@@ -398,7 +428,7 @@ def main() -> int:
     if cooldown > 0:
         pull += ["--cooldown-sec", str(cooldown)]
 
-    logger.info("--- 1/3 elaborazione della coda ---")
+    logger.info("--- 1/4 elaborazione della coda ---")
     if not args.source and not _file_in_coda():
         logger.info("Coda vuota: niente da trascrivere")
         code_pull, out_pull = 0, ""
@@ -414,7 +444,30 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 3. Pubblicazione del corpus
     # ------------------------------------------------------------------
-    logger.info("--- 2/3 pubblicazione del corpus ---")
+    # ------------------------------------------------------------------
+    # 2b. Correzione del testo (Gemini), se accesa in config
+    # ------------------------------------------------------------------
+    logger.info("--- 2/4 correzione del testo ---")
+    cmd_corr = _correzione_cmd()
+    if cmd_corr is None:
+        logger.info("Spenta (correzione_notturna = False in core/config.py)")
+    elif args.dry_run:
+        logger.info("Saltata (--dry-run): %s", " ".join(cmd_corr[1:]))
+    else:
+        try:
+            code_corr, out_corr = _run(cmd_corr, timeout=_timeout_correzione())
+        except subprocess.TimeoutExpired:
+            # Il lavoro gia' fatto e' salvato sessione per sessione: si
+            # pubblica quello che c'e' e si riprende la notte dopo.
+            code_corr, out_corr = 1, "timeout della correzione"
+        if code_corr != 0:
+            _log_uscita_male("correct_text", code_corr, out_corr)
+        else:
+            for riga in out_corr.splitlines():
+                if "parole corrette" in riga or "Tempo esaurito" in riga:
+                    logger.info(riga.strip())
+
+    logger.info("--- 3/4 pubblicazione del corpus ---")
     if args.no_publish:
         logger.info("Saltata (--no-publish)")
     else:
@@ -441,7 +494,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 4. Voci da rivedere
     # ------------------------------------------------------------------
-    logger.info("--- 3/3 voci da rivedere ---")
+    logger.info("--- 4/4 voci da rivedere ---")
     _voci_da_rivedere(args.dry_run)
 
     # ------------------------------------------------------------------

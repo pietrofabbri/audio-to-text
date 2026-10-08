@@ -460,6 +460,33 @@ class PipelineConfig:
     # in locale.
     corpus_with_names: bool = True
 
+    # Correzione del testo con Gemini nel giro notturno (ROADMAP Fase 3,
+    # decisione D2). Fra la trascrizione e la pubblicazione il giro
+    # lancia `correct_text.py --consent` sulle sessioni non ancora
+    # corrette. Il testo delle conversazioni esce dal Mac e va a Google,
+    # quindi l'interruttore e' qui, spento finche' non lo accendi tu.
+    #
+    # Prima di accenderlo:
+    # - le persone registrate devono aver dato l'ok all'invio (fatto per
+    #   tutte al 2026-10-08);
+    # - la chiave deve essere di un progetto con fatturazione attiva. Sul
+    #   piano gratuito i termini di Google consentono di usare i testi per
+    #   migliorare i prodotti, con lettura da parte di revisori umani; sul
+    #   piano a pagamento no. Verificalo sui termini in vigore;
+    # - la chiave deve essere leggibile da launchd: in
+    #   `data/gemini_api_key.txt` (fuori dalla repo), perche' il giro
+    #   notturno non legge `~/.zshrc`.
+    correzione_notturna: bool = False
+
+    # Giorni (AAAA-MM-GG) da non mandare a Gemini: per una giornata in
+    # cui qualcuno non ha ancora dato l'ok. Restano trascritti e
+    # pubblicati, solo senza versione corretta.
+    correzione_giorni_esclusi: tuple[str, ...] = ()
+
+    # Tempo massimo della correzione per notte. Un giorno pieno sono
+    # ~770 segmenti, circa mezz'ora; il resto si riprende la notte dopo.
+    correzione_budget_sec: int = 3600
+
 
 # Istanza di default — importa questa nei moduli della pipeline
 config = PipelineConfig()

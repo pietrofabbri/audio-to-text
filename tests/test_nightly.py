@@ -650,6 +650,35 @@ def t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice(tmp: Path) -> None:
     require(isinstance(originale, bool), "corpus_with_names deve essere un booleano")
 
 
+
+def t_la_correzione_parte_solo_se_accesa(tmp: Path) -> None:
+    """D2: il testo va a Gemini solo con l'interruttore acceso.
+
+    Spenta di default, perche' accenderla manda fuori dal Mac il testo
+    delle conversazioni. Accesa, il comando porta consenso, budget e i
+    giorni esclusi.
+    """
+    print("  la correzione notturna parte solo se accesa")
+    import nightly
+    from core.config import config
+
+    acceso, esclusi = config.correzione_notturna, config.correzione_giorni_esclusi
+    try:
+        config.correzione_notturna = False
+        require(nightly._correzione_cmd() is None, "spenta: nessun comando")
+        config.correzione_notturna = True
+        config.correzione_giorni_esclusi = ("2026-10-08",)
+        cmd = nightly._correzione_cmd()
+        require(cmd is not None and "--consent" in cmd and "--sintetico" in cmd,
+                f"accesa: consenso e riga sintetica: {cmd}")
+        require(cmd[cmd.index("--escludi-giorno") + 1] == "2026-10-08",
+                f"i giorni esclusi passano: {cmd}")
+        require("--max-seconds" in cmd, "con un budget")
+    finally:
+        config.correzione_notturna = acceso
+        config.correzione_giorni_esclusi = esclusi
+    require(acceso is False, "il default in config deve restare False")
+
 def t_la_notte_prepara_le_voci_da_rivedere(tmp: Path) -> None:
     """L'ultimo passo scrive il promemoria, e in --dry-run non scrive.
 
@@ -751,6 +780,7 @@ def main() -> int:
         t_una_pubblicazione_incompleta_viene_detettata,
         t_una_matrice_delle_voci_mancante_viene_detettata,
         t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice,
+        t_la_correzione_parte_solo_se_accesa,
         t_la_notte_prepara_le_voci_da_rivedere,
         t_la_notte_trascrive_dalla_coda,
     ]

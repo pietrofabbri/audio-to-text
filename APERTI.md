@@ -1681,6 +1681,35 @@ giornata, un secondo push che non pubblica niente, `status` «Tutto
 pubblicato». 8 test in `tests/test_giorno.py`, 2 nuovi e 5 riscritti in
 `tests/test_publish.py`, 2 riscritti in `tests/test_nightly.py`.
 
+### 35. ~~Il correttore riscriveva i nomi e non girava di notte~~ — chiuso l'8 ottobre
+
+**Stato.** Chiuso nel codice (ROADMAP Fase 3, passi 1, 2 e 4). Resta da
+accendere `correzione_notturna` dopo aver verificato la fatturazione della
+chiave, e da fare la misura su 100 parole (passo 5).
+
+**Il problema.** Sulla prova del 2 ottobre «Zia Titti» è diventata «Gigi
+D'Alessio». E il correttore non era nella catena notturna: nessun file
+corretto nel corpus.
+
+**La soluzione.**
+
+  - `core/glossario.py`: glossario da `data/glossario.txt` e dai nomi delle
+    voci; nel prompt e nel codice. Il codice blocca: parole del glossario,
+    maiuscole fuori da inizio frase, nomi maiuscoli nuovi proposti dal
+    modello. Motivo del blocco in `blocked_reason`.
+  - Contesto: due segmenti prima e due dopo della stessa sessione.
+  - `nightly.py`: passo «2/4 correzione del testo» fra trascrizione e
+    pubblicazione, acceso da `correzione_notturna` in `core/config.py`,
+    con budget, giorni esclusi e fallimento non bloccante.
+  - Chiave anche da `data/gemini_api_key.txt` (launchd non legge
+    `~/.zshrc`).
+
+**Consenso (D2).** Tutte le persone registrate fino all'8 ottobre hanno
+dato l'ok all'invio del testo a Google.
+
+**Verificato.** 8 test nuovi in `tests/test_text_correction.py` (52/52),
+1 in `tests/test_nightly.py`.
+
 ---
 
 ## L'ordine in cui li farei

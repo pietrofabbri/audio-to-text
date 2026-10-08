@@ -1260,6 +1260,62 @@ Ogni giro registra un'impronta del testo, quindi un tentativo
 interrotto a metà non si paga due volte e non corregge due volte lo
 stesso testo.
 
+### I nomi propri: il glossario
+
+Il difetto più pericoloso del correttore è che riscrive i nomi che non
+conosce: sulla prova del 2 ottobre «Zia Titti» è diventata «Gigi
+D'Alessio», in entrambe le occorrenze. Due difese, entrambe nel codice e
+non solo nel prompt:
+
+- **il glossario**: i nomi dati alle voci (`review_speakers.py name`) più
+  una lista a mano in `data/glossario.txt`, una voce per riga, anche di
+  più parole (`Zia Titti`, `Teatro della Pace`); le righe con `#` sono
+  commenti. Sta in `data/`, fuori dalla repo pubblica. Il glossario va
+  anche nel prompt, così il modello può correggere una storpiatura *verso*
+  un nome noto;
+- **la maiuscola**: una parola maiuscola fuori da inizio frase non si
+  tocca, e il modello non può introdurre un nome maiuscolo nuovo che non
+  sia nel glossario.
+
+Le parole bloccate restano nel file con `blocked_reason` (`glossario`,
+`nome` o `prob`), e il riepilogo di sessione conta i nomi protetti.
+Il caso «Zia Titti» è un test di regressione.
+
+Il correttore manda anche due segmenti prima e due dopo come contesto
+(`--contesto N`, 0 per nessuno); le correzioni restano solo sul
+segmento centrale.
+
+### Nel giro notturno
+
+Con `correzione_notturna = True` in `core/config.py` il giro notturno
+lancia la correzione fra la trascrizione e la pubblicazione, così il
+corpus esce già con le giornate corrette. È spenta di default. Prima di
+accenderla:
+
+1. ok all'invio a Google dalle persone registrate (per un giorno ancora
+   senza ok: `correzione_giorni_esclusi = ("AAAA-MM-GG",)`);
+2. una chiave di un progetto **con fatturazione attiva**: sul piano
+   gratuito i termini di Google consentono di usare i testi per
+   migliorare i prodotti, anche con revisori umani;
+3. la chiave in `data/gemini_api_key.txt`, perché launchd non legge
+   `~/.zshrc`:
+
+```bash
+printf '%s' "$GOOGLE_API_KEY" > data/gemini_api_key.txt
+chmod 600 data/gemini_api_key.txt
+```
+
+Il budget è `correzione_budget_sec` (un'ora): un giorno pieno sono circa
+770 segmenti, una mezz'ora. Se non basta, la notte dopo riprende dai
+segmenti non ancora corretti. Un errore (rete, quota) non ferma il giro:
+si pubblica il testo grezzo.
+
+A mano, lo stesso passo è:
+
+```bash
+python correct_text.py --consent --sintetico --max-seconds 3600
+```
+
 ### Dove finisce il testo corretto
 
 In tre posti, tutti con l'originale accanto.

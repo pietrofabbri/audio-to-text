@@ -997,7 +997,13 @@ class _ClienteFinto:
         self.viste: list[str] = []
 
     def generate_content(self, model=None, contents=None, config=None):
-        testo = contents.split("Testo:\n", 1)[1]
+        # Con il contesto il segmento da correggere sta fra le frasi
+        # vicine: il finto deve leggere solo quello, come fa il modello.
+        if "Testo da correggere:\n" in contents:
+            testo = contents.split("Testo da correggere:\n", 1)[1]
+            testo = testo.split("\n", 1)[0]
+        else:
+            testo = contents.split("Testo:\n", 1)[1]
         self.viste.append(testo)
         parole = testo.split()
         return _Risposta(json.dumps({"correzioni": [
@@ -1332,7 +1338,132 @@ def il_report_non_impedisce_la_scrittura(tmp: Path) -> None:
             f"e la sua proposta respinta e' nel file: {bloccate}")
 
 
+
+# ----------------------------------------------------------------------
+# I nomi propri: il caso «Zia Titti» (ROADMAP, Fase 3)
+# ----------------------------------------------------------------------
+
+def zia_titti_col_glossario() -> None:
+    """Il caso vero: «Zia Titti» diventava «Gigi D'Alessio».
+
+    Il nome sta a inizio segmento, dove la regola della maiuscola non
+    puo' agire («Zia» e' maiuscola perche' apre la frase): lo salva solo
+    il glossario.
+    """
+    from core.glossario import Glossario
+    testo = "Zia Titti ha portato le statole"
+    c = _correttore([_risposta([
+        {"i": 0, "a": "Zia", "b": "Gigi"},
+        {"i": 1, "a": "Titti", "b": "D'Alessio"},
+        {"i": 5, "a": "statole", "b": "scatole"},
+    ])], glossario=Glossario(["Zia Titti"]))
+    r = c.correggi_segmento(0, testo)
+    require(r.testo_corretto == "Zia Titti ha portato le scatole",
+            f"il nome resta, la parola storpiata si corregge: {r.testo_corretto}")
+    motivi = {f.originale: f.motivo_blocco for f in r.parole if f.bloccata}
+    require(motivi == {"Zia": "glossario", "Titti": "glossario"},
+            f"bloccate per glossario: {motivi}")
+    require(r.to_dict()["n_blocked_names"] == 2, "contate come nomi protetti")
+
+
+def zia_titti_senza_glossario() -> None:
+    """Senza glossario, a meta' frase, la maiuscola basta a proteggerla."""
+    testo = "ieri da Zia Titti abbiamo mangiato"
+    c = _correttore([_risposta([
+        {"i": 2, "a": "Zia", "b": "Gigi"},
+        {"i": 3, "a": "Titti", "b": "D'Alessio"},
+    ])])
+    r = c.correggi_segmento(0, testo)
+    require(r.testo_corretto == testo, f"niente nomi cambiati: {r.testo_corretto}")
+    require(all(f.motivo_blocco == "nome" for f in r.parole if f.bloccata)
+            and r.n_bloccate == 2, "bloccate dalla regola della maiuscola")
+
+
+def nome_inventato_bloccato() -> None:
+    """Una parola minuscola non diventa un nome famoso."""
+    testo = "poi e' arrivata titti con la torta"
+    c = _correttore([_risposta([{"i": 3, "a": "titti", "b": "Gigi"}])])
+    r = c.correggi_segmento(0, testo)
+    require(r.testo_corretto == testo, f"nome inventato respinto: {r.testo_corretto}")
+
+
+def correzione_verso_il_glossario() -> None:
+    """Una storpiatura si corregge verso un nome che il glossario conosce."""
+    from core.glossario import Glossario
+    testo = "poi e' arrivata tetti con la torta"
+    c = _correttore([_risposta([{"i": 3, "a": "tetti", "b": "Titti"}])],
+                    glossario=Glossario(["Zia Titti"]))
+    r = c.correggi_segmento(0, testo)
+    require(r.testo_corretto == "poi e' arrivata Titti con la torta",
+            f"verso il glossario si puo': {r.testo_corretto}")
+
+
+def nomi_nel_prompt_e_contesto() -> None:
+    """Il glossario e il contesto arrivano al modello; gli indici no."""
+    from core.glossario import Glossario
+    c = _correttore([_risposta([{"i": 0, "a": "statole", "b": "scatole"}])],
+                    glossario=Glossario(["Zia Titti", "Teatro della Pace"]))
+    r = c.correggi_segmento(0, "statole piene",
+                            contesto=(["abbiamo traslocato"], ["e poi basta"]))
+    prompt = c.prompt("statole piene", (["abbiamo traslocato"], ["e poi basta"]))
+    require("Zia Titti" in prompt and "Teatro della Pace" in prompt,
+            "i nomi stanno nel prompt")
+    require("Testo da correggere:\nstatole piene" in prompt
+            and "abbiamo traslocato" in prompt and "e poi basta" in prompt,
+            "il contesto sta attorno al testo")
+    require(r.testo_corretto == "scatole piene", f"corretto: {r.testo_corretto}")
+
+
+def glossario_da_file_e_voci(tmp: Path) -> None:
+    """Il glossario unisce il file a mano e i nomi delle voci."""
+    from core.glossario import Glossario
+    tmp = Path(tmp)
+    f = tmp / "glossario.txt"
+    f.write_text("# parenti\nZia Titti\n\nTeatro della Pace\nzia titti\n",
+                 encoding="utf-8")
+    db = tmp / "speakers_db.json"
+    db.write_text(json.dumps({"speakers": {
+        "GLOBAL_001": {"name": "Pietro"}, "GLOBAL_002": {"name": None}}}),
+        encoding="utf-8")
+    g = Glossario.carica(f, db)
+    require(len(g) == 3, f"tre voci, senza doppioni: {g.voci}")
+    require(g.contiene("Titti,") and g.contiene("pietro") and g.contiene("Pace"),
+            "le parole dei nomi sono protette")
+    require(not g.contiene("della") and not g.contiene("casa"),
+            "le parole funzionali e le altre no")
+    vuoto = Glossario.carica(tmp / "manca.txt", tmp / "manca.json")
+    require(not vuoto, "senza file il glossario e' vuoto, non un errore")
+
+
+def giorno_escluso(tmp: Path) -> None:
+    """Un giorno senza consenso non manda niente fuori."""
+    _sessione(tmp)
+    codice, out, cliente = _esegui(tmp, "--consent", "--escludi-giorno",
+                                   SESSIONE[:10])
+    require(codice == 0, f"esce pulito: {codice}")
+    require(not cliente.viste, f"nessuna chiamata: {cliente.viste}")
+    require("Escluse" in out, "lo dice")
+
+
+def giro_sintetico_con_contesto(tmp: Path) -> None:
+    """Il giro notturno: una riga per sessione, contesto dai vicini."""
+    d = _sessione(tmp)
+    codice, out, cliente = _esegui(tmp, "--consent", "--sintetico")
+    require(codice == 0 and len(cliente.viste) == 3, f"tre chiamate: {cliente.viste}")
+    require("parole corrette" in out and "[   0]" not in out,
+            f"una riga per sessione: {out}")
+    require((d / "transcript.corrected.txt").exists(), "le varianti si scrivono")
+
 CHECKS = [
+    ("Zia Titti resta Zia Titti (glossario)", zia_titti_col_glossario),
+    ("Zia Titti resta Zia Titti (maiuscola)", zia_titti_senza_glossario),
+    ("il modello non inventa un nome", nome_inventato_bloccato),
+    ("una storpiatura si corregge verso il glossario",
+     correzione_verso_il_glossario),
+    ("glossario e contesto arrivano al modello", nomi_nel_prompt_e_contesto),
+    ("il glossario unisce file e voci", glossario_da_file_e_voci),
+    ("un giorno escluso non manda niente", giorno_escluso),
+    ("il giro sintetico usa il contesto", giro_sintetico_con_contesto),
     ("l'intestazione distingue parole diverse da occorrenze",
      il_report_distingue_le_parole_dalle_occorrenze),
     ("il JSON con virgole finali viene letto, non scartato",
