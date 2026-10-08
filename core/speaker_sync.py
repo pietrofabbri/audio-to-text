@@ -101,7 +101,15 @@ def _rewrite_ids(node: Any, renames: dict[str, str]) -> int:
         # iteration", che è il modo più innocuo di ricordare che in
         # Python si itera su una copia ma si modifica l'originale.
         for k in [k for k in node if isinstance(k, str) and k in renames]:
-            node[renames[k]] = node.pop(k)
+            v = node.pop(k)
+            nuovo = renames[k]
+            if nuovo in node:
+                # Le due voci unite parlavano nella stessa sessione: le
+                # loro statistiche si sommano, non si sovrascrivono. Prima
+                # dell'8 ottobre la seconda cancellava la prima.
+                node[nuovo] = _somma(node[nuovo], v)
+            else:
+                node[nuovo] = v
             n += 1
         for k, v in node.items():
             if isinstance(v, str):
@@ -118,6 +126,107 @@ def _rewrite_ids(node: Any, renames: dict[str, str]) -> int:
                     n += 1
             else:
                 n += _rewrite_ids(item, renames)
+    return n
+
+
+def _somma(a: Any, b: Any) -> Any:
+    """Unisce due valori della stessa voce: numeri sommati, dizionari per
+    chiave, liste concatenate senza doppioni; altrimenti vince il primo."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return round(a + b, 4) if isinstance(a, float) or isinstance(b, float) else a + b
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = dict(a)
+        for k, v in b.items():
+            out[k] = _somma(out[k], v) if k in out else v
+        return out
+    if isinstance(a, list) and isinstance(b, list):
+        return a + [x for x in b if x not in a]
+    return a if a is not None else b
+
+
+# File di sessione che citano le voci globali, oltre a session.json e
+# transcript.json. Fino all'8 ottobre il merge rietichettava solo quei due:
+# segmenti, testo, sottotitoli e CSV restavano con l'ID vecchio, e la
+# giornata pubblicata (che si costruisce da segments.jsonl) continuava a
+# mostrare due voci per la stessa persona.
+_JSONL = ("segments.jsonl", "segments.corrected.jsonl")
+_TESTI = ("transcript.txt", "transcript.srt", "transcript.corrected.txt",
+          "transcript.corrected.srt", "analysis_ready.md")
+
+
+def _relabel_jsonl(f: Path, renames: dict[str, str], dry_run: bool) -> int:
+    righe, n = [], 0
+    for r in f.read_text(encoding="utf-8").splitlines():
+        if not r.strip():
+            continue
+        try:
+            doc = json.loads(r)
+        except json.JSONDecodeError:
+            righe.append(r)
+            continue
+        n += _rewrite_ids(doc, renames)
+        righe.append(json.dumps(doc, ensure_ascii=False))
+    if n and not dry_run:
+        f.write_text("\n".join(righe) + "\n", encoding="utf-8")
+    return n
+
+
+def _relabel_testo(f: Path, renames: dict[str, str], dry_run: bool) -> int:
+    import re
+    testo = f.read_text(encoding="utf-8")
+    patt = re.compile(r"\b(" + "|".join(re.escape(k) for k in renames) + r")\b")
+    nuovo, n = patt.subn(lambda m: renames[m.group(1)], testo)
+    if n and not dry_run:
+        f.write_text(nuovo, encoding="utf-8")
+    return n
+
+
+def _relabel_csv(f: Path, renames: dict[str, str], dry_run: bool) -> int:
+    """prosody.csv: celle con l'ID. wordfreq.csv: colonne freq_<ID> sommate."""
+    import csv
+    import io
+    with f.open(encoding="utf-8", newline="") as h:
+        righe = list(csv.reader(h))
+    if not righe:
+        return 0
+    testa, corpo = righe[0], righe[1:]
+    n = 0
+    vecchie = {f"freq_{k}": f"freq_{v}" for k, v in renames.items()}
+    if any(c in vecchie for c in testa):
+        nuova_testa = []
+        for c in testa:
+            c2 = vecchie.get(c, c)
+            if c2 not in nuova_testa:
+                nuova_testa.append(c2)
+        idx = {c: i for i, c in enumerate(nuova_testa)}
+        nuovo_corpo = []
+        for r in corpo:
+            out = [0] * len(nuova_testa)
+            for c, v in zip(testa, r):
+                j = idx[vecchie.get(c, c)]
+                if c.startswith("freq_") and c != "freq_global":
+                    try:
+                        out[j] = int(out[j] or 0) + int(float(v or 0))
+                    except ValueError:
+                        out[j] = v
+                else:
+                    out[j] = v
+            nuovo_corpo.append(out)
+        n = sum(1 for c in testa if c in vecchie)
+        testa, corpo = nuova_testa, nuovo_corpo
+    for r in corpo:
+        for i, v in enumerate(r):
+            if isinstance(v, str) and v in renames:
+                r[i] = renames[v]
+                n += 1
+    if n and not dry_run:
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(testa)
+        w.writerows(corpo)
+        f.write_text(buf.getvalue(), encoding="utf-8")
     return n
 
 
@@ -142,7 +251,8 @@ def relabel_sessions(
     if out_dir.is_dir():
         for job in sorted(p for p in out_dir.iterdir() if p.is_dir()):
             touched = False
-            for fname in ("session.json", "transcript.json"):
+            for fname in ("session.json", "transcript.json",
+                          "speaker_profiles.json", f"{job.name}.checkpoint.json"):
                 f = job / fname
                 if not f.exists():
                     continue
@@ -154,13 +264,28 @@ def relabel_sessions(
                 n = _count_ids(doc, renames)
                 if not n:
                     continue
-                report["sessions"] += 1
                 report["substitutions"] += n
+                touched = True
                 if not dry_run:
                     _rewrite_ids(doc, renames)
                     _write_if_changed(f, doc)
+            for fname, fn in ([(x, _relabel_jsonl) for x in _JSONL]
+                              + [(x, _relabel_testo) for x in _TESTI]
+                              + [("prosody.csv", _relabel_csv),
+                                 ("wordfreq.csv", _relabel_csv)]):
+                f = job / fname
+                if not f.exists():
+                    continue
+                try:
+                    n = fn(f, renames, dry_run)
+                except (OSError, UnicodeDecodeError) as exc:
+                    logger.warning("Non rietichettato %s: %s", f, exc)
+                    continue
+                if n:
+                    report["substitutions"] += n
                     touched = True
-            _ = touched
+            if touched:
+                report["sessions"] += 1
 
     # Anche il database: `speaker_global_map` e le colonne speaker dei
     # segmenti e dei token citano l'ID vecchio, e senza questa passata

@@ -529,6 +529,56 @@ def test_merge_relabels_written_sessions(tmp: Path) -> None:
     assert [r["global_id"] for r in voci] == ["GLOBAL_001"], [dict(r) for r in voci]
 
 
+def test_merge_rietichetta_tutti_i_file_e_somma(tmp: Path) -> None:
+    """Il merge arriva a segmenti, testo, CSV; due voci insieme si sommano.
+
+    Il caso vero dell'8 ottobre: GLOBAL_022 e GLOBAL_023 unite in
+    GLOBAL_018 (Teresa). Il merge cambiava solo session.json e
+    transcript.json; segments.jsonl e transcript.txt restavano con gli ID
+    vecchi, e la giornata pubblicata (costruita dai segmenti) mostrava
+    ancora tre voci. E dove le due voci parlavano nella stessa sessione,
+    le statistiche della seconda cancellavano quelle della prima.
+    """
+    import importlib
+    job = tmp / "output" / "s1"
+    job.mkdir(parents=True)
+    (job / "session.json").write_text(json.dumps({"speakers": {
+        "GLOBAL_018": {"segments_count": 2, "total_words": 10},
+        "GLOBAL_022": {"segments_count": 1, "total_words": 4}}}), encoding="utf-8")
+    (job / "segments.jsonl").write_text(
+        json.dumps({"idx": 0, "speaker": "GLOBAL_022", "text": "ciao"}) + "\n"
+        + json.dumps({"idx": 1, "speaker": "GLOBAL_018", "text": "si"}) + "\n",
+        encoding="utf-8")
+    (job / "transcript.txt").write_text(
+        "[00:00:00 → 00:00:02] GLOBAL_022\nciao\nGLOBAL_0220 non si tocca\n",
+        encoding="utf-8")
+    (job / "prosody.csv").write_text(
+        "idx,speaker,f0\n0,GLOBAL_022,120\n1,GLOBAL_018,200\n", encoding="utf-8")
+    (job / "wordfreq.csv").write_text(
+        "word,freq_global,freq_GLOBAL_018,freq_GLOBAL_022\nciao,3,1,2\n",
+        encoding="utf-8")
+
+    sync = importlib.import_module("core.speaker_sync")
+    rep = sync.relabel_sessions({"GLOBAL_022": "GLOBAL_018"}, output_dir=tmp / "output")
+    assert rep["sessions"] == 1, rep
+
+    sj = json.loads((job / "session.json").read_text(encoding="utf-8"))
+    assert sj["speakers"] == {"GLOBAL_018": {"segments_count": 3, "total_words": 14}}, \
+        f"le statistiche si sommano: {sj['speakers']}"
+    segs = (job / "segments.jsonl").read_text(encoding="utf-8")
+    assert "GLOBAL_022" not in segs and segs.count("GLOBAL_018") == 2, segs
+    txt = (job / "transcript.txt").read_text(encoding="utf-8")
+    assert "] GLOBAL_018" in txt and "GLOBAL_0220" in txt, \
+        f"si sostituisce la parola intera, non un pezzo: {txt}"
+    assert "GLOBAL_022\n" not in txt
+    assert "GLOBAL_022" not in (job / "prosody.csv").read_text(encoding="utf-8")
+    wf = (job / "wordfreq.csv").read_text(encoding="utf-8").splitlines()
+    assert wf == ["word,freq_global,freq_GLOBAL_018", "ciao,3,3"], \
+        f"le colonne di frequenza si sommano: {wf}"
+    rep2 = sync.relabel_sessions({"GLOBAL_022": "GLOBAL_018"}, output_dir=tmp / "output")
+    assert rep2["substitutions"] == 0, "rifarlo non deve cambiare niente"
+
+
 def test_relabel_dry_run_changes_nothing(tmp: Path) -> None:
     """In simulazione si conta ma non si scrive: un merge andato a
     metto su una sessione reale non si ri-fa da capo."""
