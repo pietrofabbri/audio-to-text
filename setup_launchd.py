@@ -109,7 +109,13 @@ def build_plist() -> dict:
         ** _common_plist_fields(),
         # Priorità CPU bassa: di notte la macchina non serve a nessuno,
         # ma lascia comunque il sistema libero di gestire la priorità.
-        "ProcessType": "Background",
+        # Non "Background": macOS confina quei job sui core di efficienza
+        # e ne strozza CPU e disco. Misurato l'8 ottobre: la passata diurna
+        # ha trascritto ~10 minuti di audio in 90 minuti a 80% di CPU; lo
+        # stesso file lanciato fuori da launchd andava a 400%. La gentilezza
+        # verso la macchina la fanno gia' `nice`, i thread limitati e il
+        # governatore termico (core/thermal.py).
+        "ProcessType": "Standard",
         "Nice": NIGHT_NICE,
         # Timeout esplicito (secondi) — margine oltre il budget interno
         "TimeOut": int(MAX_RUNTIME_SEC + 1800),
@@ -143,7 +149,13 @@ def build_plist_daytime() -> dict:
         ],
         "RunAtLoad": False,
         **_common_plist_fields(),
-        "ProcessType": "Background",
+        # Non "Background": macOS confina quei job sui core di efficienza
+        # e ne strozza CPU e disco. Misurato l'8 ottobre: la passata diurna
+        # ha trascritto ~10 minuti di audio in 90 minuti a 80% di CPU; lo
+        # stesso file lanciato fuori da launchd andava a 400%. La gentilezza
+        # verso la macchina la fanno gia' `nice`, i thread limitati e il
+        # governatore termico (core/thermal.py).
+        "ProcessType": "Standard",
         "TimeOut": int(DAYTIME_BUDGET_SEC + 900),
     }
 
