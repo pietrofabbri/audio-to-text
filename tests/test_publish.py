@@ -31,6 +31,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import publish_corpus as pc  # noqa: E402
+from core.config import config as _config  # noqa: E402
+
+# I test della privacy provano il default protetto (pseudonimi), anche se
+# sulla macchina vera l'interruttore dei nomi e' acceso (ROADMAP D1).
+_config.corpus_with_names = False
 from core.speaker_db import SpeakerDB  # noqa: E402
 
 
@@ -217,6 +222,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _publish(out: Path, clone: Path) -> int:
+    from core.config import config
+    config.corpus_with_names = False   # i test della privacy provano il default protetto
     pc.OUTPUT_DIR = out
     pc.LOCAL_CLONE = clone
     pc.keep_names = False
@@ -371,6 +378,25 @@ def t_names_to_hide_reads_the_speaker_db(tmp: Path) -> None:
     got = names_from_db(SpeakerDB(path=p))
     require(got == {"GLOBAL_001": "Pietro"}, got)
     print("    solo le voci nominate entrano nel controllo")
+
+
+def t_i_nomi_da_nascondere_sono_nomi_non_pseudonimi(tmp: Path) -> None:
+    """Il controllo cerca «Pietro», non «GLOBAL_001»."""
+    print("  il controllo privacy cerca i nomi, non gli pseudonimi")
+    p = tmp / "spk.json"
+    db = SpeakerDB(path=p)
+    db._data["speakers"] = {
+        "GLOBAL_001": {"name": "Pietro", "centroid": [], "sessions": {}},
+        "GLOBAL_002": {"name": None, "centroid": [], "sessions": {}},
+    }
+    db.save()
+    vecchio = pc.SPEAKERS_DB
+    pc.SPEAKERS_DB = p
+    try:
+        got = pc._speaker_names_to_hide()
+    finally:
+        pc.SPEAKERS_DB = vecchio
+    require(got == ["Pietro"], f"devono essere i nomi: {got}")
 
 
 def t_reindex_popola_il_database(tmp: Path) -> None:
@@ -837,6 +863,7 @@ def main() -> int:
         t_guard_passes_when_there_is_nothing,
         t_with_names_publishes_them,
         t_names_to_hide_reads_the_speaker_db,
+        t_i_nomi_da_nascondere_sono_nomi_non_pseudonimi,
         t_voice_matrix_lands_on_the_repo_without_embeddings,
         t_reindex_popola_il_database,
         t_reindex_toglie_la_sessione_senza_cartella,

@@ -520,7 +520,12 @@ def _speaker_names_to_hide() -> list[str]:
     try:
         from core.speaker_db import SpeakerDB
         from core.speaker_sync import names_from_db
-        return sorted(set(names_from_db(SpeakerDB(SPEAKERS_DB))))
+        # I valori, cioe' i nomi. Fino all'8 ottobre qui c'erano le
+        # chiavi (gli pseudonimi GLOBAL_xxx): con nessun nome assegnato non
+        # cambiava niente, al primo nome il controllo ha bloccato il push
+        # perche' trovava «GLOBAL_001» nei file — cioe' proprio lo
+        # pseudonimo che doveva restare.
+        return sorted(set(names_from_db(SpeakerDB(SPEAKERS_DB)).values()))
     except Exception:  # noqa: BLE001
         return []
 
@@ -531,7 +536,11 @@ def cmd_push(args) -> int:
         return 1
 
     global keep_names
-    keep_names = bool(getattr(args, "with_names", False))
+    # `--with-names` oppure la scelta salvata in config (ROADMAP D1): un
+    # `push` lanciato a mano deve pubblicare come quello della notte.
+    from core.config import config as _cfg
+    keep_names = bool(getattr(args, "with_names", False)) or bool(
+        getattr(_cfg, "corpus_with_names", False))
     if keep_names:
         logger.warning(
             "--with-names: i nomi reali dei parlanti verranno pubblicati. "
