@@ -275,6 +275,23 @@ def test_split_in_dry_run_non_cancella_la_voce(tmp: Path) -> None:
     assert gid not in db._data["speakers"], "lo split vero deve togliere la voce"
 
 
+def test_info_si_salva_e_segue_il_merge(tmp: Path) -> None:
+    """Le note su una voce restano dopo il salvataggio e dopo un merge."""
+    p = tmp / "db.json"
+    db = SpeakerDB(path=p)
+    db._register("GLOBAL_001", "s1", "SPEAKER_00", [1.0, 0.0], 100)
+    db._register("GLOBAL_002", "s2", "SPEAKER_00", [0.9, 0.1], 50)
+    db.save()
+    db.set_info("GLOBAL_002", "  la mia ragazza ")
+    db2 = SpeakerDB(path=p)
+    assert db2.profiles()["GLOBAL_002"]["info"] == "la mia ragazza", db2.profiles()
+    db2.merge_ids("GLOBAL_001", "GLOBAL_002")
+    assert db2.profiles()["GLOBAL_001"]["info"] == "la mia ragazza", \
+        "le note della voce assorbita passano a quella che resta"
+    db2.set_info("GLOBAL_001", "")
+    assert db2.profiles()["GLOBAL_001"]["info"] is None
+
+
 def pytest_approx(x: float) -> float:
     return round(float(x), 5)
 

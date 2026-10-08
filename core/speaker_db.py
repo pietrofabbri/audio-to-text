@@ -127,6 +127,8 @@ def _merge_into(data: dict, keep: str, drop: str) -> None:
             dst[campo] = peggio(dst[campo], src[campo])
     if not dst.get("name") and src.get("name"):
         dst["name"] = src["name"]
+    if not dst.get("info") and src.get("info"):
+        dst["info"] = src["info"]
 
 
 class SpeakerDB:
@@ -466,6 +468,17 @@ class SpeakerDB:
         self.save()
         logger.info("Nome impostato: %s -> %s", gid, name)
 
+    def set_info(self, gid: str, info: str | None) -> None:
+        """Note libere su una voce: chi e', che rapporto ha con te.
+
+        Restano qui, nel DB locale delle voci, e non vanno mai nel corpus
+        pubblicato: sono informazioni su persone, date a mano.
+        """
+        if gid not in self._data["speakers"]:
+            raise KeyError(f"Voce sconosciuta: {gid}")
+        self._data["speakers"][gid]["info"] = (info or "").strip() or None
+        self.save()
+
     def get_name(self, gid: str) -> str | None:
         """Nome umano se assegnato, altrimenti l'ID globale."""
         rec = self._data["speakers"].get(gid, {})
@@ -520,6 +533,7 @@ class SpeakerDB:
                 "first_seen": rec.get("first_seen"),
                 "last_seen": rec.get("last_seen"),
                 "reviewed": bool(rec.get("name") or rec.get("reviewed_at")),
+                "info": rec.get("info"),
                 "sessions": sorted({s["stem"] for s in rec.get("sessions", {}).values()}),
             }
         return out

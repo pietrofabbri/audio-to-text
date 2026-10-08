@@ -10,6 +10,7 @@ Rivedi le identità vocali: vedi chi è chi, metti i nomi, correggi gli errori.
     python review_speakers.py nuove           # voci che non hai ancora guardato
     python review_speakers.py ascolta GLOBAL_035 --play   # sentila prima di nominarla
     python review_speakers.py ignora GLOBAL_051           # vista, resta senza nome
+    python review_speakers.py info GLOBAL_018 "la mia ragazza"   # note, solo in locale
 
 Il giro tipico dopo una notte: `nuove` dice chi e' comparso, `ascolta`
 fa sentire tre o quattro frasi di ciascuno, e poi `name`, `merge` o
@@ -68,7 +69,8 @@ def cmd_list(db: SpeakerDB, args) -> int:
         p = prof[gid]
         name = p["name"] or "(senza nome)"
         print(f"  {gid}  {name:<16s} {p['total_seconds']/60:6.1f} min  "
-              f"{p['sessions_count']} sessioni")
+              f"{p['sessions_count']} sessioni"
+              + (f"  — {p['info']}" if p.get("info") else ""))
         print(f"      {' · '.join(p['sessions'])}")
 
     # --- matrice di somiglianza ----------------------------------------
@@ -574,6 +576,17 @@ def cmd_nuove(db: SpeakerDB, args) -> int:
     return 0
 
 
+def cmd_info(db: SpeakerDB, args) -> int:
+    """Note su una voce (ruolo, relazione): solo nel DB locale."""
+    if args.gid not in db._data["speakers"]:
+        print(f"Voce sconosciuta: {args.gid}", file=sys.stderr)
+        return 1
+    db.set_info(args.gid, args.testo)
+    nome = db._data["speakers"][args.gid].get("name") or "(senza nome)"
+    print(f"{args.gid} {nome}: {args.testo or '(note tolte)'}")
+    return 0
+
+
 def cmd_ignora(db: SpeakerDB, args) -> int:
     """Segna una voce come vista senza darle un nome."""
     if args.gid not in db._data["speakers"]:
@@ -643,6 +656,10 @@ def main() -> int:
     nu.add_argument("--min-minuti", type=float, default=None,
                     help="parlato minimo per proporre una voce (default 1)")
 
+    inf = sub.add_parser("info", help="note su una voce (ruolo, relazione), solo in locale")
+    inf.add_argument("gid")
+    inf.add_argument("testo", nargs="?", default="", help="vuoto per toglierle")
+
     ig = sub.add_parser("ignora", help="segna una voce come vista, senza nome")
     ig.add_argument("gid")
     ig.add_argument("--annulla", action="store_true",
@@ -674,6 +691,7 @@ def main() -> int:
         "split": cmd_split, "threshold": cmd_threshold, "sync": cmd_sync,
         "consolidate": cmd_consolidate, "voices": cmd_voices,
         "ascolta": cmd_ascolta, "nuove": cmd_nuove, "ignora": cmd_ignora,
+        "info": cmd_info,
     }[cmd](db, args)
 
 
