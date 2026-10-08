@@ -252,6 +252,40 @@ def un_solo_scarico_alla_volta() -> None:
         b.lascia()
 
 
+def registrazione_gia_trascritta_va_in_archivio() -> None:
+    """Stesso nome di una sessione gia' trascritta: archivio, non coda.
+
+    Il caso vero dell'8 ottobre: `2026-10-05_09-39-09.MP3` era rimasto sul
+    TileRec dal 5, con un'impronta diversa da quella del manifest. Senza
+    questo controllo la passata diurna l'ha cominciato a trascrivere come
+    sessione duplicata `2026-10-05_09-39-09-237002`.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        files = _registratore(base, n=2)
+        gia = {files[0].stem}
+        e = _scarica(files, base, gia_trascritti=gia, archivio=base / "archive")
+        require(e.copiati == 1 and e.gia_presenti == 1 and e.cancellati == 2,
+                f"uno nuovo, uno gia' trascritto: {e}")
+        require(not (base / "coda" / files[0].name).exists(),
+                "la registrazione gia' trascritta non entra in coda")
+        require((base / "archive" / files[0].name).exists(),
+                "va in archivio: torna disponibile l'audio originale")
+
+
+def troncato_gia_trascritto_resta_sul_registratore() -> None:
+    """Una copia parziale di una registrazione gia' trascritta si scarta."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        files = _registratore(base, n=1, size=3_000_000)
+        f = files[0]
+        with mock.patch("builtins.open", _apri_troncato(f.name, 2_000_000)):
+            e = _scarica(files, base, gia_trascritti={f.stem}, archivio=base / "archive")
+        require(f.exists() and not (base / "coda" / f.name).exists()
+                and not (base / "archive" / f.name).exists(),
+                f"resta sul registratore, niente in coda ne' in archivio: {e}")
+
+
 def aspetta_che_il_volume_sia_fermo() -> None:
     """Un file che cresce ancora non si copia finche' non si ferma."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -303,6 +337,10 @@ CHECKS = [
     ("registratore staccato a meta'", registratore_staccato_a_meta),
     ("i resti di una copia interrotta si puliscono", resti_di_una_copia_interrotta),
     ("un solo scarico alla volta", un_solo_scarico_alla_volta),
+    ("una registrazione gia' trascritta va in archivio",
+     registrazione_gia_trascritta_va_in_archivio),
+    ("un troncato gia' trascritto resta sul registratore",
+     troncato_gia_trascritto_resta_sul_registratore),
     ("si aspetta che il volume sia fermo", aspetta_che_il_volume_sia_fermo),
     ("si toglie anche il ._ di macOS", libera_anche_il_file_appledouble),
     ("la notifica quando tutto va bene", notifica_quando_tutto_va_bene),

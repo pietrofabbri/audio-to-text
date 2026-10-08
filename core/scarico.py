@@ -240,6 +240,8 @@ def scarica(
     cancella: bool = True,
     dry_run: bool = False,
     gia_elaborati: set[str] | None = None,
+    gia_trascritti: set[str] | None = None,
+    archivio: Path | None = None,
     non_audio: Callable[[Path], bool] | None = None,
     durata_audio: Callable[[Path], float | None] | None = None,
 ) -> Esito:
@@ -247,7 +249,17 @@ def scarica(
 
     `gia_elaborati` sono le impronte gia' trascritte e cancellate in
     passato (dal manifest): se il registratore ripresenta lo stesso file,
-    non si rimette in coda, si libera solo lo spazio. `non_audio` e
+    non si rimette in coda, si libera solo lo spazio.
+
+    `gia_trascritti` sono i nomi delle sessioni gia' trascritte in
+    `output/` (es. `2026-10-05_09-39-09`). Un file del registratore con
+    quel nome e' quella registrazione, anche se l'impronta non coincide
+    con quella annotata allora: l'8 ottobre `2026-10-05_09-39-09.MP3`,
+    rimasto sul TileRec dal 5, ha dato un'impronta diversa da quella del
+    manifest (stesso nome, stessa dimensione) e sarebbe stato trascritto
+    una seconda volta come sessione duplicata. Non si rimette in coda:
+    la copia va in `archivio` (se li' non c'e' gia'), cosi' torna
+    disponibile l'audio originale, e il registratore si libera. `non_audio` e
     `durata_audio` sono iniettati per i test; di default usano ffprobe.
     """
     if manifest is None:
@@ -336,6 +348,35 @@ def scarica(
             continue
 
         esito.byte += copia.byte
+
+        # La stessa registrazione e' gia' trascritta: in archivio, non in coda.
+        nome_sessione = Path(f.name).stem
+        if nome_sessione in (gia_trascritti or ()) and not copia.troncato:
+            dove = None
+            if archivio is not None:
+                archivio.mkdir(parents=True, exist_ok=True)
+                dove = archivio / f.name
+                if dove.exists():
+                    copia.dest.unlink(missing_ok=True)
+                else:
+                    copia.dest.replace(dove)
+            else:
+                copia.dest.unlink(missing_ok=True)
+            esito.gia_presenti += 1
+            libera(f, firma, copia.sha256,
+                   f"registrazione gia' trascritta ({nome_sessione})"
+                   + (f"; copia in {dove.parent.name}/" if dove else ""))
+            continue
+        if nome_sessione in (gia_trascritti or ()) and copia.troncato:
+            # Una copia parziale di una registrazione gia' trascritta non
+            # serve a niente: l'originale resta sul registratore e verra'
+            # archiviato intero al prossimo inserimento.
+            copia.dest.unlink(missing_ok=True)
+            esito.troncati.append(f.name)
+            esito.lasciati.append(f.name)
+            registra(f, firma, sha256=copia.sha256, action="kept",
+                     reason=f"gia' trascritta, copia parziale scartata ({copia.motivo})")
+            continue
 
         # Un file gia' trascritto in passato: la copia non serve.
         if copia.sha256 in gia_elaborati:

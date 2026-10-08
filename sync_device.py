@@ -651,6 +651,21 @@ def cmd_pull(args) -> int:
         # stessa cartella — la seconda si trovava il checkpoint gia'
         # completo, la pipeline lo dichiarava non completata e la run
         # finiva con errore.
+        if (OUTPUT_DIR / stem / REQUIRED_OUTPUT).exists() \
+                and Path(nome_originale).stem == stem:
+            # Il nome del file E' la sessione gia' trascritta: e' la stessa
+            # registrazione, non una seconda con lo stesso orario. L'8
+            # ottobre un file rimasto sul TileRec dal 5 e' arrivato in coda
+            # con un'impronta diversa da quella del manifest, e questo ramo
+            # mancava: e' partita una seconda trascrizione come
+            # `2026-10-05_09-39-09-237002`. Si archivia e si toglie.
+            logger.info("[%d/%d] %s: sessione %s gia' trascritta, la archivio",
+                        i, len(files), nome_originale, stem)
+            results["skipped"] += 1
+            if not args.dry_run:
+                _archive(f, stem)
+                _try_delete(f, digest, f"sessione {stem} gia' trascritta", args)
+            continue
         if (OUTPUT_DIR / stem / REQUIRED_OUTPUT).exists():
             suffix = hashlib.sha1(nome_originale.encode("utf-8")).hexdigest()[:6]
             stem = f"{stem}-{suffix}"
@@ -1186,6 +1201,9 @@ def cmd_scarica(args) -> int:
             files, coda=CODA_DIR, manifest=MANIFEST_PATH, etichetta=label,
             cancella=not args.no_delete, dry_run=args.dry_run,
             gia_elaborati=already_processed_hashes(),
+            gia_trascritti={d.name for d in OUTPUT_DIR.iterdir()
+                            if (d / REQUIRED_OUTPUT).exists()} if OUTPUT_DIR.is_dir() else set(),
+            archivio=ROOT / "archive",
         )
         logger.info(
             "Scarico: %d copiati (%.1f h di audio, %.0f MB) in %.0f s, %d gia' presenti, "
