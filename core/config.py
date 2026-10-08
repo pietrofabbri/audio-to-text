@@ -453,9 +453,12 @@ class PipelineConfig:
     # notturno pubblica pseudonimi (GLOBAL_00x) come sempre; con True
     # passa `--with-names` e chi accede alla repo legge chi ha detto cosa.
     # Le voci senza nome restano pseudonimi in entrambi i casi. Il default
-    # resta False perche' cambiarlo e' una scelta che riguarda anche le
-    # persone registrate, e va fatta qui, a mano, sapendolo.
-    corpus_with_names: bool = False
+    # era False perche' cambiarlo e' una scelta che riguarda anche le
+    # persone registrate, e va fatta qui, a mano, sapendolo. Pietro l'ha
+    # fatta l'8 ottobre 2026: «puoi usare i nomi veri anche su GitHub».
+    # Le note sulle voci (`review_speakers.py info`) restano comunque solo
+    # in locale.
+    corpus_with_names: bool = True
 
 
 # Istanza di default — importa questa nei moduli della pipeline

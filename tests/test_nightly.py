@@ -627,9 +627,9 @@ def t_una_matrice_delle_voci_mancante_viene_detettata(tmp: Path) -> None:
 def t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice(tmp: Path) -> None:
     """D1: nomi reali ammessi, ma solo con l'interruttore acceso.
 
-    Il default deve restare pseudonimi: un nome pubblicato non si
-    ritira (resta nella storia della repo), quindi l'errore costoso e'
-    pubblicarlo per sbaglio, non dimenticare di pubblicarlo.
+    Un nome pubblicato non si ritira (resta nella storia della repo):
+    l'interruttore deve decidere davvero. Dall'8 ottobre e' acceso per
+    scelta di Pietro; il test prova entrambe le posizioni.
     """
     print("  i nomi reali si pubblicano solo con corpus_with_names")
     import nightly
@@ -647,7 +647,7 @@ def t_i_nomi_si_pubblicano_solo_se_la_config_lo_dice(tmp: Path) -> None:
                 f"con l'interruttore acceso i nomi devono passare: {cmd}")
     finally:
         config.corpus_with_names = originale
-    require(originale is False, "il default in config deve restare False")
+    require(isinstance(originale, bool), "corpus_with_names deve essere un booleano")
 
 
 def t_la_notte_prepara_le_voci_da_rivedere(tmp: Path) -> None:
