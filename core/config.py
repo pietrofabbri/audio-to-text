@@ -468,8 +468,7 @@ class PipelineConfig:
     # Gratuito, senza limiti di chiamate, e il testo non esce dal Mac.
     # Prima di accendere:
     # - installa Ollama (https://ollama.com) e lascia l'app aperta;
-    # - scarica il modello: `ollama pull gemma3:12b` (circa 8 GB; su un Mac
-    #   con 8 GB di memoria in tutto usa `gemma3:4b` e cambialo qui sotto);
+    # - il modello: `qwen3:14b`, gia' scaricato sul Mac (`ollama list`);
     # - prova a mano: `python correct_text.py --consent --dry --limit 5`.
     #
     # `gemini` resta possibile ma manda il testo a Google: sul piano
@@ -492,8 +491,9 @@ class PipelineConfig:
     # "ollama" (locale, predefinito) o "gemini" (API di Google).
     correzione_motore: str = "ollama"
 
-    # Il modello locale. gemma3:12b ~8 GB di memoria; gemma3:4b ~3 GB.
-    correzione_modello_locale: str = "gemma3:12b"
+    # Il modello locale. qwen3:14b (~9 GB, gia' installato sul Mac);
+    # qwen3:8b (~5 GB) se serve qualcosa di piu' leggero.
+    correzione_modello_locale: str = "qwen3:14b"
 
     # Dove risponde Ollama sul Mac.
     ollama_url: str = "http://127.0.0.1:11434"

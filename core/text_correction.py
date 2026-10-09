@@ -81,12 +81,14 @@ _PUNTEGGIATURA = frozenset(PUNTEGGIATURA)
 # scarta tutti i segmenti e' peggio di uno che corregge un po' meno.
 MODELLO = "gemini-3.5-flash-lite"
 
-# Il motore predefinito e il suo modello. `gemma3:12b` scrive bene
-# l'italiano e sta in circa 8 GB di memoria (quantizzazione Q4); su un Mac
-# con 8 GB in tutto si scende a `gemma3:4b` (circa 3 GB). Si cambia in
-# `core/config.py` (`correzione_modello_locale`) o con `--model`.
+# Il motore predefinito e il suo modello. `qwen3:14b` era gia' sul Mac di
+# Pietro (M1 Pro, 16 GB), scrive bene l'italiano e occupa circa 9 GB
+# durante l'uso; ~12 token/s, 1-2 s per segmento dopo il caricamento
+# (misurato il 9 ottobre). Alternativa piu' leggera: `qwen3:8b` (~5 GB).
+# Si cambia in `core/config.py` (`correzione_modello_locale`) o con
+# `--model`.
 MOTORE = "ollama"
-MODELLO_LOCALE = "gemma3:12b"
+MODELLO_LOCALE = "qwen3:14b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 
 MODELLI_NOTI = {
@@ -618,7 +620,10 @@ class ClientOllama:
 
     Si parla con il server locale di Ollama sull'API `/api/generate`, con
     `format: json` (la risposta e' JSON valido per costruzione),
-    temperatura 0 (riproducibile) e un contesto di 8192 token: il prompt
+    temperatura 0 (riproducibile), `think: false` (i modelli Qwen3
+    altrimenti «ragionano» a voce prima di rispondere, decine di secondi
+    per segmento; sui modelli senza ragionamento il campo e' ignorato) e
+    un contesto di 8192 token: il prompt
     con glossario e contesto, piu' una riga di uscita per parola, supera i
     4096 del default.
     """
@@ -672,6 +677,7 @@ class ClientOllama:
             "model": model,
             "prompt": contents,
             "stream": False,
+            "think": False,
             "options": {"temperature": config.get("temperature", 0),
                         "num_ctx": 8192},
         }

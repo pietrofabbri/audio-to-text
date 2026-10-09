@@ -1519,7 +1519,8 @@ def ollama_locale() -> None:
     url, corpo = ok.richieste[-1]
     dati = json.loads(corpo)
     require(url.endswith("/api/generate") and dati["format"] == "json"
-            and dati["options"]["temperature"] == 0 and not dati["stream"],
+            and dati["options"]["temperature"] == 0 and not dati["stream"]
+            and dati["think"] is False,
             f"richiesta: {dati}")
 
     sparito = _HTTPFinto(errore="404")
