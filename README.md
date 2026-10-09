@@ -894,8 +894,9 @@ invece di duplicarli.
 
 Un pannello web legge le metriche del corpus: copertura della giornata,
 con chi si è parlato, come parla Pietro, qualità del dato, su scale da
-giorno a totale. Specifica completa nel documento di progetto
-`analisi-corpus.md`; qui come funziona e come si configura.
+giorno a totale. Specifica completa in
+[`docs/analisi-corpus.md`](docs/analisi-corpus.md); qui come funziona e
+come si configura.
 
 **Il percorso.** Il Mac, a ogni pubblicazione, calcola
 `metriche/AAAA-MM-GG.json` (`core/metriche.py`: solo numeri aggregati,

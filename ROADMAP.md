@@ -1,6 +1,6 @@
 # Roadmap — audio-to-text e corpus
 
-Stato al 7 ottobre 2026. Questo documento dice **in che ordine** fare le
+Stato al 9 ottobre 2026. Questo documento dice **in che ordine** fare le
 cose e **perché in quell'ordine**. I dettagli tecnici di ogni problema
 già noto stanno in [`APERTI.md`](APERTI.md); qui si rimanda ai suoi
 numeri (es. «APERTI 10»).
@@ -12,9 +12,14 @@ Le repo coinvolte:
   correttore, corpus SQLite locale, giro notturno, pubblicazione.
 - `pietrofabbri/corpus` (privata) — il materiale testuale pubblicato da
   `publish_corpus.py`. Non contiene mai audio, embedding vocali,
-  database o log. Le voci compaiono come pseudonimi `GLOBAL_xxx`.
+  database o log. Le voci compaiono con il loro nome, se ne hanno uno
+  (D1), altrimenti come pseudonimi `GLOBAL_xxx`. Dal 9/10 contiene anche
+  `metriche/` (numeri aggregati per giorno) e il workflow del pannello.
+- Una repo pubblica dal nome neutro (`taccuino`) che contiene **solo** la
+  pagina cifrata del pannello (D5).
 - Hardware: registratore TileRec, descritto nel documento di progetto
   `hardware-registrazione.md` (Project «Psico-fisio app» su claude.ai).
+- Analisi e pannello web: documento di progetto `analisi-corpus.md`.
 
 ---
 
@@ -51,17 +56,17 @@ secondi o minuti, ed è questo il criterio usato in Fase 2.
 Fase 0  Pulizia                     piccola, subito
 Fase 1  Voci con un nome            prima di tutto il resto
 Fase 2  Una cartella per giorno     dipende dagli ID stabili della Fase 1
-Fase 3  Correzione con Gemini       dipende da nomi (glossario) e giorni (contesto)
+Fase 3  Correzione del testo        dipende da nomi (glossario) e giorni (contesto)
 Fase 4  Hardware, biometria, termico  in parallelo, quando c'è il materiale
 ```
 
 - **Le voci vengono prima della struttura per giorno** perché
   consolidare le voci (unire i doppioni) cambia gli ID `GLOBAL_xxx`.
   Se si migra il corpus prima, lo si migra due volte.
-- **La struttura per giorno viene prima di Gemini** perché il
+- **La struttura per giorno viene prima della correzione** perché il
   correttore lavora meglio con più contesto, e il giorno unificato è il
   contesto più lungo e coerente che esista.
-- **I nomi vengono prima di Gemini** perché l'unico difetto noto del
+- **I nomi vengono prima della correzione** perché l'unico difetto noto del
   correttore è che riscrive i nomi propri (vedi Fase 3). Il rimedio è un
   glossario, e il glossario comincia dai nomi delle voci.
 
@@ -155,13 +160,18 @@ voci davvero nuove.
 | 1. Aggregazione per coppia | **Fatta.** `review_speakers.py voices`: 49 coppie di campioni in zona grigia → **10 coppie di voci** da decidere |
 | 2. Ascolto prima del nome | **Fatto.** `review_speakers.py ascolta <voce> --play`; 24 estratti già tagliati per le 8 voci con più parlato |
 | 3. Il rito dopo la notte | **Fatto.** `review_speakers.py nuove` e `ignora`; la notte scrive `output/voci_da_rivedere.md` e taglia gli estratti |
-| 4. Nomi nel corpus (D1) | **Fatto.** `corpus_with_names` in `core/config.py`, default `False` |
+| 4. Nomi nel corpus (D1) | **Fatto.** `corpus_with_names` in `core/config.py`, `True` dall'8/10 |
 | Decidere le 10 coppie | **Tuo.** Ascoltarle e usare `merge` dove sono la stessa persona |
 | Dare i nomi | **Tuo.** Dopo le unioni: `nuove`, poi `name` o `ignora` |
 
 Ordine consigliato per la parte tua: prima le 10 coppie (unire), poi i
 nomi, così ogni persona si nomina una volta sola. `GLOBAL_001`, presente
 in 18 sessioni su 19 con 240 minuti, è quasi certamente Pietro.
+
+Aggiornamento dell'8 ottobre: i primi nomi e le prime unioni sono stati
+fatti (`GLOBAL_001` è Pietro; `GLOBAL_022` e `GLOBAL_023` unite in
+`GLOBAL_018`, commit `1d221f2`, che ha anche corretto la propagazione
+dell'unione a tutti i file di sessione).
 
 ---
 
@@ -174,8 +184,11 @@ dell'impronta, le cancella dal registratore, lo espelle e notifica «puoi
 staccarlo». La trascrizione avviene dopo, dalla coda (passata diurna
 subito, poi passate delle 09:30/15:30/21:30 e la notte, che pubblica).
 
-Da confermare al primo inserimento vero (8 ottobre): velocità USB del
-TileRec, permesso di macOS sui volumi rimovibili, nome del volume.
+Primo inserimento vero l'8 ottobre. Emerso un problema: i job di
+trascrizione, girando come «Background» di macOS, erano confinati sui
+core di efficienza (circa 10 minuti di audio trascritti in 90 minuti);
+corretto con il commit `e1858e8` (ProcessType Standard, con nice,
+thread limitati e governatore termico).
 
 **Fase 1, parte tua (coppie e nomi): rimandata al 14 ottobre**, su
 richiesta di Pietro; c'è un promemoria programmato.
@@ -264,32 +277,46 @@ parole delle sessioni di partenza (16.740, 24.338, 30.665).
 
 ---
 
-## Fase 3 — Controllo delle parole inverosimili con Gemini
+## Fase 3 — Controllo delle parole inverosimili con un modello di lingua
 
 Taglia: media. Dipende da: Fase 1 (glossario dei nomi), Fase 2
 (contesto del giorno).
 
-**Cosa esiste già.** `correct_text.py` + `core/text_correction.py`,
-modello `gemini-3.5-flash-lite`. Funziona così:
+**Come funziona il correttore.** `correct_text.py` +
+`core/text_correction.py`. Due motori:
+
+- **`ollama` (predefinito dal 9/10):** un modello che gira sul Mac
+  attraverso Ollama, `gemma3:12b` (circa 8 GB di memoria; `gemma3:4b`,
+  circa 3 GB, su un Mac con 8 GB in tutto). Gratuito, senza limiti di
+  chiamate, il testo non esce dal computer;
+- **`gemini`** (`--motore gemini`, modello `gemini-3.5-flash-lite`): resta
+  per confronto; manda il testo a Google, quindi solo con piano a
+  pagamento (vedi D2).
+
+Le regole valgono per entrambi:
 
 - il modello propone correzioni parola per parola, senza riscrivere il
-  testo;
+  testo, ed elenca **solo le parole che cambia** (in locale è la
+  differenza fra secondi e minuti per segmento);
 - se il numero di parole cambia, la risposta si scarta;
 - una parola che Whisper ha sentito con probabilità ≥ 0,90 non si tocca
-  (`--soglia-prob`): sulla prova ha bloccato 63 proposte su 394 (16%);
+  (`--soglia-prob`): sulla prova con Gemini ha bloccato 63 proposte su
+  394 (16%);
 - l'uscita è **affiancata**, non sostitutiva: ogni parola conserva
   l'originale, così si misura l'errore di entrambi i modelli;
-- senza `--consent` non parte nessuna chiamata.
+- senza `--consent` non parte nessuna correzione.
 
-Sulla prova in asciutto del 2 ottobre: 331 correzioni accettate, una
-quarantina controllate a mano, quasi tutte buone (`statole → scatole`,
-`salate spensate → serate spensierate`).
+Sulla prova in asciutto del 2 ottobre con Gemini: 331 correzioni
+accettate, una quarantina controllate a mano, quasi tutte buone
+(`statole → scatole`, `salate spensate → serate spensierate`). Il modello
+locale è meno capace: la misura del passo 5 dirà se basta.
 
-**L'unico difetto noto: i nomi propri.** Su «Zia Titti» il modello ha
-scritto «Gigi D'Alessio» in entrambe le occorrenze. Incontra un nome che
-non conosce e lo sostituisce con uno che conosce. È l'errore più
-pericoloso, perché il risultato sembra plausibile e non lo segnala
-niente.
+**Il difetto noto: i nomi propri.** Su «Zia Titti» Gemini aveva scritto
+«Gigi D'Alessio» in entrambe le occorrenze: incontra un nome che non
+conosce e lo sostituisce con uno che conosce. È l'errore più pericoloso,
+perché il risultato sembra plausibile e non lo segnala niente. Rimedio
+nel passo 1. Nota: la protezione **non nasconde** i nomi, impedisce
+solo al correttore di cambiarli; nel testo restano come sono stati detti.
 
 Passi:
 
@@ -298,24 +325,14 @@ Passi:
    va nel prompt, e una regola nel codice vieta di cambiare una parola
    del glossario o una parola con la maiuscola fuori da inizio frase.
    Il caso «Zia Titti» diventa un test di regressione.
-2. **Contesto più largo.** Mandare insieme al segmento quelli vicini
-   dello stesso blocco continuo (Fase 2), sempre chiedendo correzioni
-   solo sul segmento centrale.
-3. **Decisione sulla privacy (D2).** Il consenso a essere registrati non
-   copre automaticamente l'invio del testo a Google. Da decidere:
-   - se le persone registrate vanno informate di questo passaggio;
-   - quale piano API usare: secondo i termini di Google, sul piano
-     gratuito i contenuti possono essere usati per migliorare i
-     prodotti, su quello a pagamento no (**da verificare sui termini
-     in vigore** prima di attivarlo);
-   - in alternativa, un modello locale (es. tramite Ollama): niente
-     esce dal Mac, ma la qualità sull'italiano parlato va misurata ed è
-     probabilmente più bassa.
+2. **Contesto più largo.** Mandare insieme al segmento quelli vicini,
+   chiedendo correzioni solo sul segmento centrale.
+3. **Decisione sulla privacy e sul motore (D2).** Vedi la tabella delle
+   decisioni.
 4. **Nella catena notturna.** Dopo la trascrizione e prima della
    pubblicazione, con il consenso dato una volta in configurazione e
    registrato nel log. Ordine di grandezza: un giorno come il 5 ottobre
-   ha ~770 segmenti, quindi ~770 chiamate, da far stare nei limiti di
-   frequenza del piano scelto.
+   ha ~770 segmenti.
 5. **Misura.** Un campione di 100 parole cambiate, rivisto a mano,
    ogni tanto: percentuale di correzioni giuste, sbagliate e dubbie.
    È l'unico modo di sapere se il correttore migliora il testo o lo
@@ -324,19 +341,26 @@ Passi:
 **Fatto quando:** il caso «Zia Titti» passa, ogni giorno nuovo esce
 anche in versione corretta, e c'è una misura di qualità aggiornata.
 
-**Stato all'8 ottobre: costruita, da accendere** (APERTI 35, README
-«I nomi propri: il glossario» e «Nel giro notturno»).
+**Stato al 9 ottobre: costruita, da accendere sul Mac** (commit `7fb48a6`
+e `737dd19`, APERTI 35 e 37, README «I nomi propri: il glossario» e «Nel
+giro notturno: il motore locale»).
 
 | Passo | Stato |
 |---|---|
-| 1. Glossario | **Fatto.** `data/glossario.txt` + nomi delle voci; blocco nel codice; «Zia Titti» è un test |
-| 2. Contesto | **Fatto.** Due segmenti prima e dopo, stessa sessione |
-| 3. Privacy (D2) | **Rivista il 9/10:** motore locale (Ollama, `gemma3:12b`), gratuito, il testo non esce dal Mac (APERTI 37). Gemini resta con `--motore gemini`, solo con piano a pagamento |
-| 4. Catena notturna | **Fatta, spenta.** Per accenderla: installare Ollama, `ollama pull gemma3:12b`, prova con `correct_text.py --consent --dry --limit 5`, poi `correzione_notturna = True` (README «Nel giro notturno: il motore locale») |
+| 1. Glossario | **Fatto.** `data/glossario.txt` (sul Mac, fuori dalla repo pubblica) + nomi delle voci dal database. Nel codice è bloccata ogni modifica a una parola del glossario o a una parola con maiuscola fuori da inizio frase, e ogni nome nuovo introdotto dal modello; una correzione *verso* un nome del glossario resta permessa. «Zia Titti» è un test di regressione |
+| 2. Contesto | **Fatto.** Due segmenti prima e due dopo, della stessa sessione, solo come contesto |
+| 3. Privacy e motore (D2) | **Decisa il 9/10:** motore locale (Ollama). Niente esce dal Mac |
+| 4. Catena notturna | **Fatta, spenta.** In `core/config.py`: `correzione_notturna` (default `False`), `correzione_motore` (`"ollama"`), `correzione_modello_locale` (`"gemma3:12b"`), `ollama_url`, `correzione_budget_sec` (7200 s per notte; il resto si riprende la notte dopo), `correzione_giorni_esclusi` |
 | 5. Misura su 100 parole | Da fare dopo le prime notti corrette |
 
-Il glossario si arricchisce da solo quando le voci ricevono un nome
-(revisione del 14 ottobre); intanto i nomi noti si aggiungono a mano.
+Per accendere, sul Mac: installare Ollama (https://ollama.com) e lasciare
+l'app aperta; `ollama pull gemma3:12b`; provare con
+`python correct_text.py --consent --dry --limit 5` (la prima riga dice
+motore e modello; se Ollama non risponde o il modello manca, si ferma e
+dice cosa fare); poi `correzione_notturna = True`. Alla prima notte va
+misurato il tempo per segmento. Il glossario si arricchisce da solo
+quando le voci ricevono un nome; intanto i nomi noti si aggiungono a
+mano in `data/glossario.txt`, uno per riga.
 
 ---
 
@@ -351,8 +375,13 @@ Queste cose non bloccano le fasi precedenti e non ne sono bloccate.
 - **Deriva dell'orologio** del TileRec: serve agli orari assoluti della
   Fase 2 e al sync biometrico.
 - **Sync biometrico con Amazfit Helio** (APERTI 8): quando l'hardware è
-  in uso.
+  in uso. Le misure Helio entreranno nel corpus (vedi `analisi-corpus.md`).
 - **Termico** (APERTI 3b): una notte misurata con `powermetrics`.
+- **Analisi del corpus e pannello web cifrato** (APERTI 36, decisione
+  D5): codice fatto e pubblicato il 9/10 (commit `501546c`); specifica in
+  `analisi-corpus.md`, configurazione nel README «Il pannello cifrato».
+  Restano i passi su GitHub che spettano a Pietro (repo pubblica, token,
+  segreti, attivazione di Pages).
 
 ---
 
@@ -360,8 +389,8 @@ Queste cose non bloccano le fasi precedenti e non ne sono bloccate.
 
 | # | Domanda | Serve per | Stato |
 |---|---|---|---|
-| D1 | Nel corpus: pseudonimi (oggi) o nomi reali? | Fase 1 | **Decisa il 7/10:** i nomi reali sono ammessi nel corpus privato. **Attivati l'8/10** (`corpus_with_names = True` in `core/config.py`): nel corpus le voci con un nome compaiono come «Nome (GLOBAL_xxx)». Le note sulle voci restano solo in locale. |
-| D2 | Gemini: si manda il testo a Google? Con quale piano, e informando chi è registrato? Oppure un modello locale? | Fase 3 | **Decisa il 9/10:** modello locale con Ollama, gratuito e stabile; il testo non esce dal Mac. (L'8/10 era stata scelta Gemini con l'ok di tutte le persone registrate; rivista perché il piano gratuito consente a Google di usare i testi e Pietro preferisce non pagare.) |
+| D1 | Nel corpus: pseudonimi o nomi reali? | Fase 1 | **Decisa il 7/10:** i nomi reali sono ammessi nel corpus privato. Dall'8/10 `corpus_with_names = True` in `core/config.py` (commit `c988955`): la notte e `push` pubblicano i nomi; le voci senza nome restano `GLOBAL_xxx`. |
+| D2 | Correzione del testo: si manda a Google (Gemini), con quale piano? Oppure un modello locale? | Fase 3 | **Decisa il 9/10: modello locale con Ollama**, gratuito e stabile; il testo non esce dal Mac. Storia: l'8/10 era stata scelta Gemini, con l'ok all'invio di tutte le persone registrate fino a quel giorno; i termini aggiuntivi dell'API Gemini (verificati l'8/10) dicono che sul piano gratuito prompt e risposte possono essere usati per migliorare i prodotti, con possibile lettura da parte di revisori umani, mentre sul piano a pagamento no. Pietro ha preferito non pagare e passare al locale. Gemini resta usabile (`--motore gemini`) solo con piano a pagamento. |
 | D3 | Blocco continuo = buchi sotto i 5 minuti; il blocco appartiene al giorno in cui comincia. Va bene? | Fase 2 | **Applicata il 7/10** con la Fase 2 (soglia in `core/giorno.py`, `SOGLIA_CONTINUITA_SEC`). |
-| D4 | I pezzi orari spariscono dal corpus, restano solo nel manifesto del giorno. Va bene? | Fase 2 | **Decisa il 7/10:** Pietro preferisce un file unico per tipo per giorno; le sessioni restano descritte in `giorno.json` e in locale in `output/`. |
-| D5 | Dove pubblicare il pannello web? | Analisi | **Decisa l'8/10:** GitHub Pages cifrato (StatiCrypt) da una repo pubblica dal nome neutro (`taccuino`). APERTI 36, README «Il pannello cifrato». |
+| D4 | I pezzi orari spariscono dal corpus, restano solo nel manifesto del giorno. Va bene? | Fase 2 | **Decisa il 7/10:** un file unico per tipo per giorno; le sessioni restano descritte in `giorno.json` e in locale in `output/`. |
+| D5 | Dove pubblicare il pannello web? | Analisi | **Decisa l'8/10:** GitHub Pages cifrato (StatiCrypt), da una repo pubblica dal nome neutro (`taccuino`). Dettagli in `analisi-corpus.md`. |
