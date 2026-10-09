@@ -46,6 +46,7 @@ FAST = [
     ([sys.executable, str(HERE / "test_scarico.py")], "scarico veloce dal registratore"),
     ([sys.executable, str(HERE / "test_giorno.py")], "giornate unificate"),
     ([sys.executable, str(HERE / "test_text_correction.py")], "correzione del testo"),
+    ([sys.executable, str(HERE / "test_metriche.py")], "metriche e pannello"),
 ]
 
 

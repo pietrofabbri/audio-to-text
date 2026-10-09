@@ -850,6 +850,60 @@ def t_indice_elenca_i_giorni(tmp: Path) -> None:
         pc.LOCAL_CLONE = old
 
 
+
+def t_le_metriche_arrivano_sulla_repo(tmp: Path) -> None:
+    """Il push scrive `metriche/` per il pannello, senza nomi e senza testo.
+
+    Le metriche sono l'unica cosa che il pannello cifrato legge: se non
+    arrivano, il pannello resta vuoto senza che niente fallisca. E non
+    devono portare testo delle conversazioni, perche' la pagina finale le
+    incorpora tutte.
+    """
+    print("  le metriche aggregate arrivano sulla repo")
+    out, clone = _fake_env(tmp)
+    require(_publish(out, clone) == 0, "push non riuscito")
+    finiti = _remote_files(tmp)
+    require(any(f.endswith("metriche/2026-10-02.json") for f in finiti),
+            f"mancano le metriche: {sorted(finiti)}")
+    require(any(f == ".github/workflows/pannello.yml" for f in finiti),
+            f"manca il workflow del pannello: {sorted(finiti)}")
+    m = json.loads((clone / "metriche" / "2026-10-02.json").read_text(encoding="utf-8"))
+    require(m["giorno"] == "2026-10-02" and m["versione"] >= 1, f"intestazione: {m}")
+    testo = json.dumps(m, ensure_ascii=False)
+    seg = (clone / "giorni" / "2026-10-02" / "segments.jsonl").read_text(encoding="utf-8")
+    frase = json.loads(seg.splitlines()[0])["text"]
+    require(frase not in testo, "il testo di un segmento e' finito nelle metriche")
+    # Un secondo push senza cambi non riscrive le metriche.
+    require(pc._write_metriche(dry_run=True) == [], "metriche gia' identiche")
+
+
+
+def t_un_commit_fatto_altrove_non_blocca_il_push(tmp: Path) -> None:
+    """Il workflow del pannello committa sul remoto: il Mac deve seguirlo."""
+    print("  un commit fatto su GitHub non blocca il push dal Mac")
+    out, clone = _fake_env(tmp)
+    require(_publish(out, clone) == 0, "prima pubblicazione")
+    altro = tmp / "altro"
+    _git(tmp, "clone", "-q", str(tmp / "remoto.git"), str(altro))
+    _git(altro, "config", "user.email", "x@localhost")
+    _git(altro, "config", "user.name", "x")
+    (altro / ".github").mkdir(exist_ok=True)
+    (altro / ".github" / "w.yml").write_text("on: push\n", encoding="utf-8")
+    _git(altro, "add", "-A")
+    _git(altro, "commit", "-q", "-m", "workflow")
+    _git(altro, "push", "-q", "origin", "main")
+    # Una giornata cambia sul Mac.
+    seg = out / "2026-10-02_21-44-16" / "segments.jsonl"
+    righe = [json.loads(r) for r in seg.read_text(encoding="utf-8").splitlines()]
+    righe[1]["text"] = "Testo cambiato dopo il commit remoto."
+    seg.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in righe) + "\n",
+                   encoding="utf-8")
+    require(_publish(out, clone) == 0, "il secondo push deve riuscire")
+    finiti = _remote_files(tmp)
+    require(any(f.endswith(".github/w.yml") for f in finiti),
+            f"il file del workflow resta sul remoto: {sorted(finiti)}")
+
+
 def main() -> int:
     tests = [
         t_indice_elenca_i_giorni,
@@ -869,6 +923,8 @@ def main() -> int:
         t_reindex_toglie_la_sessione_senza_cartella,
         t_reindex_non_pota_se_output_e_vuoto,
         t_status_dichiara_anche_le_sessioni_orfane,
+        t_le_metriche_arrivano_sulla_repo,
+        t_un_commit_fatto_altrove_non_blocca_il_push,
     ]
     failed = 0
     for fn in tests:

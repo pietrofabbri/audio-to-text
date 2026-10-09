@@ -440,6 +440,101 @@ def _hms(seconds) -> str:
     return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m {s:02d}s"
 
 
+METRICHE = "metriche"
+
+
+def _write_metriche(dry_run: bool = False) -> list[Path]:
+    """Le metriche aggregate di ogni giornata, per il pannello cifrato.
+
+    Si calcolano dalle giornate **della repo** (come l'indice), cosi' le
+    metriche descrivono esattamente quello che e' pubblicato. Un file
+    cambia solo se cambiano i numeri; il push di `metriche/` fa partire
+    il workflow che costruisce e cifra il pannello (vedi
+    `pannello/pannello.yml` e il documento `analisi-corpus.md`).
+    """
+    from core.metriche import calcola_giorno
+
+    giorni = LOCAL_CLONE / GIORNI
+    dest = LOCAL_CLONE / METRICHE
+    cambiati: list[Path] = []
+    if not giorni.is_dir():
+        return cambiati
+    presenti = set()
+    for d in sorted(giorni.iterdir()):
+        if not (d / "giorno.json").exists():
+            continue
+        presenti.add(f"{d.name}.json")
+        testo = json.dumps(_scrub(calcola_giorno(d)), ensure_ascii=False,
+                           indent=1) + "\n"
+        target = dest / f"{d.name}.json"
+        if _gia_uguale(target, testo):
+            continue
+        if not dry_run:
+            dest.mkdir(parents=True, exist_ok=True)
+            target.write_text(testo, encoding="utf-8")
+        cambiati.append(target)
+    if dest.is_dir():
+        for vecchio in dest.glob("????-??-??.json"):
+            if vecchio.name not in presenti:
+                if not dry_run:
+                    vecchio.unlink()
+                cambiati.append(vecchio)
+    return cambiati
+
+
+WORKFLOW_PANNELLO = Path(__file__).resolve().parent / "pannello" / "pannello.yml"
+WORKFLOW_DEST = Path(".github") / "workflows" / "pannello.yml"
+
+
+def _write_workflow(dry_run: bool = False) -> list[Path]:
+    """Installa nel corpus il workflow che costruisce il pannello cifrato.
+
+    La copia ufficiale sta in questa repo (`pannello/pannello.yml`) e la
+    porta il Mac, come ogni altro file del corpus: cosi' la repo del
+    corpus riceve commit da una parte sola e il workflow e' versionato
+    accanto al codice che lancia.
+    """
+    if not WORKFLOW_PANNELLO.exists():
+        return []
+    testo = WORKFLOW_PANNELLO.read_text(encoding="utf-8")
+    target = LOCAL_CLONE / WORKFLOW_DEST
+    if _gia_uguale(target, testo):
+        return []
+    if not dry_run:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(testo, encoding="utf-8")
+    return [target]
+
+
+def _allinea_al_remoto() -> None:
+    """Porta il clone allo stato del remoto prima di scrivere.
+
+    Dall'8 ottobre la repo del corpus riceve commit anche da fuori del
+    Mac: il workflow del pannello (`.github/workflows/pannello.yml`) e'
+    stato aggiunto da GitHub. Senza questo passo il primo push successivo
+    verrebbe rifiutato come non fast-forward, e il giro notturno non
+    pubblicherebbe piu' niente.
+
+    Solo fast-forward: il clone del Mac non ha commit suoi non pubblicati
+    (ogni push committa e spinge subito). Se un giorno li avesse, non si
+    fonde niente a caso: si avvisa e il push dira' perche' fallisce.
+    """
+    code, out = _run(["git", "fetch", "-q", "origin"], cwd=LOCAL_CLONE)
+    if code != 0:
+        logger.warning("fetch del corpus non riuscito, proseguo: %s", out[-200:])
+        return
+    code, ramo = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=LOCAL_CLONE)
+    code, _ = _run(["git", "rev-parse", "--verify", "-q", f"origin/{ramo}"],
+                   cwd=LOCAL_CLONE)
+    if code != 0:
+        return  # il remoto non ha ancora il ramo: primo push
+    code, out = _run(["git", "merge", "--ff-only", "-q", f"origin/{ramo}"],
+                     cwd=LOCAL_CLONE)
+    if code != 0:
+        logger.warning("Il clone del corpus non si allinea al remoto con un "
+                       "fast-forward: %s", out[-300:])
+
+
 def _write_gitignore() -> Path:
     """Scrive il `.gitignore` nel clone, se non c'e' gia' quello giusto.
 
@@ -547,6 +642,8 @@ def cmd_push(args) -> int:
             "Chi legge la repo potra' dare un nome alle voci."
         )
 
+    if not args.dry_run:
+        _allinea_al_remoto()
     _, before_sha = _run(["git", "rev-parse", "HEAD"], cwd=LOCAL_CLONE)
 
     # La struttura di prima (una cartella per file): prima di toglierla si
@@ -570,7 +667,17 @@ def cmd_push(args) -> int:
             logger.info("%s %s: %d registrazioni, %d file cambiati",
                         verb, g.giorno, len(g.sessioni), len(cambiati))
 
-    if not pushed and not da_migrare:
+    # Le metriche si calcolano anche quando nessuna giornata e' cambiata:
+    # alla prima pubblicazione dopo l'aggiornamento mancano del tutto, e
+    # un cambio del calcolo deve arrivare al pannello senza aspettare un
+    # giorno nuovo.
+    metriche = _write_metriche(dry_run=args.dry_run)
+    metriche += _write_workflow(dry_run=args.dry_run)
+    if metriche:
+        logger.info("%s metriche e pannello: %d file", "Aggiornerei" if args.dry_run
+                    else "Aggiornati", len(metriche))
+
+    if not pushed and not da_migrare and not metriche:
         # L'indice e la matrice delle voci sono derivati dalle giornate
         # gia' presenti sulla repo: con nessuna giornata cambiata
         # riscriverebbero lo stesso contenuto, e in un push vero
@@ -611,6 +718,8 @@ def cmd_push(args) -> int:
                       f"({stamp})")
     elif pushed:
         commit_msg = f"corpus: {len(pushed)} giorni aggiornati ({stamp})"
+    elif metriche:
+        commit_msg = f"corpus: metriche aggiornate ({stamp})"
     else:
         commit_msg = f"corpus: indice ({stamp})"
     code, out = _run(["git", "commit", "-m", commit_msg], cwd=LOCAL_CLONE)

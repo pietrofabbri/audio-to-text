@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Taccuino</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f5f1; --surface: #fcfcfb; --line: #e4e2dc; --grid: #ecebe6;
+  --text: #1b1b19; --text-2: #55534e; --muted: #8a8780;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s1-soft: #cde2fb;
+  --sil: #d9d7d0; --up: #1c5cab; --down: #b3412f;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --line: #2e2e2b; --grid: #262624;
+    --text: #f4f3ee; --text-2: #c3c2b7; --muted: #8f8d85;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s1-soft: #1c3557;
+    --sil: #3a3a37; --up: #86b6ef; --down: #e88a77;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface: #1a1a19; --line: #2e2e2b; --grid: #262624;
+  --text: #f4f3ee; --text-2: #c3c2b7; --muted: #8f8d85;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s1-soft: #1c3557;
+  --sil: #3a3a37; --up: #86b6ef; --down: #e88a77;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 64px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+  justify-content: space-between; margin-bottom: 8px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+h2 { font-size: 17px; margin: 0 0 4px; }
+h3 { font-size: 13px; margin: 0 0 8px; color: var(--text-2); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; }
+.sub { color: var(--text-2); font-size: 13px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin: 12px 0 20px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; background: var(--surface); flex-wrap: wrap; }
+.seg button { border: 0; background: none; color: var(--text-2); padding: 6px 11px;
+  font: inherit; font-size: 13px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
+.seg button:disabled { color: var(--muted); cursor: not-allowed; opacity: .55; }
+select { font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+section { background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+.sec-head { display: flex; justify-content: space-between; gap: 8px;
+  align-items: baseline; flex-wrap: wrap; margin-bottom: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.tile .k { font-size: 12px; color: var(--text-2); }
+.tile .v.testo { font-size: 16px; line-height: 1.3; padding: 4px 0; }
+.tile .v { font-size: 24px; font-weight: 650; letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums; }
+.tile .d { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tile .d.up, .tile .d.down { color: var(--text-2); }
+.tile.off .v { color: var(--muted); font-size: 15px; font-weight: 500; padding: 6px 0; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px;
+  color: var(--text-2); margin: 4px 0 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 5px; vertical-align: -1px; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--text-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.limits { font-size: 13px; color: var(--text-2); margin: 0; padding-left: 18px; }
+.limits li { margin: 2px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13px;
+  font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--grid); }
+th { color: var(--text-2); font-weight: 600; }
+td.n, th.n { text-align: right; }
+.insuff { padding: 28px 8px; text-align: center; color: var(--text-2); }
+#tip { position: fixed; pointer-events: none; background: var(--text);
+  color: var(--surface); font-size: 12px; padding: 5px 8px; border-radius: 6px;
+  opacity: 0; transition: opacity .08s; z-index: 9; max-width: 260px; }
+.hit { fill: transparent; }
+.theme { margin-left: auto; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Taccuino</h1>
+      <div class="sub" id="aggiornato"></div>
+    </div>
+    <div class="seg theme" role="group" aria-label="Tema">
+      <button data-theme-set="auto" aria-pressed="true">Auto</button>
+      <button data-theme-set="light" aria-pressed="false">Chiaro</button>
+      <button data-theme-set="dark" aria-pressed="false">Scuro</button>
+    </div>
+  </header>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Scala" id="scale"></div>
+    <select id="giorno" aria-label="Giorno"></select>
+  </div>
+
+  <div id="contenuto"></div>
+</main>
+<div id="tip" role="tooltip"></div>
+
+<script id="dati" type="application/json">__DATI__</script>
+<script>
+(function () {
+"use strict";
+var DATI = JSON.parse(document.getElementById("dati").textContent);
+var GIORNI = DATI.giorni.slice().sort(function (a, b) { return a.giorno < b.giorno ? -1 : 1; });
+var VALIDI = GIORNI.filter(function (g) { return g.valido; });
+var SOGLIE = DATI.soglie;
+
+// ------------------------------------------------------------ utilità
+function el(tag, attrs, html) {
+  var e = document.createElement(tag);
+  for (var k in (attrs || {})) e.setAttribute(k, attrs[k]);
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
+  return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]; }); }
+function num(v, d) {
+  if (v == null || isNaN(v)) return "—";
+  return Number(v).toLocaleString("it-IT", {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0});
+}
+function pct(v) { return v == null ? "—" : num(100 * v, 0) + "%"; }
+function median(a) {
+  a = a.filter(function (x) { return x != null && !isNaN(x); }).sort(function (x, y) { return x - y; });
+  if (!a.length) return null;
+  var m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+function get(o, path) {
+  return path.split(".").reduce(function (x, k) { return x == null ? null : x[k]; }, o);
+}
+function hm(min) {
+  if (min == null) return "—";
+  var h = Math.floor(min / 60), m = Math.round(min % 60);
+  if (m === 60) { h++; m = 0; }
+  return h ? h + "h " + (m < 10 ? "0" : "") + m + "m" : m + "m";
+}
+function nomeVoce(v) { return v.nome || v.id; }
+var GSETT = ["", "lun", "mar", "mer", "gio", "ven", "sab", "dom"];
+function etichettaGiorno(g) {
+  var p = g.giorno.split("-");
+  return GSETT[g.giorno_settimana] + " " + Number(p[2]) + "/" + Number(p[1]);
+}
+
+var tip = document.getElementById("tip");
+function hover(node, text) {
+  node.addEventListener("pointermove", function (ev) {
+    tip.innerHTML = text; tip.style.opacity = 1;
+    var x = Math.min(ev.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = x + "px"; tip.style.top = (ev.clientY + 14) + "px";
+  });
+  node.addEventListener("pointerleave", function () { tip.style.opacity = 0; });
+}
+var NS = "http://www.w3.org/2000/svg";
+function s(tag, attrs, parent) {
+  var e = document.createElementNS(NS, tag);
+  for (var k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// ------------------------------------------------------------ scale
+var SCALE = [
+  {id: "giorno", nome: "Giorno"},
+  {id: "settimana", nome: "Settimana", minimo: SOGLIE.settimana, unita: "giorni validi"},
+  {id: "mese", nome: "Mese", minimo: SOGLIE.mese, unita: "giorni validi"},
+  {id: "stagione", nome: "Stagione", minimo: SOGLIE.stagione, unita: "settimane con dati"},
+  {id: "anno", nome: "Anno", minimo: SOGLIE.anno, unita: "mesi con dati"},
+  {id: "totale", nome: "Totale"}
+];
+function settimaneConDati() {
+  var set = {};
+  GIORNI.forEach(function (g) {
+    var d = new Date(g.giorno + "T12:00:00"), dd = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - dd); set[d.toISOString().slice(0, 10)] = 1;
+  });
+  return Object.keys(set).length;
+}
+function mesiConDati() {
+  var set = {}; GIORNI.forEach(function (g) { set[g.giorno.slice(0, 7)] = 1; });
+  return Object.keys(set).length;
+}
+function disponibili(sc) {
+  if (sc.id === "giorno" || sc.id === "totale") return {ok: true};
+  var n = sc.id === "stagione" ? settimaneConDati() : sc.id === "anno" ? mesiConDati() : VALIDI.length;
+  return {ok: n >= sc.minimo, n: n};
+}
+
+var stato = {scala: "giorno", giorno: GIORNI.length ? GIORNI[GIORNI.length - 1].giorno : null};
+
+// ------------------------------------------------------------ aggregazione
+// Per le scale oltre il giorno: somme per i tempi, mediane dei giorni per i tassi.
+function aggrega(giorni) {
+  var tot = function (p) { return giorni.reduce(function (a, g) { return a + (get(g, p) || 0); }, 0); };
+  var med = function (p) { return median(giorni.map(function (g) { return get(g, p); })); };
+  var voci = {};
+  giorni.forEach(function (g) { g.voci.forEach(function (v) {
+    var x = voci[v.id] || (voci[v.id] = {id: v.id, nome: v.nome, minuti: 0, parole: 0, turni: 0, giorni: 0});
+    x.minuti += v.minuti; x.parole += v.parole; x.turni += v.turni; x.giorni += 1;
+    if (v.nome) x.nome = v.nome;
+  }); });
+  var ore = {};
+  giorni.forEach(function (g) { g.ore.forEach(function (o) {
+    var x = ore[o.ora] || (ore[o.ora] = {ora: o.ora, giorni: 0});
+    x.giorni += 1;
+    ["registrato_min","parlato_min","parlato_pietro_min","silenzio_min","solo_pietro_min","con_altri_min","pietro_parole"].forEach(function (k) {
+      x[k] = (x[k] || 0) + (o[k] || 0);
+    });
+    ["pietro_velocita_sill_sec","pietro_f0_media_hz","pietro_f0_variabilita_hz","pietro_domande_quota"].forEach(function (k) {
+      (x["_" + k] = x["_" + k] || []).push(o[k]);
+    });
+  }); });
+  var oreArr = Object.keys(ore).map(function (k) {
+    var x = ore[k];
+    ["pietro_velocita_sill_sec","pietro_f0_media_hz","pietro_f0_variabilita_hz","pietro_domande_quota"].forEach(function (q) {
+      x[q] = median(x["_" + q]); delete x["_" + q];
+    });
+    x.pietro_parole_per_ora_reg = x.registrato_min >= 5 ? 60 * x.pietro_parole / x.registrato_min : null;
+    return x;
+  }).sort(function (a, b) { return a.ora - b.ora; });
+  return {
+    aggregato: true, n: giorni.length,
+    copertura: {registrato_ore: tot("copertura.registrato_ore"), parlato_ore: tot("copertura.parlato_ore"),
+      parlato_quota: med("copertura.parlato_quota")},
+    silenzio: {silenzio_min: tot("silenzio.silenzio_min"), solo_pietro_min: tot("silenzio.solo_pietro_min"),
+      con_altri_min: tot("silenzio.con_altri_min")},
+    voci: Object.keys(voci).map(function (k) { return voci[k]; }).sort(function (a, b) { return b.minuti - a.minuti; }),
+    relazioni: {quota_parola_pietro: med("relazioni.quota_parola_pietro"),
+      conversazioni: tot("relazioni.conversazioni"),
+      apre_pietro_quota: med("relazioni.apre_pietro_quota"),
+      chiude_pietro_quota: med("relazioni.chiude_pietro_quota"),
+      cambi_turno_per_ora_parlato: med("relazioni.cambi_turno_per_ora_parlato")},
+    pietro: {minuti: tot("pietro.minuti"),
+      prosodia: {velocita_sill_sec: med("pietro.prosodia.velocita_sill_sec"),
+        f0_media_hz: med("pietro.prosodia.f0_media_hz"),
+        f0_variabilita_hz: med("pietro.prosodia.f0_variabilita_hz"),
+        intensita_db: med("pietro.prosodia.intensita_db"),
+        pause_quota: med("pietro.prosodia.pause_quota")},
+      parole: {parole: tot("pietro.parole.parole"), mattr: med("pietro.parole.mattr"),
+        domande_quota: med("pietro.parole.domande_quota"),
+        intercalari_per_1000: med("pietro.parole.intercalari_per_1000"),
+        io_su_io_noi: med("pietro.parole.io_su_io_noi"),
+        negazioni_per_1000: med("pietro.parole.negazioni_per_1000")}},
+    qualita: {ok_quota: med("qualita.ok_quota"), asr_prob_media: med("qualita.asr_prob_media"),
+      parole_incerte_quota: med("qualita.parole_incerte_quota"),
+      testo_corretto: giorni.every(function (g) { return g.qualita.testo_corretto; })},
+    ore: oreArr
+  };
+}
+
+// ------------------------------------------------------------ disegno
+function tile(k, v, rif, opts) {
+  opts = opts || {};
+  var t = el("div", {class: "tile" + (opts.off ? " off" : "")});
+  t.appendChild(el("div", {class: "k"}, esc(k)));
+  t.appendChild(el("div", {class: "v" + (opts.testo ? " testo" : "")}, v));
+  if (opts.nota) t.appendChild(el("div", {class: "d"}, esc(opts.nota)));
+  else if (rif && rif.valore != null && rif.mediana != null && rif.n >= 2) {
+    var diff = rif.valore - rif.mediana, rel = rif.mediana ? diff / Math.abs(rif.mediana) : 0;
+    var cls = Math.abs(rel) < 0.05 ? "" : (diff > 0 ? "up" : "down");
+    var freccia = cls === "up" ? "▲ " : cls === "down" ? "▼ " : "≈ ";
+    t.appendChild(el("div", {class: "d " + cls},
+      freccia + "mediana " + rif.fmt(rif.mediana) + " (" + rif.n + " gg)"));
+  } else t.appendChild(el("div", {class: "d"}, "mediana: servono più giorni"));
+  return t;
+}
+function riferimento(path, valore, fmt) {
+  var vals = VALIDI.map(function (g) { return get(g, path); });
+  return {valore: valore, mediana: median(vals), n: vals.filter(function (x) { return x != null; }).length, fmt: fmt};
+}
+
+function sezione(titolo, sottotitolo) {
+  var sec = el("section");
+  var h = el("div", {class: "sec-head"});
+  h.appendChild(el("h2", null, esc(titolo)));
+  if (sottotitolo) h.appendChild(el("div", {class: "sub"}, sottotitolo));
+  sec.appendChild(h);
+  return sec;
+}
+
+// Barre impilate per ora: silenzio, solo Pietro, con altri.
+// Larghezza utile di una sezione: i grafici si disegnano alla misura vera,
+// cosi' su telefono il testo resta leggibile invece di rimpicciolirsi.
+function larghezza() {
+  var w = document.getElementById("contenuto").clientWidth - 38;
+  return Math.max(300, Math.min(1040, w));
+}
+function graficoOre(ore, scalaMinuti) {
+  var W = larghezza(), H = 190, L = 34, R = 8, T = 10, B = 24;
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img",
+    "aria-label": "Minuti registrati per ora: silenzio, Pietro da solo, con altri"});
+  var max = scalaMinuti || 60;
+  var y = function (v) { return T + (H - T - B) * (1 - v / max); };
+  [0, max / 2, max].forEach(function (v) {
+    s("line", {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--grid)"}, svg);
+    s("text", {x: L - 6, y: y(v) + 4, "text-anchor": "end"}, svg).textContent = Math.round(v) + "′";
+  });
+  var bw = (W - L - R) / 24;
+  var perOra = {}; ore.forEach(function (o) { perOra[o.ora] = o; });
+  for (var h = 0; h < 24; h++) {
+    var x = L + h * bw;
+    if (h % (W < 520 ? 6 : 3) === 0) s("text", {x: x + bw / 2, y: H - 6, "text-anchor": "middle"}, svg).textContent = h;
+    var o = perOra[h]; if (!o) continue;
+    var acc = 0;
+    [["silenzio_min", "var(--sil)"], ["solo_pietro_min", "var(--s1)"], ["con_altri_min", "var(--s2)"]].forEach(function (p) {
+      var v = o[p[0]] || 0; if (v <= 0) return;
+      var y0 = y(acc + v), hh = y(acc) - y(acc + v) - (acc > 0 ? 2 : 0);
+      if (hh > 0) s("rect", {x: x + 2, y: y0, width: bw - 4, height: hh, rx: 2, fill: p[1]}, svg);
+      acc += v;
+    });
+    var hit = s("rect", {x: x, y: T, width: bw, height: H - T - B, class: "hit"}, svg);
+    hover(hit, "<b>" + h + ":00–" + (h + 1) + ":00</b><br>registrato " + hm(o.registrato_min) +
+      "<br>silenzio " + hm(o.silenzio_min || 0) + "<br>Pietro da solo " + hm(o.solo_pietro_min || 0) +
+      "<br>con altri " + hm(o.con_altri_min || 0) + (o.giorni ? "<br><span style='opacity:.7'>somma di " + o.giorni + " giorni</span>" : ""));
+  }
+  return svg;
+}
+
+// Linea su 24 ore per un indicatore (una serie, un asse).
+function lineaOre(ore, campo, etichetta, fmt) {
+  var W = 340, H = 140, L = 38, R = 8, T = 12, B = 22;
+  var pts = ore.filter(function (o) { return o[campo] != null; });
+  var wrap = el("div");
+  wrap.appendChild(el("h3", null, esc(etichetta)));
+  if (pts.length < 2) { wrap.appendChild(el("div", {class: "note"}, "Troppo poche ore con dati.")); return wrap; }
+  var vals = pts.map(function (o) { return o[campo]; });
+  var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  var pad = (hi - lo) * 0.15 || Math.abs(hi) * 0.1 || 1; lo -= pad; hi += pad;
+  var x = function (h) { return L + (W - L - R) * (h + 0.5) / 24; };
+  var y = function (v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); };
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": etichetta + " per ora"});
+  [lo + pad, hi - pad].forEach(function (v) {
+    s("line", {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--grid)"}, svg);
+    s("text", {x: L - 6, y: y(v) + 4, "text-anchor": "end"}, svg).textContent = fmt(v);
+  });
+  [0, 6, 12, 18].forEach(function (h) {
+    s("text", {x: x(h), y: H - 5, "text-anchor": "middle"}, svg).textContent = h;
+  });
+  var d = "", prev = null;
+  pts.forEach(function (o) {
+    d += (prev == null || o.ora - prev > 1 ? "M" : "L") + x(o.ora).toFixed(1) + " " + y(o[campo]).toFixed(1) + " ";
+    prev = o.ora;
+  });
+  s("path", {d: d, fill: "none", stroke: "var(--s1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}, svg);
+  pts.forEach(function (o) {
+    s("circle", {cx: x(o.ora), cy: y(o[campo]), r: 4, fill: "var(--s1)", stroke: "var(--surface)", "stroke-width": 2}, svg);
+    var hit = s("circle", {cx: x(o.ora), cy: y(o[campo]), r: 12, class: "hit"}, svg);
+    hover(hit, "<b>" + o.ora + ":00</b><br>" + esc(etichetta) + ": " + fmt(o[campo]));
+  });
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// Barre orizzontali: minuti per voce.
+function barreVoci(voci) {
+  var mostra = voci.filter(function (v) { return v.minuti >= 1; }).slice(0, 10);
+  var resto = voci.slice(mostra.length).reduce(function (a, v) { return a + v.minuti; }, 0);
+  if (resto >= 1) mostra.push({id: "altre", nome: "altre " + (voci.length - mostra.length) + " voci", minuti: resto, altro: true});
+  var W = larghezza(), row = 26, L = Math.min(190, Math.round(W * 0.34)), R = 56, H = mostra.length * row + 6;
+  var max = Math.max.apply(null, mostra.map(function (v) { return v.minuti; })) || 1;
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Minuti di parlato per voce"});
+  mostra.forEach(function (v, i) {
+    var yy = i * row + 4, w = Math.max(2, (W - L - R) * v.minuti / max);
+    var t = s("text", {x: L - 8, y: yy + 15, "text-anchor": "end"}, svg);
+    t.textContent = v.altro ? v.nome : (v.id === "UNKNOWN" ? "non attribuito" : nomeVoce(v));
+    var fill = v.id === DATI.soggetto ? "var(--s1)" : (v.altro || v.id === "UNKNOWN" ? "var(--sil)" : "var(--s1-soft)");
+    s("rect", {x: L, y: yy + 3, width: w, height: row - 10, rx: 3, fill: fill}, svg);
+    s("text", {x: L + w + 6, y: yy + 15}, svg).textContent = hm(v.minuti);
+    var hit = s("rect", {x: 0, y: yy, width: W, height: row, class: "hit"}, svg);
+    hover(hit, "<b>" + esc(t.textContent) + "</b><br>" + hm(v.minuti) +
+      (v.parole ? "<br>" + num(v.parole) + " parole" : "") + (v.turni ? "<br>" + num(v.turni) + " turni" : "") +
+      (v.turno_medio_sec ? "<br>turno medio " + num(v.turno_medio_sec) + " s" : "") +
+      (v.giorni ? "<br>presente in " + v.giorni + " giorni" : ""));
+  });
+  return svg;
+}
+
+// Striscia della giornata: le ore registrate su 24 ore (solo scala giorno).
+function striscia(g) {
+  var W = larghezza(), H = 34, L = 0, R = 0;
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + (H + 16), role: "img", "aria-label": "Ore registrate nella giornata"});
+  s("rect", {x: L, y: 4, width: W - L - R, height: H - 8, rx: 4, fill: "var(--grid)"}, svg);
+  var x = function (sec) { return L + (W - L - R) * Math.min(sec, 86400) / 86400; };
+  g.copertura.intervalli.forEach(function (iv) {
+    var r = s("rect", {x: x(iv[0]), y: 4, width: Math.max(2, x(iv[1]) - x(iv[0]) - 1), height: H - 8, rx: 2, fill: "var(--s1)"}, svg);
+    var hh = function (sec) { var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60); return h + ":" + (m < 10 ? "0" : "") + m; };
+    hover(r, "registrato " + hh(iv[0]) + "–" + hh(iv[1]));
+  });
+  [0, 6, 12, 18, 24].forEach(function (h) {
+    s("text", {x: Math.min(Math.max(x(h * 3600), 6), W - 8), y: H + 12, "text-anchor": "middle"}, svg).textContent = h;
+  });
+  return svg;
+}
+
+function legenda(voci) {
+  var l = el("div", {class: "legend"});
+  voci.forEach(function (v) { l.appendChild(el("span", null, "<i style='background:" + v[1] + "'></i>" + esc(v[0]))); });
+  return l;
+}
+
+// ------------------------------------------------------------ pagina
+function disegna() {
+  var root = document.getElementById("contenuto");
+  root.innerHTML = "";
+  var sel = document.getElementById("giorno");
+  sel.style.display = stato.scala === "giorno" ? "" : "none";
+  document.querySelectorAll("#scale button").forEach(function (b) {
+    b.setAttribute("aria-pressed", String(b.dataset.scala === stato.scala));
+  });
+
+  if (!GIORNI.length) { root.appendChild(el("section", {class: "insuff"}, "Nessun giorno nel corpus.")); return; }
+
+  var sc = SCALE.filter(function (x) { return x.id === stato.scala; })[0];
+  var disp = disponibili(sc);
+  if (!disp.ok) {
+    var sec0 = sezione(sc.nome);
+    sec0.appendChild(el("div", {class: "insuff"},
+      "Dati insufficienti per la scala «" + esc(sc.nome.toLowerCase()) + "»: servono almeno " +
+      sc.minimo + " " + sc.unita + ", ce ne sono " + disp.n + "."));
+    root.appendChild(sec0); return;
+  }
+
+  var g, giornaliero = stato.scala === "giorno";
+  if (giornaliero) g = GIORNI.filter(function (x) { return x.giorno === stato.giorno; })[0];
+  else g = aggrega(VALIDI.length ? VALIDI : GIORNI);
+  var R = function (path, valore, fmt) { return giornaliero ? riferimento(path, valore, fmt) : null; };
+
+  // --- Il polso
+  var titolo = giornaliero ? "Il polso — " + etichettaGiorno(g) : "Il polso — " + sc.nome.toLowerCase() + " (" + g.n + " giorni)";
+  var polso = sezione(titolo, giornaliero ? (g.valido ? "giorno valido" : "copertura sotto " + SOGLIE.ore_valido + " h: escluso dai confronti")
+    : "tempi sommati, tassi come mediana dei giorni");
+  var tiles = el("div", {class: "tiles"});
+  var pa = g.pietro.parole, pr = g.pietro.prosodia, rel = g.relazioni;
+  tiles.appendChild(tile("Ore registrate", num(g.copertura.registrato_ore, 1) + " h",
+    R("copertura.registrato_ore", g.copertura.registrato_ore, function (v) { return num(v, 1) + " h"; })));
+  tiles.appendChild(tile("Parlato", pct(g.copertura.parlato_quota),
+    R("copertura.parlato_quota", g.copertura.parlato_quota, pct)));
+  tiles.appendChild(tile("Hai parlato", hm(g.pietro.minuti),
+    R("pietro.minuti", g.pietro.minuti, hm)));
+  tiles.appendChild(tile("Tua quota di parola", pct(rel.quota_parola_pietro),
+    R("relazioni.quota_parola_pietro", rel.quota_parola_pietro, pct)));
+  var persone = g.voci.filter(function (v) { return v.id !== DATI.soggetto && v.id !== "UNKNOWN" && v.minuti >= 1; });
+  tiles.appendChild(tile("Con chi", persone.slice(0, 2).map(nomeVoce).map(esc).join(", ") || "—",
+    null, {testo: true, nota: persone.length + " voci sopra il minuto"}));
+  tiles.appendChild(tile("Velocità dell'eloquio", num(pr.velocita_sill_sec, 2) + " sill/s",
+    R("pietro.prosodia.velocita_sill_sec", pr.velocita_sill_sec, function (v) { return num(v, 2); })));
+  tiles.appendChild(tile("Variabilità del tono", num(pr.f0_variabilita_hz, 0) + " Hz",
+    R("pietro.prosodia.f0_variabilita_hz", pr.f0_variabilita_hz, function (v) { return num(v, 0) + " Hz"; })));
+  tiles.appendChild(tile("Domande", pct(pa.domande_quota),
+    R("pietro.parole.domande_quota", pa.domande_quota, pct)));
+  tiles.appendChild(tile("Sonno", "Helio non collegato", null, {off: true, nota: "direttrice 5"}));
+  tiles.appendChild(tile("Voto serale", "da raccogliere", null, {off: true, nota: "direttrice 17"}));
+  tiles.appendChild(tile("Temi principali", "in attesa", null, {off: true, nota: "serve il modello linguistico"}));
+  tiles.appendChild(tile("Risate", "non misurate", null, {off: true, nota: "serve un classificatore audio"}));
+  polso.appendChild(tiles);
+  root.appendChild(polso);
+
+  // --- La giornata nel tempo
+  var tempo = sezione("La giornata nel tempo", giornaliero
+    ? "dalle " + g.copertura.prima + " alle " + g.copertura.ultima + " · " + g.copertura.blocchi + (g.copertura.blocchi === 1 ? " blocco continuo" : " blocchi continui")
+    : "giornata tipo: minuti sommati sui giorni");
+  if (giornaliero) tempo.appendChild(striscia(g));
+  tempo.appendChild(legenda([["silenzio", "var(--sil)"], ["Pietro da solo", "var(--s1)"], ["con altri", "var(--s2)"]]));
+  var maxOra = Math.max.apply(null, g.ore.map(function (o) { return o.registrato_min || 0; }).concat([giornaliero ? 60 : 1]));
+  tempo.appendChild(graficoOre(g.ore, giornaliero ? 60 : Math.ceil(maxOra / 30) * 30));
+  var silTot = g.silenzio.silenzio_min + g.silenzio.solo_pietro_min + g.silenzio.con_altri_min;
+  tempo.appendChild(el("div", {class: "note"},
+    "Silenzio " + hm(g.silenzio.silenzio_min) + " (" + pct(silTot ? g.silenzio.silenzio_min / silTot : null) + ") · " +
+    "Pietro da solo " + hm(g.silenzio.solo_pietro_min) + " · con altri " + hm(g.silenzio.con_altri_min) +
+    ". «Silenzio» qui vuol dire registrato senza parlato: comprende musica e TV, che non sono ancora riconosciute."));
+  root.appendChild(tempo);
+
+  // --- Persone
+  var pers = sezione("Persone", "minuti di parlato per voce");
+  pers.appendChild(barreVoci(g.voci));
+  var t = el("div", {class: "tiles", style: "margin-top:12px"});
+  t.appendChild(tile("Conversazioni", num(rel.conversazioni), R("relazioni.conversazioni", rel.conversazioni, num)));
+  t.appendChild(tile("Le apri tu", pct(rel.apre_pietro_quota), R("relazioni.apre_pietro_quota", rel.apre_pietro_quota, pct)));
+  t.appendChild(tile("Le chiudi tu", pct(rel.chiude_pietro_quota), R("relazioni.chiude_pietro_quota", rel.chiude_pietro_quota, pct)));
+  t.appendChild(tile("Cambi di turno / ora", num(rel.cambi_turno_per_ora_parlato),
+    R("relazioni.cambi_turno_per_ora_parlato", rel.cambi_turno_per_ora_parlato, num)));
+  pers.appendChild(t);
+  pers.appendChild(el("div", {class: "note"}, "Una conversazione finisce dopo un minuto senza parlato. Delle altre persone si misurano solo tempi e turni."));
+  root.appendChild(pers);
+
+  // --- Come parli
+  var voce = sezione("Come parli", "solo la tua voce · " + (g.qualita.testo_corretto ? "testo corretto" : "testo non ancora corretto: le metriche sulle parole risentono degli errori di trascrizione"));
+  var t2 = el("div", {class: "tiles"});
+  t2.appendChild(tile("Tono medio", num(pr.f0_media_hz, 0) + " Hz", R("pietro.prosodia.f0_media_hz", pr.f0_media_hz, function (v) { return num(v, 0) + " Hz"; })));
+  t2.appendChild(tile("Pause nel parlato", pct(pr.pause_quota), R("pietro.prosodia.pause_quota", pr.pause_quota, pct)));
+  t2.appendChild(tile("Ricchezza lessicale", num(pa.mattr, 3), R("pietro.parole.mattr", pa.mattr, function (v) { return num(v, 3); }), giornaliero ? null : {nota: "MATTR, finestra 50 parole"}));
+  t2.appendChild(tile("Intercalari ogni 1000", num(pa.intercalari_per_1000, 1), R("pietro.parole.intercalari_per_1000", pa.intercalari_per_1000, function (v) { return num(v, 1); })));
+  t2.appendChild(tile("«Io» su io+noi", pct(pa.io_su_io_noi), R("pietro.parole.io_su_io_noi", pa.io_su_io_noi, pct)));
+  t2.appendChild(tile("Negazioni ogni 1000", num(pa.negazioni_per_1000, 1), R("pietro.parole.negazioni_per_1000", pa.negazioni_per_1000, function (v) { return num(v, 1); })));
+  voce.appendChild(t2);
+  if (giornaliero && pa.intercalari) {
+    var ic = Object.keys(pa.intercalari).map(function (k) { return "«" + esc(k) + "» " + pa.intercalari[k]; }).join(" · ");
+    voce.appendChild(el("div", {class: "note"}, "Intercalari più frequenti: " + ic));
+  }
+  var g2 = el("div", {class: "grid2", style: "margin-top:14px"});
+  g2.appendChild(lineaOre(g.ore, "pietro_velocita_sill_sec", "Velocità per ora (sill/s)", function (v) { return num(v, 1); }));
+  g2.appendChild(lineaOre(g.ore, "pietro_f0_variabilita_hz", "Variabilità del tono per ora (Hz)", function (v) { return num(v, 0); }));
+  g2.appendChild(lineaOre(g.ore, "pietro_parole_per_ora_reg", "Tue parole per ora registrata", function (v) { return num(v, 0); }));
+  g2.appendChild(lineaOre(g.ore, "pietro_domande_quota", "Quota di domande per ora", pct));
+  voce.appendChild(g2);
+  root.appendChild(voce);
+
+  // --- Qualità e limiti
+  var q = sezione("Qualità del dato e limiti");
+  var t3 = el("div", {class: "tiles"});
+  t3.appendChild(tile("Segmenti affidabili", pct(g.qualita.ok_quota), R("qualita.ok_quota", g.qualita.ok_quota, pct)));
+  t3.appendChild(tile("Confidenza ASR media", num(g.qualita.asr_prob_media, 2), R("qualita.asr_prob_media", g.qualita.asr_prob_media, function (v) { return num(v, 2); })));
+  t3.appendChild(tile("Parole incerte (p<0,5)", pct(g.qualita.parole_incerte_quota), R("qualita.parole_incerte_quota", g.qualita.parole_incerte_quota, pct)));
+  t3.appendChild(tile("Testo", g.qualita.testo_corretto ? "corretto" : "grezzo", null, {nota: "correzione con modello locale"}));
+  q.appendChild(t3);
+  var lim = el("ul", {class: "limits", style: "margin-top:12px"});
+  Object.keys(DATI.limiti).forEach(function (k) { lim.appendChild(el("li", null, "<b>" + esc(k.replace(/_/g, " ")) + "</b>: " + esc(DATI.limiti[k]))); });
+  lim.appendChild(el("li", null, "<b>giorni esclusi dai confronti</b> (sotto " + SOGLIE.ore_valido + " h): " +
+    (GIORNI.filter(function (x) { return !x.valido; }).map(etichettaGiorno).join(", ") || "nessuno")));
+  q.appendChild(lim);
+  root.appendChild(q);
+
+  // --- Tabella dei giorni
+  var tab = sezione("Tutti i giorni");
+  var tb = "<table><thead><tr><th>Giorno</th><th class='n'>Registrato</th><th class='n'>Parlato</th><th class='n'>Hai parlato</th><th class='n'>Tua quota</th><th class='n'>Velocità</th><th class='n'>Var. tono</th><th class='n'>Domande</th><th>Valido</th></tr></thead><tbody>";
+  GIORNI.slice().reverse().forEach(function (x) {
+    tb += "<tr><td>" + etichettaGiorno(x) + "</td><td class='n'>" + num(x.copertura.registrato_ore, 1) + " h</td><td class='n'>" +
+      pct(x.copertura.parlato_quota) + "</td><td class='n'>" + hm(x.pietro.minuti) + "</td><td class='n'>" +
+      pct(x.relazioni.quota_parola_pietro) + "</td><td class='n'>" + num(x.pietro.prosodia.velocita_sill_sec, 2) +
+      "</td><td class='n'>" + num(x.pietro.prosodia.f0_variabilita_hz, 0) + "</td><td class='n'>" +
+      pct(x.pietro.parole.domande_quota) + "</td><td>" + (x.valido ? "sì" : "no") + "</td></tr>";
+  });
+  tab.appendChild(el("div", {style: "overflow-x:auto"}, tb + "</tbody></table>"));
+  root.appendChild(tab);
+}
+
+// ------------------------------------------------------------ controlli
+var scaleBox = document.getElementById("scale");
+SCALE.forEach(function (sc) {
+  var d = disponibili(sc);
+  var b = el("button", {"data-scala": sc.id, "aria-pressed": "false",
+    title: d.ok ? sc.nome : "dati insufficienti: " + d.n + " su " + sc.minimo + " " + sc.unita}, esc(sc.nome));
+  b.addEventListener("click", function () { stato.scala = sc.id; disegna(); });
+  scaleBox.appendChild(b);
+});
+var sel = document.getElementById("giorno");
+GIORNI.slice().reverse().forEach(function (g) {
+  sel.appendChild(el("option", {value: g.giorno}, etichettaGiorno(g) + (g.valido ? "" : " (copertura bassa)")));
+});
+sel.value = stato.giorno;
+sel.addEventListener("change", function () { stato.giorno = sel.value; disegna(); });
+
+document.querySelectorAll("[data-theme-set]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var v = b.dataset.themeSet;
+    if (v === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", v);
+    document.querySelectorAll("[data-theme-set]").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+  });
+});
+document.getElementById("aggiornato").textContent =
+  GIORNI.length + " giorni · aggiornato " + DATI.generato;
+disegna();
+var ultimaW = window.innerWidth;
+window.addEventListener("resize", function () {
+  if (Math.abs(window.innerWidth - ultimaW) > 40) { ultimaW = window.innerWidth; disegna(); }
+});
+})();
+</script>
+</body>
+</html>

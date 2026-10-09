@@ -1,0 +1,129 @@
+# Pannello cifrato: costruisce la pagina dalle metriche del corpus, la cifra
+# con StatiCrypt e la pubblica su GitHub Pages da una repo pubblica separata.
+#
+# Va copiato nella repo PRIVATA del corpus come
+#   .github/workflows/pannello.yml
+# (la copia ufficiale sta in pietrofabbri/audio-to-text, pannello/pannello.yml).
+#
+# Segreti da impostare nella repo del corpus (Settings → Secrets and
+# variables → Actions):
+#   PANNELLO_PASSWORD  la frase d'accesso. Lunga, di parole casuali: e' l'unica
+#                      protezione, perche' la pagina cifrata e' pubblica.
+#   PANNELLO_TOKEN     token fine-grained con permesso "Contents: read and
+#                      write" SOLO sulla repo pubblica del pannello.
+#
+# Variabile (Settings → Secrets and variables → Actions → Variables):
+#   PANNELLO_REPO      la repo pubblica, es. pietrofabbri/taccuino
+#
+# Regole (documento di progetto analisi-corpus.md, sezione 8):
+# - il calcolo resta sul Mac: qui si disegna soltanto, da metriche/*.json;
+# - una pagina sola con i dati dentro: StatiCrypt cifra la pagina, non i
+#   file accanto;
+# - il ramo pubblicato si riscrive da zero a ogni build (un commit solo),
+#   cosi' nessuna versione vecchia resta nella storia;
+# - nomi, titoli e indirizzi neutri; robots.txt che chiede di non indicizzare.
+
+name: pannello
+
+on:
+  push:
+    branches: [main]
+    paths: ["metriche/**", ".github/workflows/pannello.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pannello
+  cancel-in-progress: true
+
+jobs:
+  costruisci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Metriche (solo la cartella metriche)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: metriche
+          path: corpus
+
+      - name: Codice del pannello (repo pubblica della pipeline)
+        uses: actions/checkout@v4
+        with:
+          repository: pietrofabbri/audio-to-text
+          sparse-checkout: |
+            core
+            pannello
+          path: pipeline
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Finche' i segreti non ci sono il workflow non fallisce: avvisa e non
+      # pubblica niente. Il corpus si pubblica ogni notte, e un errore rosso
+      # ogni notte prima della configurazione sarebbe solo rumore.
+      - name: Controlla i segreti
+        id: segreti
+        env:
+          PASS: ${{ secrets.PANNELLO_PASSWORD }}
+          TOKEN: ${{ secrets.PANNELLO_TOKEN }}
+          REPO: ${{ vars.PANNELLO_REPO }}
+        run: |
+          manca=""
+          test -n "$PASS"  || manca="$manca PANNELLO_PASSWORD"
+          test -n "$TOKEN" || manca="$manca PANNELLO_TOKEN"
+          test -n "$REPO"  || manca="$manca PANNELLO_REPO(variabile)"
+          if [ -n "$manca" ]; then
+            echo "::warning::pannello non pubblicato, manca:$manca"
+            echo "pronto=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          test ${#PASS} -ge 20 || { echo "::error::PANNELLO_PASSWORD troppo corta (almeno 20 caratteri)"; exit 1; }
+          echo "pronto=si" >> "$GITHUB_OUTPUT"
+
+      - name: Costruisci la pagina in chiaro (resta nel runner)
+        if: steps.segreti.outputs.pronto == 'si'
+        run: python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html
+
+      - name: Cifra
+        if: steps.segreti.outputs.pronto == 'si'
+        env:
+          STATICRYPT_PASSWORD: ${{ secrets.PANNELLO_PASSWORD }}
+        run: |
+          # Il sale e' pubblico (sta nella pagina) e fisso: cosi' «Ricordami»
+          # sopravvive alle ricostruzioni notturne.
+          npx --yes staticrypt@3.5.4 chiaro/index.html -d sito \
+            --salt 6c8e0a4f2b7d4e19a3c51f0d8b62e7a4 \
+            --config false --short --remember 30 \
+            --template-title "Taccuino" \
+            --template-button "Apri" \
+            --template-placeholder "Frase d'accesso" \
+            --template-remember "Ricordami per 30 giorni" \
+            --template-error "Frase sbagliata" \
+            --template-color-primary "#1b1b19" \
+            --template-color-secondary "#f6f5f1"
+          printf 'User-agent: *\nDisallow: /\n' > sito/robots.txt
+          touch sito/.nojekyll
+          # Nessun file in chiaro esce: solo la pagina cifrata e i due file vuoti.
+          ls -A sito
+          test "$(ls -A sito | sort | tr '\n' ' ')" = ".nojekyll index.html robots.txt "
+          ! grep -q '"giorni"' sito/index.html
+
+      - name: Pubblica (un commit solo, storia riscritta)
+        if: steps.segreti.outputs.pronto == 'si'
+        env:
+          TOKEN: ${{ secrets.PANNELLO_TOKEN }}
+          REPO: ${{ vars.PANNELLO_REPO }}
+        run: |
+          cd sito
+          git init -q -b gh-pages
+          git config user.name "pannello"
+          git config user.email "pannello@users.noreply.github.com"
+          git add -A
+          git commit -q -m "pagina"
+          git push -q --force "https://x-access-token:${TOKEN}@github.com/${REPO}.git" gh-pages
