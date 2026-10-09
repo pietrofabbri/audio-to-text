@@ -513,7 +513,7 @@ def consenso_esplicito() -> None:
     chiavi = {k: os.environ.pop(k, None)
               for k in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
     try:
-        pronto, motivo = Correttore(consentito=True).pronto()
+        pronto, motivo = Correttore(consentito=True, motore="gemini").pronto()
         require(not pronto, "senza chiave non si deve procedere")
         require("GOOGLE_API_KEY" in motivo,
                 f"il motivo deve nominare la chiave, dice: {motivo!r}")
@@ -669,7 +669,7 @@ def modello_non_disponibile() -> None:
     # E quando l'errore e' quello giusto, deve fermarsi subito e
     # nominare i modelli che funzionano.
     c = _correttore([RuntimeError("404 NOT_FOUND: models/xyz is not found")],
-                    modello="xyz")
+                    modello="xyz", motore="gemini")
     try:
         c.correggi_segmento(0, "una due tre")
     except RuntimeError as exc:
@@ -687,7 +687,7 @@ def modello_non_disponibile() -> None:
     for fallito in ("gemini-2.5-flash", MODELLO):
         c = _correttore(
             [RuntimeError(f"404 NOT_FOUND: models/{fallito} is not found")],
-            modello=fallito)
+            modello=fallito, motore="gemini")
         try:
             c.correggi_segmento(0, "una due tre")
         except RuntimeError as exc:
@@ -1454,7 +1454,85 @@ def giro_sintetico_con_contesto(tmp: Path) -> None:
             f"una riga per sessione: {out}")
     require((d / "transcript.corrected.txt").exists(), "le varianti si scrivono")
 
+
+class _HTTPFinto:
+    """Un server Ollama finto: registra le richieste e risponde."""
+
+    def __init__(self, tags=None, risposta="{\"correzioni\": []}", errore=None):
+        self.richieste = []
+        self.tags, self.risposta, self.errore = tags or [], risposta, errore
+
+    def __call__(self, req, timeout=None):
+        import io
+        import urllib.error
+        self.richieste.append((req.full_url, req.data))
+        if self.errore == "giu":
+            raise urllib.error.URLError("Connection refused")
+        if req.full_url.endswith("/api/tags"):
+            corpo = {"models": [{"name": n} for n in self.tags]}
+        elif self.errore == "404":
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {},
+                                         io.BytesIO(b'{"error":"model \'x\' not found"}'))
+        else:
+            corpo = {"response": self.risposta}
+
+        class R(io.BytesIO):
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+        return R(json.dumps(corpo).encode())
+
+
+def _con_http(finto, fn):
+    import urllib.request
+    originale = urllib.request.urlopen
+    urllib.request.urlopen = finto
+    try:
+        return fn()
+    finally:
+        urllib.request.urlopen = originale
+
+
+def ollama_locale() -> None:
+    """Il motore locale: verifica, richiesta, risposta, errori chiari."""
+    from core.text_correction import ClientOllama
+    require(Correttore(consentito=True).motore == "ollama",
+            "il motore predefinito e' quello locale")
+
+    giu = _HTTPFinto(errore="giu")
+    pronto, motivo = _con_http(giu, lambda: Correttore(consentito=True,
+                                                         modello="gemma3:12b").pronto())
+    require(not pronto and "Ollama" in motivo, f"server giu': {motivo}")
+
+    manca = _HTTPFinto(tags=["gemma3:4b"])
+    pronto, motivo = _con_http(manca, lambda: Correttore(consentito=True,
+                                                           modello="gemma3:12b").pronto())
+    require(not pronto and "ollama pull gemma3:12b" in motivo, f"modello: {motivo}")
+
+    ok = _HTTPFinto(tags=["gemma3:12b"], risposta=_risposta(
+        [{"i": 1, "a": "statole", "b": "scatole"}]))
+    def giro():
+        c = Correttore(consentito=True, modello="gemma3:12b", pausa=0)
+        require(c.pronto()[0], "pronto con server e modello")
+        return c.correggi_segmento(0, "le statole rosse")
+    r = _con_http(ok, giro)
+    require(r.testo_corretto == "le scatole rosse", f"corretto: {r.testo_corretto}")
+    url, corpo = ok.richieste[-1]
+    dati = json.loads(corpo)
+    require(url.endswith("/api/generate") and dati["format"] == "json"
+            and dati["options"]["temperature"] == 0 and not dati["stream"],
+            f"richiesta: {dati}")
+
+    sparito = _HTTPFinto(errore="404")
+    try:
+        _con_http(sparito, lambda: ClientOllama().generate_content(
+            model="x", contents="t"))
+    except RuntimeError as exc:
+        require(_modello_mancante(exc), f"404 riconosciuto: {exc}")
+    else:
+        raise Failure("un 404 deve sollevare")
+
 CHECKS = [
+    ("il motore locale (Ollama) funziona e spiega gli errori", ollama_locale),
     ("Zia Titti resta Zia Titti (glossario)", zia_titti_col_glossario),
     ("Zia Titti resta Zia Titti (maiuscola)", zia_titti_senza_glossario),
     ("il modello non inventa un nome", nome_inventato_bloccato),

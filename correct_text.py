@@ -67,7 +67,7 @@ sys.path.insert(0, str(HERE))
 from core.config import OUTPUT_DIR  # noqa: E402
 from core.glossario import Glossario  # noqa: E402
 from core.text_correction import (  # noqa: E402
-    MODELLO, PUNTEGGIATURA, SOGLIA_PROB, Correttore, allinea_probabilita,
+    MODELLO, MODELLO_LOCALE, MOTORE, PUNTEGGIATURA, SOGLIA_PROB, Correttore, allinea_probabilita,
     scrivi_varianti,
 )
 
@@ -449,19 +449,37 @@ def _sessioni_da_elaborare(args, out_dir: Path) -> list[Path]:
                   and (p / "segments.jsonl").exists())
 
 
+def _config_motore() -> str:
+    from core.config import config
+    return getattr(config, "correzione_motore", MOTORE)
+
+
+def _config_modello_locale() -> str:
+    from core.config import config
+    return getattr(config, "correzione_modello_locale", MODELLO_LOCALE)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Correggi con un LLM il testo delle trascrizioni")
     ap.add_argument("--session", help="una sessione sola (es. 19-42-33)")
     ap.add_argument("--consent", action="store_true",
-                    help="autorizza a mandare il testo a un'API esterna")
+                    help="autorizza la correzione (con --motore gemini anche "
+                         "l'invio del testo a Google)")
+    ap.add_argument("--motore", choices=("ollama", "gemini"),
+                    default=_config_motore(),
+                    help="ollama: modello locale sul Mac, gratuito, il testo "
+                         "non esce (default); gemini: API di Google")
     ap.add_argument("--dry", action="store_true",
                     help="stampa le correzioni senza scrivere nulla")
     ap.add_argument("--riscorri", action="store_true",
                     help="ricalcola anche i segmenti gia' corretti")
     ap.add_argument("--limit", type=int, default=0,
                     help="al massimo N segmenti per sessione")
-    ap.add_argument("--model", default=MODELLO, help=f"default {MODELLO}")
+    ap.add_argument("--model", default=None,
+                    help=f"modello; default {MODELLO_LOCALE} con ollama "
+                         f"(core/config.py: correzione_modello_locale), "
+                         f"{MODELLO} con gemini")
     ap.add_argument("--pausa", type=float, default=0.5,
                     help="secondi fra una chiamata e l'altra")
     ap.add_argument("--soglia-prob", type=float, default=SOGLIA_PROB,
@@ -547,7 +565,6 @@ def main() -> int:
 
     if not args.consent:
         print("\nNessuna chiamata: manca --consent.")
-        print("Il testo delle conversazioni resterebbe sul portatile.")
         return 0
 
     if args.dry:
@@ -563,7 +580,12 @@ def main() -> int:
         print(f"Glossario: {len(glossario)} nomi protetti"
               + ("" if glossario else
                  " (aggiungili in data/glossario.txt, uno per riga)"))
-    correttore = Correttore(modello=args.model, consentito=True,
+    modello = args.model or (_config_modello_locale() if args.motore == "ollama"
+                             else MODELLO)
+    print(f"Motore: {args.motore}, modello {modello}"
+          + (" (locale: il testo non esce dal Mac)" if args.motore == "ollama"
+             else " (il testo va a Google)"))
+    correttore = Correttore(modello=modello, motore=args.motore, consentito=True,
                             pausa=args.pausa, soglia_prob=args.soglia_prob,
                             glossario=glossario)
     pronto, motivo = correttore.pronto()

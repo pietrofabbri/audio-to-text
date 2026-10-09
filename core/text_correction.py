@@ -31,11 +31,17 @@ I due errori insieme sono la misura vera della qualita' della
 trascrizione, e senza il confronto fra originale e correzione uno dei
 due sparisce.
 
-Costo e riservatezza. Ogni correzione e' una chiamata a un'API esterna
-e il testo di una conversazione personale esce dal portatile. Il
-modulo non lo fa senza che tu l'abbia detto: `consentito` va impostato a
-True esplicitamente, e senza quello non esce niente. I nomi reali non
-partono mai — solo i pseudonimi `GLOBAL_0xx`.
+Due motori. Il predefinito e' **locale** (`motore="ollama"`): un modello
+che gira sul Mac attraverso Ollama, gratuito, senza limiti di chiamate,
+e il testo non esce dal computer. Scelta del 9 ottobre: Pietro ha
+preferito qualcosa di gratuito e stabile a Gemini, che sul piano gratuito
+puo' usare i testi per migliorare i prodotti di Google (decisione D2,
+documento di progetto `roadmap.md`). Il motore `gemini` resta disponibile
+per confronto, con `--motore gemini`, e solo li' il testo esce dal Mac.
+
+`consentito` va impostato a True esplicitamente in entrambi i casi: e' il
+punto in cui si decide di correggere, e con Gemini e' anche il consenso a
+mandare il testo fuori.
 """
 
 from __future__ import annotations
@@ -74,6 +80,14 @@ _PUNTEGGIATURA = frozenset(PUNTEGGIATURA)
 # che funziona, non quello che sarebbe migliore: un batch notturno che
 # scarta tutti i segmenti e' peggio di uno che corregge un po' meno.
 MODELLO = "gemini-3.5-flash-lite"
+
+# Il motore predefinito e il suo modello. `gemma3:12b` scrive bene
+# l'italiano e sta in circa 8 GB di memoria (quantizzazione Q4); su un Mac
+# con 8 GB in tutto si scende a `gemma3:4b` (circa 3 GB). Si cambia in
+# `core/config.py` (`correzione_modello_locale`) o con `--model`.
+MOTORE = "ollama"
+MODELLO_LOCALE = "gemma3:12b"
+OLLAMA_URL = "http://127.0.0.1:11434"
 
 MODELLI_NOTI = {
     "gemini-3.5-flash-lite": "scelta predefinita: risponde regolarmente",
@@ -117,10 +131,11 @@ italiano piu' corretto significa inventare.
 4. Se una parola e' gia' plausibile ma non sei sicuro che sia quella \
 giusta, lasciala. Un intervento a caso peggiora il testo.
 
-Per ogni parola del testo originale scrivi una riga JSON con:
-- "i": indice della parola nell'originale (0-based)
-- "a": la parola originale
-- "b": la parola che hai scelto, uguale ad "a" se non l'hai cambiata
+Elenca SOLO le parole che cambi, una voce JSON per parola, con:
+- "i": indice della parola nell'originale (0-based, contando le parole \
+separate da spazi)
+- "a": la parola originale, esattamente com'e'
+- "b": la parola che hai scelto
 
 Rispondi SOLO con un oggetto JSON {"correzioni": [...]}. Nient'altro. \
 Se non c'e' niente da correggere, rispondi con {"correzioni": []}.
@@ -589,6 +604,82 @@ def _modello_mancante(exc: Exception) -> bool:
         "model" in testo or "not supported" in testo)
 
 
+class _RispostaOllama:
+    def __init__(self, testo: str) -> None:
+        self.text = testo
+
+
+class ClientOllama:
+    """Un cliente per Ollama con la stessa forma di quello di Gemini.
+
+    `client.models.generate_content(model=..., contents=..., config=...)`
+    e una risposta con `.text`: cosi' il resto del correttore (tentativi,
+    backoff, filtri) non sa e non deve sapere quale motore sta usando.
+
+    Si parla con il server locale di Ollama sull'API `/api/generate`, con
+    `format: json` (la risposta e' JSON valido per costruzione),
+    temperatura 0 (riproducibile) e un contesto di 8192 token: il prompt
+    con glossario e contesto, piu' una riga di uscita per parola, supera i
+    4096 del default.
+    """
+
+    def __init__(self, url: str = OLLAMA_URL, timeout: float = 300.0) -> None:
+        self.url = url.rstrip("/")
+        self.timeout = timeout
+        self.models = self
+
+    def _chiama(self, percorso: str, dati: dict | None = None) -> dict:
+        import urllib.error
+        import urllib.request
+        corpo = json.dumps(dati).encode("utf-8") if dati is not None else None
+        req = urllib.request.Request(
+            self.url + percorso, data=corpo,
+            headers={"Content-Type": "application/json"},
+            method="POST" if corpo is not None else "GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            # Il corpo dell'errore dice il perche' («model 'x' not found»):
+            # va nel messaggio, perche' `_modello_mancante` lo riconosca.
+            dettaglio = exc.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(f"ollama {exc.code}: {dettaglio}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"ollama non raggiungibile su {self.url}: {exc.reason}. "
+                "L'app Ollama e' aperta?") from exc
+
+    def modelli(self) -> list[str]:
+        """I modelli scaricati sul Mac."""
+        return [m.get("name", "") for m in self._chiama("/api/tags").get("models", [])]
+
+    def verifica(self, modello: str) -> tuple[bool, str]:
+        """Se il server risponde e il modello e' scaricato."""
+        try:
+            presenti = self.modelli()
+        except RuntimeError as exc:
+            return False, str(exc)
+        nomi = set(presenti) | {n.split(":")[0] for n in presenti
+                                if n.endswith(":latest")}
+        if modello not in nomi:
+            return False, (f"il modello '{modello}' non e' scaricato: "
+                           f"ollama pull {modello}")
+        return True, ""
+
+    def generate_content(self, model=None, contents=None, config=None):
+        config = config or {}
+        dati = {
+            "model": model,
+            "prompt": contents,
+            "stream": False,
+            "options": {"temperature": config.get("temperature", 0),
+                        "num_ctx": 8192},
+        }
+        if config.get("response_mime_type") == "application/json":
+            dati["format"] = "json"
+        return _RispostaOllama(self._chiama("/api/generate", dati).get("response", ""))
+
+
 def _coda(parola: str) -> str:
     """La punteggiatura finale di una parola, staccata dal testo.
 
@@ -610,15 +701,19 @@ class Correttore:
 
     def __init__(
         self,
-        modello: str = MODELLO,
+        modello: str | None = None,
         consentito: bool = False,
         pausa: float = 0.5,
         tentativi: int = 3,
         soglia_prob: float = SOGLIA_PROB,
         glossario=None,
         proteggi_nomi: bool = True,
+        motore: str = MOTORE,
     ) -> None:
-        self.modello = modello
+        if motore not in ("ollama", "gemini"):
+            raise ValueError(f"motore sconosciuto: {motore}")
+        self.motore = motore
+        self.modello = modello or (MODELLO_LOCALE if motore == "ollama" else MODELLO)
         # `Glossario` (core/glossario.py) o None. Anche senza glossario la
         # regola della maiuscola resta attiva: e' `proteggi_nomi`, e non si
         # spegne se non per misurare quanto blocca.
@@ -652,7 +747,15 @@ class Correttore:
         """Se si puo' procedere, e perche' no se non si puo'."""
         if not self.consentito:
             return False, ("nessun consenso esplicito: metti consentito=True "
-                           "per mandare il testo fuori dal portatile")
+                           "(con --motore gemini il testo esce dal portatile)")
+        if self.motore == "ollama":
+            # Il server e il modello si controllano prima di cominciare:
+            # meglio una riga chiara qui che settecento segmenti scartati.
+            client = self._client or self._ottieni_client()
+            verifica = getattr(client, "verifica", None)
+            if verifica is not None:
+                return verifica(self.modello)
+            return True, ""
         # Un cliente gia' costruito rende la chiave irrilevante: e' cosi'
         # che il percorso di correzione si puo' provare per intero senza
         # rete e senza chiavi vere.
@@ -663,6 +766,10 @@ class Correttore:
 
     def _ottieni_client(self):
         if self._client is not None:
+            return self._client
+        if self.motore == "ollama":
+            from core.config import config
+            self._client = ClientOllama(getattr(config, "ollama_url", OLLAMA_URL))
             return self._client
         try:
             from google import genai
@@ -751,6 +858,10 @@ class Correttore:
                 # al primo. Fermarsi subito e dirlo vale piu' di tre
                 # chiamate perse e di un segmento dichiarato «non
                 # corretto» senza che nessuno capisca perche'.
+                if _modello_mancante(exc) and self.motore == "ollama":
+                    raise RuntimeError(
+                        f"il modello '{self.modello}' non e' scaricato sul "
+                        f"Mac: ollama pull {self.modello}") from exc
                 if _modello_mancante(exc):
                     # Non si suggerisce il modello che ha appena
                     # fallito: sarebbe il modo piu' rapido per

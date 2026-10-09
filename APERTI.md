@@ -1710,6 +1710,40 @@ dato l'ok all'invio del testo a Google.
 **Verificato.** 8 test nuovi in `tests/test_text_correction.py` (52/52),
 1 in `tests/test_nightly.py`.
 
+
+### 36. ~~Il pannello non esisteva~~ — chiuso il 9 ottobre
+
+Il corpus si leggeva solo aprendo i file. Ora `core/metriche.py` calcola
+sul Mac, per ogni giornata, numeri aggregati (copertura per minuto,
+silenzio, voci e turni, conversazioni, prosodia e marcatori linguistici di
+Pietro, qualità), e `publish_corpus.py` li scrive in
+`metriche/AAAA-MM-GG.json` nel corpus insieme al workflow
+`.github/workflows/pannello.yml`. Il workflow costruisce una pagina sola
+con i dati dentro, la cifra con StatiCrypt e la pubblica su GitHub Pages
+da una repo pubblica separata (decisione D5, documento di progetto
+`analisi-corpus.md`). Senza segreti avvisa e non pubblica. Provato sui
+4 giorni veri: con la frase sbagliata non si apre, e nella pagina
+pubblicata non resta niente in chiaro. Configurazione: README, «Il
+pannello cifrato».
+
+Resta aperto: risate, saturazione, temi, Helio e voto serale non ci sono
+ancora, e la pagina lo dichiara.
+
+### 37. ~~Il correttore dipendeva da Gemini~~ — chiuso il 9 ottobre
+
+Gemini gratuito può usare i testi per migliorare i prodotti di Google, e
+quello a pagamento costa. Ora il motore predefinito è locale, con Ollama
+(`correzione_motore = "ollama"`, modello `gemma3:12b`): gratuito, stabile,
+il testo non esce dal Mac. `pronto()` controlla server e modello prima di
+cominciare e dice cosa fare (`ollama pull …`). Il prompt chiede solo le
+parole cambiate, non tutte, così il modello locale scrive poche righe
+invece di una per parola. Gemini resta con `--motore gemini`.
+
+Da fare sul Mac: installare Ollama e il modello, misurare il tempo per
+segmento alla prima notte, poi la misura su 100 parole (ROADMAP Fase 3,
+passo 5): un modello locale è meno capace di Gemini, e solo la misura dice
+se migliora il testo.
+
 ---
 
 ## L'ordine in cui li farei

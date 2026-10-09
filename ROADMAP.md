@@ -331,8 +331,8 @@ anche in versione corretta, e c'è una misura di qualità aggiornata.
 |---|---|
 | 1. Glossario | **Fatto.** `data/glossario.txt` + nomi delle voci; blocco nel codice; «Zia Titti» è un test |
 | 2. Contesto | **Fatto.** Due segmenti prima e dopo, stessa sessione |
-| 3. Privacy (D2) | **Ok di tutte le persone** registrate fino all'8/10. Da verificare: chiave con fatturazione attiva |
-| 4. Catena notturna | **Fatta**, spenta: `correzione_notturna = True` in `core/config.py` la accende |
+| 3. Privacy (D2) | **Rivista il 9/10:** motore locale (Ollama, `gemma3:12b`), gratuito, il testo non esce dal Mac (APERTI 37). Gemini resta con `--motore gemini`, solo con piano a pagamento |
+| 4. Catena notturna | **Fatta, spenta.** Per accenderla: installare Ollama, `ollama pull gemma3:12b`, prova con `correct_text.py --consent --dry --limit 5`, poi `correzione_notturna = True` (README «Nel giro notturno: il motore locale») |
 | 5. Misura su 100 parole | Da fare dopo le prime notti corrette |
 
 Il glossario si arricchisce da solo quando le voci ricevono un nome
@@ -361,6 +361,7 @@ Queste cose non bloccano le fasi precedenti e non ne sono bloccate.
 | # | Domanda | Serve per | Stato |
 |---|---|---|---|
 | D1 | Nel corpus: pseudonimi (oggi) o nomi reali? | Fase 1 | **Decisa il 7/10:** i nomi reali sono ammessi nel corpus privato. **Attivati l'8/10** (`corpus_with_names = True` in `core/config.py`): nel corpus le voci con un nome compaiono come «Nome (GLOBAL_xxx)». Le note sulle voci restano solo in locale. |
-| D2 | Gemini: si manda il testo a Google? Con quale piano, e informando chi è registrato? Oppure un modello locale? | Fase 3 | **Decisa l'8/10:** Gemini, con l'ok di tutte le persone registrate. Piano a pagamento da verificare prima di accendere la correzione notturna; per un giorno senza ok, `correzione_giorni_esclusi`. |
+| D2 | Gemini: si manda il testo a Google? Con quale piano, e informando chi è registrato? Oppure un modello locale? | Fase 3 | **Decisa il 9/10:** modello locale con Ollama, gratuito e stabile; il testo non esce dal Mac. (L'8/10 era stata scelta Gemini con l'ok di tutte le persone registrate; rivista perché il piano gratuito consente a Google di usare i testi e Pietro preferisce non pagare.) |
 | D3 | Blocco continuo = buchi sotto i 5 minuti; il blocco appartiene al giorno in cui comincia. Va bene? | Fase 2 | **Applicata il 7/10** con la Fase 2 (soglia in `core/giorno.py`, `SOGLIA_CONTINUITA_SEC`). |
 | D4 | I pezzi orari spariscono dal corpus, restano solo nel manifesto del giorno. Va bene? | Fase 2 | **Decisa il 7/10:** Pietro preferisce un file unico per tipo per giorno; le sessioni restano descritte in `giorno.json` e in locale in `output/`. |
+| D5 | Dove pubblicare il pannello web? | Analisi | **Decisa l'8/10:** GitHub Pages cifrato (StatiCrypt) da una repo pubblica dal nome neutro (`taccuino`). APERTI 36, README «Il pannello cifrato». |

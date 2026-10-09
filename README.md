@@ -890,6 +890,59 @@ le analisi future diventano confrontabili nel tempo).
 L'ingestione è idempotente: rielaborare una sessione sostituisce i dati
 invece di duplicarli.
 
+## Il pannello cifrato
+
+Un pannello web legge le metriche del corpus: copertura della giornata,
+con chi si è parlato, come parla Pietro, qualità del dato, su scale da
+giorno a totale. Specifica completa nel documento di progetto
+`analisi-corpus.md`; qui come funziona e come si configura.
+
+**Il percorso.** Il Mac, a ogni pubblicazione, calcola
+`metriche/AAAA-MM-GG.json` (`core/metriche.py`: solo numeri aggregati,
+nessun testo) e installa nel corpus `.github/workflows/pannello.yml`
+(copia ufficiale: `pannello/pannello.yml`). Al push GitHub Actions, nella
+repo privata del corpus, costruisce una pagina sola con i dati dentro
+(`pannello/costruisci.py` + `pannello/modello.html`), la cifra con
+StatiCrypt e la spinge sul ramo `gh-pages` di una repo **pubblica** dal
+nome neutro, riscrivendo il ramo da zero ogni volta.
+
+**Perché cifrata.** GitHub Pages pubblica siti privati solo con
+Enterprise Cloud: con gli altri piani il sito è pubblico anche se la repo
+è privata. La pagina pubblicata è quindi leggibile da chiunque abbia
+l'indirizzo, ma è cifrata: senza la frase d'accesso non si vede niente.
+La frase è l'unica protezione, quindi va lunga (almeno 20 caratteri;
+meglio cinque o sei parole casuali).
+
+**Configurazione, una volta sola:**
+
+1. Crea su GitHub una repo **pubblica**, vuota, dal nome neutro (es.
+   `taccuino`).
+2. Crea un token *fine-grained* (Settings → Developer settings → Personal
+   access tokens → Fine-grained tokens): accesso **solo** a quella repo,
+   permesso *Contents: Read and write*.
+3. Nella repo **privata** del corpus, Settings → Secrets and variables →
+   Actions:
+   - secret `PANNELLO_PASSWORD`: la frase d'accesso;
+   - secret `PANNELLO_TOKEN`: il token del punto 2;
+   - variabile (tab *Variables*) `PANNELLO_REPO`: `pietrofabbri/taccuino`.
+4. Sul Mac, aggiorna il codice (`git pull` in `audio-to-text`): il
+   prossimo push del corpus porta le metriche e il workflow.
+5. Dopo il primo giro del workflow (tab Actions del corpus), nella repo
+   pubblica: Settings → Pages → *Deploy from a branch*, ramo `gh-pages`,
+   cartella `/ (root)`. L'indirizzo sarà
+   `https://pietrofabbri.github.io/taccuino/`.
+
+Finché i segreti mancano, il workflow chiude in verde con un avviso e non
+pubblica niente.
+
+**Vedere la pagina in chiaro sul Mac**, senza pubblicare:
+
+```bash
+python core/metriche.py corpus_repo/giorni /tmp/metriche
+python pannello/costruisci.py /tmp/metriche /tmp/pannello.html
+open /tmp/pannello.html
+```
+
 ## Struttura output
 
 Per ogni file `input/registrazione.mp3` viene creata la cartella `output/registrazione/`:
@@ -1285,35 +1338,55 @@ Il correttore manda anche due segmenti prima e due dopo come contesto
 (`--contesto N`, 0 per nessuno); le correzioni restano solo sul
 segmento centrale.
 
-### Nel giro notturno
+### Nel giro notturno: il motore locale (Ollama)
+
+Dal 9 ottobre il motore predefinito è **locale**: un modello che gira sul
+Mac attraverso [Ollama](https://ollama.com). È gratuito, non ha limiti di
+chiamate e il testo non esce dal computer. Gemini resta disponibile per
+confronto con `--motore gemini` (e allora vale tutto quello che è scritto
+sopra sulla chiave), ma **non va usato sul piano gratuito**: lì i termini
+di Google consentono di usare i testi per migliorare i prodotti, anche con
+revisori umani.
 
 Con `correzione_notturna = True` in `core/config.py` il giro notturno
 lancia la correzione fra la trascrizione e la pubblicazione, così il
-corpus esce già con le giornate corrette. È spenta di default. Prima di
+corpus esce già con le giornate corrette. È spenta di default. Per
 accenderla:
 
-1. ok all'invio a Google dalle persone registrate (per un giorno ancora
-   senza ok: `correzione_giorni_esclusi = ("AAAA-MM-GG",)`);
-2. una chiave di un progetto **con fatturazione attiva**: sul piano
-   gratuito i termini di Google consentono di usare i testi per
-   migliorare i prodotti, anche con revisori umani;
-3. la chiave in `data/gemini_api_key.txt`, perché launchd non legge
-   `~/.zshrc`:
+1. installa Ollama e lascia l'app aperta (si avvia al login);
+2. scarica il modello:
 
-```bash
-printf '%s' "$GOOGLE_API_KEY" > data/gemini_api_key.txt
-chmod 600 data/gemini_api_key.txt
-```
+   ```bash
+   ollama pull gemma3:12b     # circa 8 GB di memoria durante l'uso
+   ```
 
-Il budget è `correzione_budget_sec` (un'ora): un giorno pieno sono circa
-770 segmenti, una mezz'ora. Se non basta, la notte dopo riprende dai
-segmenti non ancora corretti. Un errore (rete, quota) non ferma il giro:
-si pubblica il testo grezzo.
+   Su un Mac con 8 GB in tutto usa `gemma3:4b` (circa 3 GB) e scrivilo in
+   `correzione_modello_locale` in `core/config.py`;
+3. prova a mano su pochi segmenti, senza scrivere niente:
+
+   ```bash
+   python correct_text.py --consent --dry --limit 5
+   ```
+
+   La prima riga dice motore e modello; se Ollama non risponde o il
+   modello non è scaricato, il comando si ferma subito e dice cosa fare;
+4. metti `correzione_notturna = True`.
+
+Le impostazioni, tutte in `core/config.py`: `correzione_motore`
+(`"ollama"` o `"gemini"`), `correzione_modello_locale`, `ollama_url`,
+`correzione_budget_sec` (due ore per notte: quello che non sta nel tempo
+si riprende la notte dopo, dai segmenti non ancora corretti),
+`correzione_giorni_esclusi`. Un errore (Ollama chiuso, modello mancante)
+non ferma il giro: si pubblica il testo grezzo.
+
+Il modello elenca solo le parole che cambia, non tutte: in locale è la
+differenza fra secondi e minuti per segmento. Il tempo per segmento sul
+Mac va misurato alla prima notte.
 
 A mano, lo stesso passo è:
 
 ```bash
-python correct_text.py --consent --sintetico --max-seconds 3600
+python correct_text.py --consent --sintetico --max-seconds 7200
 ```
 
 ### Dove finisce il testo corretto
@@ -1530,7 +1603,7 @@ audio-to-text/
 │   ├── voice_matrix.py     # somiglianza fra voci, per campione e per coppia di voci
 │   ├── voice_review.py     # estratti da ascoltare e voci da rivedere
 │   ├── scarico.py          # copia verificata dal registratore alla coda locale
-│   ├── text_correction.py  # correzione del testo con Gemini, affiancata
+│   ├── text_correction.py  # correzione del testo (Ollama locale o Gemini), affiancata
 │   └── corpus_db.py        # indice SQLite locale per le analisi
 ├── pipeline/
 │   ├── vad.py              # Voice Activity Detection

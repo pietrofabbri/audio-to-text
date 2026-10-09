@@ -460,22 +460,22 @@ class PipelineConfig:
     # in locale.
     corpus_with_names: bool = True
 
-    # Correzione del testo con Gemini nel giro notturno (ROADMAP Fase 3,
-    # decisione D2). Fra la trascrizione e la pubblicazione il giro
-    # lancia `correct_text.py --consent` sulle sessioni non ancora
-    # corrette. Il testo delle conversazioni esce dal Mac e va a Google,
-    # quindi l'interruttore e' qui, spento finche' non lo accendi tu.
+    # Correzione del testo nel giro notturno (ROADMAP Fase 3). Fra la
+    # trascrizione e la pubblicazione il giro lancia
+    # `correct_text.py --consent` sulle sessioni non ancora corrette.
     #
-    # Prima di accenderlo:
-    # - le persone registrate devono aver dato l'ok all'invio (fatto per
-    #   tutte al 2026-10-08);
-    # - la chiave deve essere di un progetto con fatturazione attiva. Sul
-    #   piano gratuito i termini di Google consentono di usare i testi per
-    #   migliorare i prodotti, con lettura da parte di revisori umani; sul
-    #   piano a pagamento no. Verificalo sui termini in vigore;
-    # - la chiave deve essere leggibile da launchd: in
-    #   `data/gemini_api_key.txt` (fuori dalla repo), perche' il giro
-    #   notturno non legge `~/.zshrc`.
+    # Motore (decisione D2, rivista il 9 ottobre): **locale**, con Ollama.
+    # Gratuito, senza limiti di chiamate, e il testo non esce dal Mac.
+    # Prima di accendere:
+    # - installa Ollama (https://ollama.com) e lascia l'app aperta;
+    # - scarica il modello: `ollama pull gemma3:12b` (circa 8 GB; su un Mac
+    #   con 8 GB di memoria in tutto usa `gemma3:4b` e cambialo qui sotto);
+    # - prova a mano: `python correct_text.py --consent --dry --limit 5`.
+    #
+    # `gemini` resta possibile ma manda il testo a Google: sul piano
+    # gratuito i termini consentono di usarlo per migliorare i prodotti,
+    # con lettura da parte di revisori umani. Non usarlo senza piano a
+    # pagamento.
     correzione_notturna: bool = False
 
     # Giorni (AAAA-MM-GG) da non mandare a Gemini: per una giornata in
@@ -484,8 +484,19 @@ class PipelineConfig:
     correzione_giorni_esclusi: tuple[str, ...] = ()
 
     # Tempo massimo della correzione per notte. Un giorno pieno sono
-    # ~770 segmenti, circa mezz'ora; il resto si riprende la notte dopo.
-    correzione_budget_sec: int = 3600
+    # ~770 segmenti; con il modello locale ogni segmento richiede qualche
+    # secondo (da misurare sul Mac alla prima notte). Quello che non sta
+    # nel tempo si riprende la notte dopo.
+    correzione_budget_sec: int = 7200
+
+    # "ollama" (locale, predefinito) o "gemini" (API di Google).
+    correzione_motore: str = "ollama"
+
+    # Il modello locale. gemma3:12b ~8 GB di memoria; gemma3:4b ~3 GB.
+    correzione_modello_locale: str = "gemma3:12b"
+
+    # Dove risponde Ollama sul Mac.
+    ollama_url: str = "http://127.0.0.1:11434"
 
 
 # Istanza di default — importa questa nei moduli della pipeline
