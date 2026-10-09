@@ -1,6 +1,6 @@
 # Analisi del corpus e pannello web — specifica
 
-Stato al 9 ottobre 2026. Documento di progetto del Project «Psico-fisio
+Stato al 9 ottobre 2026 (sera). Documento di progetto del Project «Psico-fisio
 app», copiato anche nella repo `pietrofabbri/audio-to-text` in
 `docs/analisi-corpus.md` (le due copie sono identiche).
 Collegati: `ROADMAP.md` (ordine dei lavori della pipeline, decisioni
@@ -41,7 +41,7 @@ pannello cifrato compaiono come sono (decisione D1).
 | Corpus testuale | Per giorno: `segments.jsonl`, `tokens.jsonl`, `prosody.csv`, `wordfreq.csv`, `transcript.*`, `giorno.json` (manifesto: file sorgenti, offset, blocchi continui, voci) | repo privata `pietrofabbri/corpus`, cartella `giorni/` | 4 giorni (2, 4, 5, 8 ottobre) |
 | Metriche aggregate | Per giorno, `metriche/AAAA-MM-GG.json` (sezione 9) | repo privata del corpus | **calcolate dal 9/10** a ogni pubblicazione, dopo l'aggiornamento del codice sul Mac |
 | Database locale | Voci (`GLOBAL_xxx`, nomi), campioni, audio | solo sul Mac | primi nomi assegnati l'8/10; revisione completa il 14/10 |
-| Testo corretto | `*.corrected.*` prodotti da `correct_text.py` | corpus | **pronto, da accendere**: correzione con modello locale (Ollama, D2 del 9/10); serve installare Ollama e il modello sul Mac |
+| Testo corretto | `*.corrected.*` prodotti da `correct_text.py` | corpus | **provato e lasciato spento il 9/10**: con il modello locale (Ollama, `qwen3:14b`) circa metà delle correzioni peggiorava il testo (ROADMAP Fase 3, APERTI 37). Le metriche usano il testo grezzo e lo dichiarano |
 | Helio | Misure giornaliere e infragiornaliere (export Zepp). Atteso, da verificare sul primo export: battito, battito a riposo, HRV, stress, sonno (durata, fasi), passi/attività, eventuale indice di recupero | entrerà nel corpus | **non ancora collegato** |
 | Voto serale | Valutazione soggettiva della giornata (1–10 + una parola) | da definire | **non esiste ancora**: meccanismo di raccolta da progettare |
 | Variabili esterne | Diario di meditazione, attività fisica, alimentazione | altri progetti di Pietro | da collegare, facoltative |
@@ -91,7 +91,9 @@ dice cosa è già calcolato al 9/10.
   linguistico. Dal 9/10 il modello è **locale** (Ollama sul Mac, lo stesso
   del correttore): gratuito, e il testo non esce dal computer, quindi non
   serve un consenso ulteriore all'invio. Resta da misurare se un modello
-  locale classifica abbastanza bene.
+  locale classifica abbastanza bene: come correttore di parole `qwen3:14b`
+  si è rivelato inaffidabile (9/10), ma classificare un tratto di
+  conversazione in 12 temi è un compito più facile e va provato a parte.
 - Direttrice 2 e i tagli per persona diventano pienamente leggibili dopo
   l'assegnazione dei nomi alle voci (Fase 1, revisione completa fissata al
   14 ottobre).
@@ -417,8 +419,9 @@ Un cambio di significato di un campo alza `versione`.
    restano i passi di configurazione di Pietro (sezione 8).
 3. ~~Il polso sui dati senza modello linguistico né Helio~~ — **prima
    versione fatta il 9/10**.
-4. **Correzione del testo con modello locale**: installare Ollama e il
-   modello sul Mac, accendere la correzione notturna (ROADMAP, Fase 3).
+4. **Correzione del testo con modello locale**: provata il 9/10 con
+   `qwen3:14b`, qualità insufficiente, lasciata spenta (ROADMAP, Fase 3).
+   Da riprovare con un modello più forte o con revisione a mano.
 5. **Collegamento Helio**: primo export, mappatura dei campi, pannello 24 h,
    prime correlazioni notte → giorno.
 6. **Voto serale**: scegliere il meccanismo di raccolta.

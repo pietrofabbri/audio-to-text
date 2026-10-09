@@ -286,9 +286,9 @@ Taglia: media. Dipende da: Fase 1 (glossario dei nomi), Fase 2
 `core/text_correction.py`. Due motori:
 
 - **`ollama` (predefinito dal 9/10):** un modello che gira sul Mac
-  attraverso Ollama, `gemma3:12b` (circa 8 GB di memoria; `gemma3:4b`,
-  circa 3 GB, su un Mac con 8 GB in tutto). Gratuito, senza limiti di
-  chiamate, il testo non esce dal computer;
+  attraverso Ollama, `qwen3:14b` (già scaricato; circa 9 GB di memoria
+  sul MacBook Pro M1 Pro da 16 GB; `qwen3:8b` più leggero). Gratuito,
+  senza limiti di chiamate, il testo non esce dal computer;
 - **`gemini`** (`--motore gemini`, modello `gemini-3.5-flash-lite`): resta
   per confronto; manda il testo a Google, quindi solo con piano a
   pagamento (vedi D2).
@@ -341,7 +341,7 @@ Passi:
 **Fatto quando:** il caso «Zia Titti» passa, ogni giorno nuovo esce
 anche in versione corretta, e c'è una misura di qualità aggiornata.
 
-**Stato al 9 ottobre: costruita, da accendere sul Mac** (commit `7fb48a6`
+**Stato al 9 ottobre: costruita, provata, lasciata spenta di proposito** (commit `7fb48a6`
 e `737dd19`, APERTI 35 e 37, README «I nomi propri: il glossario» e «Nel
 giro notturno: il motore locale»).
 
@@ -351,14 +351,14 @@ giro notturno: il motore locale»).
 | 2. Contesto | **Fatto.** Due segmenti prima e due dopo, della stessa sessione, solo come contesto |
 | 3. Privacy e motore (D2) | **Decisa il 9/10:** motore locale (Ollama). Niente esce dal Mac |
 | 4. Catena notturna | **Fatta, spenta.** In `core/config.py`: `correzione_notturna` (default `False`), `correzione_motore` (`"ollama"`), `correzione_modello_locale` (`"gemma3:12b"`), `ollama_url`, `correzione_budget_sec` (7200 s per notte; il resto si riprende la notte dopo), `correzione_giorni_esclusi` |
-| 5. Misura su 100 parole | Da fare dopo le prime notti corrette |
+| 5. Misura | **Prima misura il 9/10** su 20 segmenti con `qwen3:14b`: 11 s a segmento (~2,5 ore per una giornata piena) e circa metà delle correzioni accettate dannose (`tipo → circa`, `vincolo → vincere`, `istitutiva → istituzionale`). Correzione notturna **lasciata spenta**: il testo grezzo è più onesto. Dettagli in APERTI 37 |
 
-Per accendere, sul Mac: installare Ollama (https://ollama.com) e lasciare
-l'app aperta; `ollama pull gemma3:12b`; provare con
-`python correct_text.py --consent --dry --limit 5` (la prima riga dice
-motore e modello; se Ollama non risponde o il modello manca, si ferma e
-dice cosa fare); poi `correzione_notturna = True`. Alla prima notte va
-misurato il tempo per segmento. Il glossario si arricchisce da solo
+Per riprovare: `python correct_text.py --consent --dry --solo-proposte
+--session <sessione> --limit 20` (stampa proposte e tempi di Ollama).
+Strade aperte: un modello locale più forte in italiano, oppure una
+revisione a mano delle proposte prima di applicarle (APERTI 22).
+Accendere solo con una misura che mostri correzioni in gran parte buone:
+`correzione_notturna = True`. Il glossario si arricchisce da solo
 quando le voci ricevono un nome; intanto i nomi noti si aggiungono a
 mano in `data/glossario.txt`, uno per riga.
 

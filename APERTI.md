@@ -1733,16 +1733,31 @@ ancora, e la pagina lo dichiara.
 
 Gemini gratuito può usare i testi per migliorare i prodotti di Google, e
 quello a pagamento costa. Ora il motore predefinito è locale, con Ollama
-(`correzione_motore = "ollama"`, modello `gemma3:12b`): gratuito, stabile,
+(`correzione_motore = "ollama"`, modello `qwen3:14b`, già sul Mac): gratuito, stabile,
 il testo non esce dal Mac. `pronto()` controlla server e modello prima di
 cominciare e dice cosa fare (`ollama pull …`). Il prompt chiede solo le
 parole cambiate, non tutte, così il modello locale scrive poche righe
 invece di una per parola. Gemini resta con `--motore gemini`.
 
-Da fare sul Mac: installare Ollama e il modello, misurare il tempo per
-segmento alla prima notte, poi la misura su 100 parole (ROADMAP Fase 3,
-passo 5): un modello locale è meno capace di Gemini, e solo la misura dice
-se migliora il testo.
+**Misura del 9 ottobre, e decisione: la correzione notturna resta
+spenta.** Prima prova: il modello sbagliava a contare le parole e quasi
+ogni segmento veniva scartato; ora il prompt elenca le parole numerate e
+una correzione disallineata si ricolloca sull'unica posizione della
+parola citata (o si scarta lei sola). Seconda prova, 20 segmenti del 2
+ottobre, `qwen3:14b` su M1 Pro 16 GB, nessuno scartato:
+
+- 11 s a segmento (7 s per leggere ~1600 token di prompt, 3,5 s per
+  ~43 token di risposta): una giornata piena (~770 segmenti) ≈ 2,5 ore;
+- 18 correzioni accettate, circa metà buone (`monopolito → monopolio`,
+  `extraordinarie → straordinarie`, `fin → fino`) e metà dannose (`tipo →
+  circa` cancella un intercalare, `vincolo → vincere`, `utili → usi`,
+  `istitutiva → istituzionale`, `il → è`). La soglia di probabilità non
+  le separa: le dannose stanno fra 0,65 e 0,85 come le buone.
+
+Un correttore che sbaglia una volta su due falsa proprio le metriche di
+stile e lessico. Si tiene il testo grezzo, che il pannello dichiara.
+Da riprovare con un modello locale più forte in italiano o con una
+superficie di revisione (le proposte si accettano a mano, punto 22).
 
 ---
 

@@ -1355,13 +1355,8 @@ corpus esce già con le giornate corrette. È spenta di default. Per
 accenderla:
 
 1. installa Ollama e lascia l'app aperta (si avvia al login);
-2. scarica il modello:
-
-   ```bash
-   ollama pull gemma3:12b     # circa 8 GB di memoria durante l'uso
-   ```
-
-   Su un Mac con 8 GB in tutto usa `gemma3:4b` (circa 3 GB) e scrivilo in
+2. il modello: `qwen3:14b`, già scaricato sul Mac (`ollama list`; circa
+   9 GB di memoria durante l'uso). Più leggero: `qwen3:8b`, da scrivere in
    `correzione_modello_locale` in `core/config.py`;
 3. prova a mano su pochi segmenti, senza scrivere niente:
 
@@ -1380,9 +1375,21 @@ si riprende la notte dopo, dai segmenti non ancora corretti),
 `correzione_giorni_esclusi`. Un errore (Ollama chiuso, modello mancante)
 non ferma il giro: si pubblica il testo grezzo.
 
-Il modello elenca solo le parole che cambia, non tutte: in locale è la
-differenza fra secondi e minuti per segmento. Il tempo per segmento sul
-Mac va misurato alla prima notte.
+Il modello elenca solo le parole che cambia, non tutte, e riceve le
+parole già numerate: i modelli locali sbagliano a contarle. Alla fine il
+comando stampa i tempi di Ollama (lettura del prompt e scrittura della
+risposta).
+
+> **Stato al 9 ottobre: spenta, di proposito.** Prova sul 2 ottobre
+> (20 segmenti, `qwen3:14b` su M1 Pro 16 GB): 11 s a segmento (7 s per
+> leggere un prompt di ~1600 token, 3,5 s per rispondere), quindi circa
+> 2,5 ore per una giornata piena. Delle 18 correzioni accettate circa
+> metà sono buone (`monopolito → monopolio`, `extraordinarie →
+> straordinarie`) e metà peggiorano il testo (`tipo → circa` cancella un
+> intercalare, `vincolo → vincere`, `utili → usi`, `istitutiva →
+> istituzionale`). Un correttore che sbaglia una volta su due falsa
+> proprio le metriche di stile: meglio il testo grezzo, che il pannello
+> dichiara come tale. APERTI 37.
 
 A mano, lo stesso passo è:
 

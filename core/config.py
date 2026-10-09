@@ -471,6 +471,9 @@ class PipelineConfig:
     # - il modello: `qwen3:14b`, gia' scaricato sul Mac (`ollama list`);
     # - prova a mano: `python correct_text.py --consent --dry --limit 5`.
     #
+    # Lasciata spenta il 9 ottobre dopo la prima misura (APERTI 37):
+    # con qwen3:14b circa meta' delle correzioni peggiorava il testo.
+    #
     # `gemini` resta possibile ma manda il testo a Google: sul piano
     # gratuito i termini consentono di usarlo per migliorare i prodotti,
     # con lettura da parte di revisori umani. Non usarlo senza piano a
