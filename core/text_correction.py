@@ -448,6 +448,18 @@ class SegmentResult:
         }
 
 
+def _numerato(testo: str) -> str:
+    """Le parole del testo con il loro indice, una per riga.
+
+    I modelli locali (misurato con qwen3:14b il 9 ottobre) sbagliano a
+    contare le parole: l'indice «i» della risposta finiva sulla parola
+    vicina e il controllo scartava quasi ogni segmento. Dare gli indici
+    scritti toglie il conteggio dal compito del modello.
+    """
+    righe = [f"{i}: {w}" for i, w in enumerate(_tokenizza(testo))]
+    return "Parole numerate (usa questi indici per \"i\"):\n" + "\n".join(righe) + "\n"
+
+
 def _tokenizza(testo: str) -> list[str]:
     """Le parole del testo, con la punteggiatura attaccata.
 
@@ -500,37 +512,52 @@ def _solo_oggetto(testo: str) -> str | None:
 
 
 def _applica(originale: str, correzioni: list[dict]) -> tuple[str, list[WordFix]] | None:
-    """Ricostruisce il testo corregato, parola per parola.
+    """Ricostruisce il testo corretto, parola per parola.
 
-    Ritorna None se qualcosa non torna: un indice fuori range o una
-    parola che non corrisponde a quella che il modello dice di aver
-    corretto. In entrambi i casi il riallineamento e' perso e correggere
-    significherebbe spostare le parole di un segmento su quelle del
-    successivo — che e' peggio che non correggere.
+    Ogni correzione porta l'indice («i») e la parola che il modello dice
+    di aver corretto («a»). Se «a» non e' la parola a quell'indice, la
+    correzione si **ricolloca** sull'unica posizione dove «a» compare; se
+    compare piu' volte o mai, quella sola correzione si scarta. Prima si
+    scartava tutto il segmento: era giusto con Gemini, che sbagliava di
+    rado, ma un modello locale sbaglia a contare spesso e si buttavano
+    via anche le correzioni allineate bene.
 
-    Il numero di parole non e' verificato qui perche' non puo' cambiare:
-    la lista di uscita ha la lunghezza di quella di ingresso per
-    costruzione, e una correzione che punta fuori dal testo viene
-    respinta prima. Il numero di parole e' quindi invariabile per
-    costruzione, non per controllo.
+    Ritorna None solo se nessuna correzione proposta e' utilizzabile
+    pur essendocene: in quel caso il modello non stava guardando questo
+    testo, e il segmento si dichiara scartato.
+
+    Il numero di parole resta invariato per costruzione: la lista di
+    uscita ha la lunghezza di quella di ingresso.
     """
     parole = _tokenizza(originale)
+    norm = [_norm(w) for w in parole]
     fissate: dict[int, str] = {}
+    proposte = scartate = 0
     for c in correzioni:
+        if not isinstance(c, dict):
+            scartate += 1
+            continue
+        detta = _norm(str(c.get("a") or ""))
+        nuova = str(c.get("b") or "")
+        if detta and _norm(nuova) == detta:
+            continue  # nessun cambiamento dichiarato
+        proposte += 1
         try:
             i = int(c.get("i", -1))
         except (TypeError, ValueError):
-            return None
-        if not 0 <= i < len(parole):
-            return None
-        # La parola che il modello dice di aver corretto deve essere
-        # quella che c'e'. Se non e', i due elenchi non sono allineati e
-        # applicare comunque sposterebbe tutto.
-        detta = (c.get("a") or "").strip(PUNTEGGIATURA)
-        reale = parole[i].strip(PUNTEGGIATURA)
-        if detta and reale and detta.casefold() != reale.casefold():
-            return None
-        fissate[i] = c.get("b") or ""
+            i = -1
+        if not (0 <= i < len(parole)) or (detta and norm[i] != detta):
+            posizioni = [k for k, w in enumerate(norm) if detta and w == detta]
+            if len(posizioni) != 1:
+                scartate += 1
+                continue
+            i = posizioni[0]
+        if i in fissate:
+            scartate += 1
+            continue
+        fissate[i] = nuova
+    if proposte and not fissate:
+        return None
 
     out = list(parole)
     for i, nuovo in fissate.items():
@@ -539,12 +566,11 @@ def _applica(originale: str, correzioni: list[dict]) -> tuple[str, list[WordFix]
             # Una correzione vuota lascia la parola com'era: cancellare
             # una parola non e' correggere, e' togliere informazione.
             continue
-        # La punteggiatura e' dell'originale, non del modello. Se il
-        # modello la ripete e poi ci aggiungo la coda, «sera.» diventerebbe
-        # «sera..». Si butta via quella che ha messo lui e si rimette
-        # quella che c'era: cosi' la parola finale e' identica a quella
-        # che finisce davvero nel testo, e il flag «cambiata» dice la
-        # verita' anche a parola singola.
+        if len(testo.split()) != 1:
+            # Una «parola» con spazi dentro aggiungerebbe parole al testo.
+            continue
+        # La punteggiatura e' dell'originale, non del modello: si toglie
+        # quella che ha messo lui e si rimette quella che c'era.
         out[i] = testo + _coda(parole[i])
 
     return " ".join(out), [
@@ -632,6 +658,21 @@ class ClientOllama:
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.models = self
+        # Tempi di Ollama, sommati: servono a capire dove va il tempo per
+        # segmento (lettura del prompt o scrittura della risposta).
+        self.misure = {"chiamate": 0, "prompt_token": 0, "prompt_sec": 0.0,
+                       "risposta_token": 0, "risposta_sec": 0.0, "totale_sec": 0.0}
+
+    def riepilogo(self) -> str:
+        m = self.misure
+        n = m["chiamate"]
+        if not n:
+            return ""
+        return (f"Ollama: {n} chiamate, {m['totale_sec'] / n:.1f} s a chiamata "
+                f"(prompt {m['prompt_token'] / n:.0f} token in "
+                f"{m['prompt_sec'] / n:.1f} s, risposta "
+                f"{m['risposta_token'] / n:.0f} token in "
+                f"{m['risposta_sec'] / n:.1f} s)")
 
     def _chiama(self, percorso: str, dati: dict | None = None) -> dict:
         import urllib.error
@@ -683,7 +724,15 @@ class ClientOllama:
         }
         if config.get("response_mime_type") == "application/json":
             dati["format"] = "json"
-        return _RispostaOllama(self._chiama("/api/generate", dati).get("response", ""))
+        r = self._chiama("/api/generate", dati)
+        m = self.misure
+        m["chiamate"] += 1
+        m["prompt_token"] += r.get("prompt_eval_count") or 0
+        m["prompt_sec"] += (r.get("prompt_eval_duration") or 0) / 1e9
+        m["risposta_token"] += r.get("eval_count") or 0
+        m["risposta_sec"] += (r.get("eval_duration") or 0) / 1e9
+        m["totale_sec"] += (r.get("total_duration") or 0) / 1e9
+        return _RispostaOllama(r.get("response", ""))
 
 
 def _coda(parola: str) -> str:
@@ -808,11 +857,13 @@ class Correttore:
                 parti.append("Contesto prima (non correggere):\n"
                              + "\n".join(prima) + "\n")
             parti.append(f"Testo da correggere:\n{testo}\n")
+            parti.append(_numerato(testo))
             if dopo:
                 parti.append("Contesto dopo (non correggere):\n"
                              + "\n".join(dopo) + "\n")
             return "\n".join(parti)
-        parti.append(f"Testo:\n{testo}")
+        parti.append(f"Testo:\n{testo}\n")
+        parti.append(_numerato(testo))
         return "\n".join(parti)
 
     def correggi_segmento(

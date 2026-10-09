@@ -195,8 +195,9 @@ def numero_di_parole_invariabile() -> None:
     troppe = [{"i": i, "a": p, "b": p} for i, p in enumerate(orig.split())]
     troppe += [{"i": 3, "a": "quarta", "b": "quarta"},
                {"i": 4, "a": "quinta", "b": "quinta"}]
-    require(_applica(orig, troppe) is None,
-            "una risposta con piu' parole del testo deve essere scartata")
+    out, _ = _applica(orig, troppe)
+    require(out == orig and len(out.split()) == 3,
+            f"parole inventate non entrano nel testo: {out!r}")
 
     # E se il modello cancella una parola svuotandola, la parola resta.
     out, fissate = _applica(orig, [{"i": 1, "a": "due", "b": ""}])
@@ -206,23 +207,32 @@ def numero_di_parole_invariabile() -> None:
 
 
 def risposta_disallineata_scartata() -> None:
-    """Se il modello cita una parola che non c'e', tutto viene scartato.
+    """Una correzione disallineata si ricolloca, o si scarta lei sola.
 
-    Il caso pericoloso non e' tanto l'indice sbagliato quanto la parola
-    sbagliata: un modello che ha diviso diversamente il testo produce
-    due elenchi simili ma allineati in modo diverso. Applicare
-    comunque sposterebbe ogni parola di un segmento su quella del
-    successivo, e il testo risultante sembrerebbe plausibile. Meglio
-    buttare via il lavoro di una chiamata.
+    Il caso pericoloso e' la parola sbagliata: applicare una correzione
+    sulla parola vicina produrrebbe un testo plausibile e falso. Percio'
+    conta «a», la parola che il modello dice di correggere: se all'indice
+    dato c'e' un'altra parola, la correzione va sull'unica posizione dove
+    «a» compare; se «a» non compare o compare piu' volte, si scarta. Se
+    nessuna correzione proposta si puo' usare, si scarta il segmento.
+    (Dal 9 ottobre: i modelli locali sbagliano spesso a contare, e
+    scartare tutto il segmento buttava via anche le correzioni giuste.)
     """
     require(_applica("a b c", [{"i": 1, "a": "NONQUELLO", "b": "x"}]) is None,
-            "una parola che non corrisponde deve far scartare la risposta")
-    require(_applica("a b c", [{"i": 9, "a": "c", "b": "x"}]) is None,
-            "un indice fuori range deve far scartare la risposta")
-    require(_applica("a b c", [{"i": -1, "a": "a", "b": "x"}]) is None,
-            "un indice negativo deve far scartare la risposta")
-    require(_applica("a b c", [{"i": "non_un_numero", "a": "a", "b": "x"}]) is None,
-            "un indice non numerico deve far scartare la risposta")
+            "una parola che non c'e' deve far scartare la risposta")
+    out, _ = _applica("a b c", [{"i": 9, "a": "c", "b": "x"}])
+    require(out == "a b x", f"indice fuori range, parola unica: si ricolloca: {out!r}")
+    out, _ = _applica("a b c", [{"i": 0, "a": "b", "b": "x"}])
+    require(out == "a x c", f"indice sbagliato, parola unica: si ricolloca: {out!r}")
+    require(_applica("a b a", [{"i": 1, "a": "a", "b": "x"}]) is None,
+            "parola ripetuta e indice sbagliato: ambigua, si scarta")
+    out, _ = _applica("a b c", [{"i": 1, "a": "b", "b": "y"},
+                                {"i": 2, "a": "NONQUELLO", "b": "x"}])
+    require(out == "a y c", f"si scarta solo la correzione sbagliata: {out!r}")
+    out, _ = _applica("a b c", [{"i": "non_un_numero", "a": "a", "b": "x"}])
+    require(out == "x b c", f"indice non numerico, parola unica: {out!r}")
+    out, _ = _applica("a b c", [{"i": 1, "a": "b", "b": "due parole"}])
+    require(out == "a b c", f"una correzione con spazi non aggiunge parole: {out!r}")
 
     # La punteggiatura non conta come differenza: «sera.» e «sera»
     # sono la stessa parola.

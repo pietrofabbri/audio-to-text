@@ -683,6 +683,9 @@ def main() -> int:
     if args.solo_proposte and len(sessioni) > 1:
         _stampa_sintesi(proposte_totali, vocabolario)
 
+    riepilogo = getattr(correttore._client, "riepilogo", None)
+    if callable(riepilogo) and riepilogo():
+        print("\n" + riepilogo())
     if args.dry:
         print("\n[dry-run] niente scritto. Con --consent si scrive.")
     if interrotto:
