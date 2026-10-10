@@ -108,6 +108,20 @@ def _merge_into(data: dict, keep: str, drop: str) -> None:
     """
     src = data["speakers"].pop(drop)
     dst = data["speakers"][keep]
+    # Il centroide unito e' la media pesata per secondi dei due. Prima
+    # il merge teneva solo quello di `keep`: unire 5 ore di Pietro *dentro*
+    # una voce di 2 minuti (argomenti scambiati, 10 ottobre) lasciava a
+    # Pietro il centroide dei 2 minuti.
+    c_dst, c_src = dst.get("centroid") or [], src.get("centroid") or []
+    if c_dst and c_src and len(c_dst) == len(c_src):
+        w_dst = max(float(dst.get("total_seconds", 0) or 0), 1.0)
+        w_src = max(float(src.get("total_seconds", 0) or 0), 1.0)
+        dst["centroid"] = [
+            float((a * w_dst + b * w_src) / (w_dst + w_src))
+            for a, b in zip(c_dst, c_src)
+        ]
+    elif c_src and not c_dst:
+        dst["centroid"] = list(c_src)
     for k, v in src.get("sessions", {}).items():
         dst.setdefault("sessions", {})
         if k in dst["sessions"]:

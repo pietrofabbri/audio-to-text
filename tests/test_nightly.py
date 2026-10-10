@@ -674,10 +674,20 @@ def t_la_correzione_parte_solo_se_accesa(tmp: Path) -> None:
         require(cmd[cmd.index("--escludi-giorno") + 1] == "2026-10-08",
                 f"i giorni esclusi passano: {cmd}")
         require("--max-seconds" in cmd, "con un budget")
+        motore = config.correzione_motore
+        try:
+            config.correzione_motore = "gemini"
+            cmd = nightly._correzione_cmd()
+            require("--pausa" in cmd, f"con Gemini una pausa fra le chiamate: {cmd}")
+        finally:
+            config.correzione_motore = motore
     finally:
         config.correzione_notturna = acceso
         config.correzione_giorni_esclusi = esclusi
-    require(acceso is False, "il default in config deve restare False")
+    # Fino al 10 ottobre il default doveva restare False; da allora e'
+    # acceso per scelta di Pietro (consenso D2 registrato l'8 ottobre,
+    # termini Gemini per il SEE verificati il 10). Il test non lo vincola
+    # piu': controlla solo che l'interruttore funzioni nei due sensi.
 
 def t_la_notte_prepara_le_voci_da_rivedere(tmp: Path) -> None:
     """L'ultimo passo scrive il promemoria, e in --dry-run non scrive.

@@ -107,6 +107,27 @@ MODELLI_NOTI = {
 # per costruzione.
 SOGLIA_PROB = 0.90
 
+# Quanto la parola proposta deve somigliare all'originale (rapporto di
+# difflib sulle lettere, minuscole e senza punteggiatura, da 0 a 1).
+# Sotto questa soglia la proposta e' una parola nuova, non una
+# correzione di quello che Whisper ha sentito male. Vedi `_filtra`.
+SOGLIA_SOMIGLIANZA = 0.6
+
+
+def somiglianza(a: str, b: str) -> float:
+    """Somiglianza fra due parole, 0..1, ignorando maiuscole e punteggiatura."""
+    import difflib
+    import unicodedata
+
+    def pulisci(x: str) -> str:
+        x = unicodedata.normalize("NFC", x).lower()
+        return "".join(c for c in x if c.isalnum() or c == "'")
+
+    a, b = pulisci(a), pulisci(b)
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
 ISTRUZIONI = """\
 Sei un correttore di trascrizioni automatiche di una conversazione \
 parlata in italiano.
@@ -1043,6 +1064,20 @@ class Correttore:
         E' una difesa, non una garanzia: distingue gli errori acustici
         dai dialettalismi nella maggior parte dei casi, non in tutti.
         """
+        # Seconda difesa, indipendente dalla probabilita': la proposta
+        # deve somigliare a quello che e' stato trascritto. Misura del
+        # 10 ottobre (20 segmenti del 2/10, gemini-3.5-flash-lite): le
+        # correzioni buone sono vicine all'originale nelle lettere
+        # (battetta->battuta, stronzana->stronzata, marche->marce), quelle
+        # cattive sono parole inventate (istitutiva->stacanovista,
+        # Fulci->Fogliano, olf->ex, Cominciatemi->Diamoci). Whisper sbaglia
+        # per suoni simili, non per parole lontane.
+        for f in parole:
+            if f.cambiata and not f.bloccata and \
+                    somiglianza(f.originale, f.proposta) < SOGLIA_SOMIGLIANZA:
+                f.bloccata = True
+                f.motivo_blocco = "distanza"
+
         if not prob or self.soglia_prob <= 0:
             return parole
 
@@ -1098,7 +1133,7 @@ class Correttore:
                 logger.warning("Segmento %d scartato: %s", idx, r.motivo_scarto)
             elif r.n_bloccate:
                 logger.info("Segmento %d: %d correzioni proposte, %d "
-                            "bloccate perche' certe", idx, r.n_proposte,
+                            "bloccate (Whisper sicuro, nome o troppo diverse)", idx, r.n_proposte,
                             r.n_bloccate)
             if self.pausa and n + 1 < len(segmenti):
                 time.sleep(self.pausa)

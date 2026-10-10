@@ -318,5 +318,27 @@ def main() -> int:
     return 1 if failed else 0
 
 
+
+
+def test_merge_media_pesata_dei_centroidi(tmp_path):
+    """Unire due voci deve mescolare i centroidi in base ai secondi.
+
+    Prima il merge teneva solo il centroide della voce conservata: con gli
+    argomenti scambiati (5 ore unite dentro 2 minuti) la voce principale
+    restava con l'impronta dei 2 minuti.
+    """
+    from core.speaker_db import _merge_into
+    data = {"speakers": {
+        "GLOBAL_001": {"centroid": [1.0, 0.0], "total_seconds": 300.0,
+                       "sessions": {"a|S0": {"stem": "a", "seconds": 300.0}}},
+        "GLOBAL_002": {"centroid": [0.0, 1.0], "total_seconds": 100.0,
+                       "sessions": {"b|S0": {"stem": "b", "seconds": 100.0}}},
+    }}
+    _merge_into(data, "GLOBAL_002", "GLOBAL_001")
+    c = data["speakers"]["GLOBAL_002"]["centroid"]
+    assert abs(c[0] - 0.75) < 1e-6 and abs(c[1] - 0.25) < 1e-6, c
+    assert data["speakers"]["GLOBAL_002"]["total_seconds"] == 400.0
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

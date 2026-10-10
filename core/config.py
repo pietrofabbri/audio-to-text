@@ -473,12 +473,22 @@ class PipelineConfig:
     #
     # Lasciata spenta il 9 ottobre dopo la prima misura (APERTI 37):
     # con qwen3:14b circa meta' delle correzioni peggiorava il testo.
+    # Accesa il 10 ottobre con Gemini (gemini-3.5-flash-lite, chiave in
+    # data/gemini_api_key.txt) e il filtro di somiglianza
+    # (`SOGLIA_SOMIGLIANZA` in core/text_correction.py): sugli stessi 20
+    # segmenti, 14 correzioni accettate, circa 11 buone, 1 chiaramente
+    # sbagliata. Il testo originale resta comunque intatto: la versione
+    # corretta e' un file a parte.
     #
-    # `gemini` resta possibile ma manda il testo a Google: sul piano
-    # gratuito i termini consentono di usarlo per migliorare i prodotti,
-    # con lettura da parte di revisori umani. Non usarlo senza piano a
-    # pagamento.
-    correzione_notturna: bool = False
+    # `gemini` manda il testo a Google. Termini verificati il 10 ottobre
+    # su https://ai.google.dev/terms: per chi sta nel SEE, in Svizzera o
+    # nel Regno Unito valgono le condizioni sui dati del piano a
+    # pagamento anche sull'uso gratuito (niente addestramento, niente
+    # revisori umani; log per un periodo limitato contro gli abusi).
+    # Fuori da quelle aree il piano gratuito puo' usare i testi.
+    # Chiave in data/gemini_api_key.txt (fuori dal repo). Il piano
+    # gratuito ha un limite di richieste al minuto: un 429 si riprova.
+    correzione_notturna: bool = True
 
     # Giorni (AAAA-MM-GG) da non mandare a Gemini: per una giornata in
     # cui qualcuno non ha ancora dato l'ok. Restano trascritti e
@@ -491,8 +501,8 @@ class PipelineConfig:
     # nel tempo si riprende la notte dopo.
     correzione_budget_sec: int = 7200
 
-    # "ollama" (locale, predefinito) o "gemini" (API di Google).
-    correzione_motore: str = "ollama"
+    # "gemini" (API di Google, scelto il 10 ottobre) o "ollama" (locale).
+    correzione_motore: str = "gemini"
 
     # Il modello locale. qwen3:14b (~9 GB, gia' installato sul Mac);
     # qwen3:8b (~5 GB) se serve qualcosa di piu' leggero.

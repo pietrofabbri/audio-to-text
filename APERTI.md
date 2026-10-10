@@ -1759,6 +1759,75 @@ stile e lessico. Si tiene il testo grezzo, che il pannello dichiara.
 Da riprovare con un modello locale più forte in italiano o con una
 superficie di revisione (le proposte si accettano a mano, punto 22).
 
+### 38. ~~La correzione era spenta~~ — chiusa il 10 ottobre (accesa con Gemini)
+
+**Termini.** Rilette il 10 ottobre le condizioni aggiuntive dell'API
+Gemini (https://ai.google.dev/terms): per chi usa il servizio dal SEE,
+dalla Svizzera o dal Regno Unito valgono le condizioni sui dati del
+piano a pagamento **anche sull'uso gratuito**: prompt e risposte non si
+usano per migliorare i prodotti, niente revisori umani; Google li
+conserva per un periodo limitato solo contro gli abusi e per obblighi di
+legge. La lettura del 9 ottobre (punto 37) valeva per chi sta fuori da
+quelle aree. Pietro è in Italia: Gemini gratuito è utilizzabile.
+
+**Chiave.** In `data/gemini_api_key.txt` (permessi 600, `data/` è in
+`.gitignore`). Creata da Pietro su Google AI Studio, senza fatturazione.
+
+**Misura** (stessi 20 segmenti del 2 ottobre, sessione 19-42-33,
+`gemini-3.5-flash-lite`). Senza filtri nuovi: 18 correzioni accettate,
+circa metà buone — lo stesso risultato di qwen3:14b. Le cattive avevano
+una cosa in comune: erano **parole nuove**, non correzioni di un suono
+(`istitutiva → stacanovista`, `Fulci → Fogliano`, `olf → ex`,
+`Cominciatemi → Diamoci`); le buone erano vicine nelle lettere
+(`battetta → battuta`, `stronzana → stronzata`, `marche → marce`).
+Whisper sbaglia per suoni simili, non per parole lontane.
+
+**Rimedio.** Filtro di somiglianza in `_filtra`
+(`core/text_correction.py`): una proposta con rapporto `difflib` sotto
+`SOGLIA_SOMIGLIANZA = 0.6` (lettere minuscole, senza punteggiatura) è
+bloccata con `motivo_blocco = "distanza"`. Rifatta la prova: 14
+correzioni accettate, circa 11 buone, 1 chiaramente sbagliata
+(`utili → ultimi`), 2 discutibili (`vincolo → vincono`,
+`extraordinarie → straordinarie`, dove chi parlava giocava proprio sulla
+differenza).
+
+**Acceso:** `correzione_notturna = True`, `correzione_motore =
+"gemini"`. Il giro notturno passa `--pausa 4` (il piano gratuito ha un
+limite di richieste al minuto: alla prova, 429 dopo ~12 chiamate
+ravvicinate). Il testo grezzo resta intatto; la versione corretta è un
+file a parte (`*.corrected.*`). I giorni già trascritti si recuperano
+da soli, `correzione_budget_sec` per notte, dal più vecchio.
+
+Provati anche `gemini-3.5-flash` (non più disponibile per l'account) e
+`gemini-3.8-flash` (503 continui, poi nessuna risposta in 4 minuti): si
+resta su flash-lite.
+
+### 39. `tests/test_e2e.py` fallisce al passo 6 — aperto il 10 ottobre
+
+«nessuna riga 'deleted' nel manifest» dopo lo scarico dal registratore
+finto. Fallisce identico su un checkout pulito di `HEAD` (89e40c2),
+quindi non viene dalle modifiche del 10 ottobre. Lo scarico vero dello
+stesso giorno ha funzionato (7 file copiati, cancellati, registratore
+espulso): sembra il test rimasto indietro rispetto a `scarico.py`. Da
+guardare.
+
+### 40. Il merge delle voci teneva un solo centroide — chiuso il 10 ottobre
+
+`review_speakers.py merge <tenere> <unire>`: la prima voce resta. Il 10
+ottobre gli argomenti sono stati passati al contrario (`merge GLOBAL_053
+GLOBAL_001`): Pietro (5 ore) è finito dentro 053 (2 minuti), e
+`_merge_into` teneva **solo il centroide della voce conservata**: Pietro
+restava con l'impronta dei 2 minuti. Riparato a mano: chiave rinominata
+in GLOBAL_001, sessioni rietichettate (22 sessioni, 6.465 riferimenti,
+49.002 righe di corpus.db), centroide ricalcolato come media pesata per
+secondi degli embedding nei checkpoint. Ricalcolati allo stesso modo
+anche 018 (Teresa, nata da un merge: coseno vecchio/nuovo 0,918) e 048
+(Borghi: 0,872). Copia di sicurezza: `data/speakers_db.json.prima-riparazione-053`.
+
+Corretto il codice: `_merge_into` fa la media pesata per secondi dei
+due centroidi (test `test_merge_media_pesata_dei_centroidi`), e
+`merge -h` chiama gli argomenti `tenere` e `unire`.
+
 ---
 
 ## L'ordine in cui li farei

@@ -522,15 +522,42 @@ def consenso_esplicito() -> None:
     import os
     chiavi = {k: os.environ.pop(k, None)
               for k in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
+    # Anche il file della chiave va nascosto: sul Mac esiste davvero
+    # (data/gemini_api_key.txt, dal 10 ottobre) e il test lo trovava.
+    _cfg = sys.modules["core.config"]
+    radice = _cfg.ROOT_DIR
+    _cfg.ROOT_DIR = Path("/nonesiste-audio-to-text")
     try:
         pronto, motivo = Correttore(consentito=True, motore="gemini").pronto()
         require(not pronto, "senza chiave non si deve procedere")
         require("GOOGLE_API_KEY" in motivo,
                 f"il motivo deve nominare la chiave, dice: {motivo!r}")
     finally:
+        _cfg.ROOT_DIR = radice
         for k, v in chiavi.items():
             if v is not None:
                 os.environ[k] = v
+
+
+def proposte_lontane_bloccate() -> None:
+    """Una parola che non somiglia all'originale non entra nel testo.
+
+    Misura del 10 ottobre: le correzioni sbagliate di Gemini erano parole
+    nuove (istitutiva->stacanovista, olf->ex), quelle giuste erano vicine
+    nelle lettere (battetta->battuta).
+    """
+    from core.text_correction import somiglianza, SOGLIA_SOMIGLIANZA
+    require(somiglianza("battetta", "battuta") >= SOGLIA_SOMIGLIANZA,
+            "battetta->battuta deve passare")
+    require(somiglianza("istitutiva,", "stacanovista,") < SOGLIA_SOMIGLIANZA,
+            "istitutiva->stacanovista deve essere bloccata")
+    c = _correttore([_risposta([
+        {"i": 0, "a": "battetta", "b": "battuta"},
+        {"i": 1, "a": "olf", "b": "ex"},
+    ])])
+    r = c.correggi_segmento(0, "battetta olf")
+    require(r.testo_corretto == "battuta olf",
+            f"atteso «battuta olf», ottenuto {r.testo_corretto!r}")
 
 
 def testo_vuoto_non_chiama_il_modello() -> None:
@@ -1543,6 +1570,7 @@ def ollama_locale() -> None:
         raise Failure("un 404 deve sollevare")
 
 CHECKS = [
+    ("proposte lontane dall'originale bloccate", proposte_lontane_bloccate),
     ("il motore locale (Ollama) funziona e spiega gli errori", ollama_locale),
     ("Zia Titti resta Zia Titti (glossario)", zia_titti_col_glossario),
     ("Zia Titti resta Zia Titti (maiuscola)", zia_titti_senza_glossario),

@@ -170,6 +170,12 @@ def _correzione_cmd() -> list[str] | None:
         return None
     cmd = [sys.executable, str(ROOT / "correct_text.py"), "--consent",
            "--sintetico", "--max-seconds", str(config.correzione_budget_sec)]
+    if getattr(config, "correzione_motore", "ollama") == "gemini":
+        # Il piano gratuito di Gemini ha un limite di richieste al minuto
+        # (prova del 10 ottobre: 429 dopo ~12 chiamate ravvicinate). Con
+        # 4 s fra una chiamata e l'altra si sta sotto e non si perde
+        # tempo nei 30 s di attesa dopo ogni 429.
+        cmd += ["--pausa", "4"]
     for giorno in config.correzione_giorni_esclusi:
         cmd += ["--escludi-giorno", giorno]
     return cmd

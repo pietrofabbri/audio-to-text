@@ -611,8 +611,10 @@ def main() -> int:
                    help="salva il nome senza riallineare le sessioni già scritte")
 
     m = sub.add_parser("merge", help="unisce due voci: sono la stessa persona")
-    m.add_argument("gid")
-    m.add_argument("into")
+    m.add_argument("gid", metavar="tenere",
+                   help="la voce che resta (di solito quella con nome e piu' minuti)")
+    m.add_argument("into", metavar="unire",
+                   help="la voce che sparisce dentro la prima")
     m.add_argument("--dry-run", action="store_true",
                    help="mostra cosa verrebbe rietichettato")
 

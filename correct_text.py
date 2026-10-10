@@ -211,9 +211,14 @@ def _mostra_confronto(righe: list[tuple[dict, dict]]) -> None:
         # da «il modello voleva cambiare sei parole e gliele ho negate».
         bloccate = [w for w in res["words"] if w.get("blocked")]
         if bloccate:
+            def _perche(w):
+                p = w.get("prob")
+                p = f", p={p:.2f}" if isinstance(p, (int, float)) else ""
+                return f"{w.get('blocked_reason') or 'prob'}{p}"
             dettaglio = ", ".join(
-                f"{w['raw']} (p={w['prob']:.2f})" for w in bloccate)
-            print(f"    {len(bloccate)} bloccate perche' certe: {dettaglio}")
+                f"{w['raw']}->{w.get('proposed') or w.get('proposta') or '?'} ({_perche(w)})"
+                for w in bloccate)
+            print(f"    {len(bloccate)} bloccate: {dettaglio}")
 
 
 def _parola_pulita(parola: str) -> str:
