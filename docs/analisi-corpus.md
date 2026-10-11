@@ -1,6 +1,6 @@
 # Analisi del corpus e pannello web — specifica
 
-Stato al 9 ottobre 2026 (sera). Documento di progetto del Project «Psico-fisio
+Stato all'11 ottobre 2026. Documento di progetto del Project «Psico-fisio
 app», copiato anche nella repo `pietrofabbri/audio-to-text` in
 `docs/analisi-corpus.md` (le due copie sono identiche).
 Collegati: `ROADMAP.md` (ordine dei lavori della pipeline, decisioni
@@ -20,7 +20,7 @@ conversazione in cui è nato.
 Leggere in modo molto leggibile, man mano che si accumulano, i dati raccolti
 dal diario audio di Pietro (registratore TileRec, parlato quotidiano con
 consenso delle persone coinvolte) e dalle misure del braccialetto Amazfit
-Helio Strap Pro, per capire come vive, parla, si relaziona e sta nel corpo, e
+Helio Strap (non «Pro»), per capire come vive, parla, si relaziona e sta nel corpo, e
 quali legami ci sono tra queste dimensioni.
 
 Il soggetto delle analisi psicologiche è **solo Pietro** (`GLOBAL_001`, voce
@@ -362,6 +362,8 @@ si apre; con quella giusta compare il pannello; nel file pubblicato non
 compare nessun nome né numero in chiaro.
 
 ### Configurazione (passi di Pietro, una volta sola)
+
+**Fatta entro l'11/10.** Il workflow pubblica a ogni push del Mac (giri del 10 e 11 ottobre riusciti) e la pagina risponde su `https://pietrofabbri.github.io/taccuino/`, cifrata, senza nomi in chiaro (verificato l'11/10). Il token scade dopo un anno: alla scadenza va rigenerato e reinserito in `PANNELLO_TOKEN`, altrimenti il passo «Pubblica» fallisce.
 
 1. Creare su GitHub la repo **pubblica** e vuota `taccuino`.
 2. Creare un token fine-grained con accesso solo a `taccuino`, permesso
