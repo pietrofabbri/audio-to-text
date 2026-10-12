@@ -772,6 +772,36 @@ def t_la_notte_trascrive_dalla_coda(tmp: Path) -> None:
         nightly.DATA_ROOT, nightly._run, sys.argv = radice, run_vero, argv
 
 
+def t_una_passata_alla_volta(tmp: Path) -> None:
+    """Se un'altra passata tiene il lucchetto, la seconda esce subito.
+
+    Il 10 ottobre due passate sulla stessa coda ne hanno bloccata una per
+    due giorni, e con lei i giri diurni successivi.
+    """
+    print("  una sola passata di elaborazione alla volta")
+    import nightly
+    from core.scarico import Lucchetto
+
+    vecchio, argv = nightly.ELABORAZIONE_LOCK, sys.argv
+    nightly.ELABORAZIONE_LOCK = tmp / "elaborazione.lock"
+    chiamate = []
+    vero = nightly._main
+    nightly._main = lambda: chiamate.append(1) or 0
+    altro = Lucchetto(nightly.ELABORAZIONE_LOCK)
+    try:
+        sys.argv = ["nightly.py"]
+        require(altro.prendi(), "il primo lucchetto deve riuscire")
+        require(nightly.main() == 0 and not chiamate,
+                "con il lucchetto preso la passata non deve partire")
+        altro.lascia()
+        require(nightly.main() == 0 and chiamate == [1],
+                "libero il lucchetto, la passata parte")
+    finally:
+        altro.lascia()
+        nightly._main = vero
+        nightly.ELABORAZIONE_LOCK, sys.argv = vecchio, argv
+
+
 def main() -> int:
     tests = [
         t_budget_fits_known_files,
@@ -793,6 +823,7 @@ def main() -> int:
         t_la_correzione_parte_solo_se_accesa,
         t_la_notte_prepara_le_voci_da_rivedere,
         t_la_notte_trascrive_dalla_coda,
+        t_una_passata_alla_volta,
     ]
     failed = 0
     for fn in tests:

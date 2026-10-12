@@ -1828,6 +1828,20 @@ Corretto il codice: `_merge_into` fa la media pesata per secondi dei
 due centroidi (test `test_merge_media_pesata_dei_centroidi`), e
 `merge -h` chiama gli argomenti `tenere` e `unire`.
 
+
+### 41. ~~Due passate sulla stessa coda~~ — chiuso il 13 ottobre
+
+Il 10 ottobre una passata lanciata a mano (21:18) e il job diurno delle
+21:30 hanno lavorato insieme sulla coda: la prima ha trascritto i sei
+file, la seconda è rimasta viva due giorni a rigenerare ogni ~15 s i
+worker della prosodia. Finché era viva launchd non lanciava altri giri
+diurni: i sette file scaricati il 12 ottobre alle 17:49 sono rimasti in
+coda (il giro delle 2:00 del 12 aveva trovato la coda vuota). Processi
+uccisi a mano il 13 alle 00:17 e giro notturno avviato con `launchctl
+kickstart`. Rimedio: `nightly.main()` prende un lucchetto
+(`logs/elaborazione.lock`, lo stesso `Lucchetto` dello scarico); se è
+già preso esce subito. Test `t_una_passata_alla_volta`.
+
 ---
 
 ## L'ordine in cui li farei

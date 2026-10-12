@@ -307,7 +307,35 @@ def _sessioni_non_pubblicate() -> dict[str, list[str]]:
     return out
 
 
+ELABORAZIONE_LOCK = ROOT / "logs" / "elaborazione.lock"
+
+
 def main() -> int:
+    """Una sola passata alla volta.
+
+    Il 10 ottobre una passata lanciata a mano (21:18) e il job diurno
+    delle 21:30 hanno lavorato insieme sulla stessa coda. La prima ha
+    finito i file; la seconda e' rimasta due giorni a rigenerare i worker
+    della prosodia su file che non c'erano piu'. Finche' restava viva,
+    launchd non faceva partire altri giri diurni, e i file scaricati il
+    12 ottobre sono rimasti in coda. Con il lucchetto la seconda passata
+    vede che la prima e' in corso ed esce subito.
+    """
+    from core.scarico import Lucchetto
+
+    if "--dry-run" in sys.argv:
+        return _main()
+    lucchetto = Lucchetto(ELABORAZIONE_LOCK)
+    if not lucchetto.prendi():
+        print("Un'altra passata di elaborazione e' gia' in corso: esco.")
+        return 0
+    try:
+        return _main()
+    finally:
+        lucchetto.lascia()
+
+
+def _main() -> int:
     ap = argparse.ArgumentParser(description="Ciclo notturno completo")
     ap.add_argument(
         "--max-seconds", type=int, default=DEFAULT_WINDOW_SEC,
