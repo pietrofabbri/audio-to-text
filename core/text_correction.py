@@ -113,6 +113,37 @@ SOGLIA_PROB = 0.90
 # correzione di quello che Whisper ha sentito male. Vedi `_filtra`.
 SOGLIA_SOMIGLIANZA = 0.6
 
+# Parole che il correttore non tocca mai (aggiunte il 21 ottobre).
+#
+# Perche'. Sono le parole su cui si calcolano le metriche di stile del
+# pannello (intercalari, pronomi io/noi, negazioni: `core/metriche.py`) e
+# le parole grammaticali brevi. Nella prova del 9 ottobre gli errori del
+# correttore stavano quasi tutti qui: «tipo → circa» cancellava un
+# intercalare, «il → è» e «a → è» cambiavano una parola grammaticale che
+# Whisper aveva sentito bene. Correggerle guadagna poco (sono parole
+# corte, il senso della frase non cambia) e rischia molto (cambiano i
+# conteggi). Si perde qualche correzione buona («a → ha»): e' il prezzo.
+INTERCALARI_PROTETTI = frozenset({
+    "cioè", "cioe", "tipo", "praticamente", "insomma", "boh", "diciamo",
+    "ecco", "comunque", "vabbè", "vabbe", "allora", "quindi", "niente",
+    "senti", "guarda", "appunto", "magari", "beh", "mah", "eh", "ah",
+    "oh", "uhm", "mh", "ok", "okay", "dai", "cioé",
+})
+PAROLE_GRAMMATICALI = frozenset({
+    "il", "lo", "la", "i", "gli", "le", "l", "un", "uno", "una", "un'",
+    "di", "a", "da", "in", "con", "su", "per", "tra", "fra",
+    "del", "dello", "della", "dei", "degli", "delle", "al", "allo", "alla",
+    "ai", "agli", "alle", "dal", "dalla", "nel", "nella", "sul", "sulla",
+    "e", "ed", "o", "od", "ma", "che", "chi", "se", "non", "no", "sì", "si",
+    "mai", "nulla", "nessuno", "nessuna",
+    "ci", "ne", "mi", "ti", "vi", "me", "te", "ce", "ve",
+    "io", "tu", "lui", "lei", "noi", "voi", "loro",
+    "mio", "mia", "miei", "mie", "nostro", "nostra", "nostri", "nostre",
+    "è", "e'", "ho", "hai", "ha", "abbiamo", "avete", "hanno",
+    "sono", "sei", "siamo", "siete",
+})
+PAROLE_PROTETTE = INTERCALARI_PROTETTI | PAROLE_GRAMMATICALI
+
 
 def somiglianza(a: str, b: str) -> float:
     """Somiglianza fra due parole, 0..1, ignorando maiuscole e punteggiatura."""
@@ -784,6 +815,7 @@ class Correttore:
         soglia_prob: float = SOGLIA_PROB,
         glossario=None,
         proteggi_nomi: bool = True,
+        proteggi_parole: bool = True,
         motore: str = MOTORE,
     ) -> None:
         if motore not in ("ollama", "gemini"):
@@ -795,6 +827,7 @@ class Correttore:
         # spegne se non per misurare quanto blocca.
         self.glossario = glossario
         self.proteggi_nomi = proteggi_nomi
+        self.proteggi_parole = proteggi_parole
         self.consentito = consentito
         self.pausa = pausa
         self.tentativi = tentativi
@@ -1001,10 +1034,21 @@ class Correttore:
         _, parole = applicato
         proposte = sum(1 for f in parole if f.scelta != f.originale)
         parole = self._proteggi_nomi(parole)
+        parole = self._proteggi_parole(parole)
         parole = self._filtra(parole, prob)
         corretto = " ".join(f.scelta for f in parole)
         return SegmentResult(idx, testo, corretto, parole=parole,
                              n_proposte=proposte)
+
+    def _proteggi_parole(self, parole: list[WordFix]) -> list[WordFix]:
+        """Intercalari e parole grammaticali non si cambiano (vedi
+        `PAROLE_PROTETTE`). Motivo di blocco: «parola»."""
+        if not self.proteggi_parole:
+            return parole
+        for f in parole:
+            if f.cambiata and _norm(f.originale) in PAROLE_PROTETTE:
+                f.bloccata, f.motivo_blocco = True, "parola"
+        return parole
 
     def _proteggi_nomi(self, parole: list[WordFix]) -> list[WordFix]:
         """I nomi propri non si cambiano, e non se ne inventano di nuovi.

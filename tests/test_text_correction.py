@@ -925,13 +925,15 @@ def parola_spezzata_protetta_solo_se_lo_e() -> None:
               {"word": " la", "prob": 0.99}, {"word": " cosa", "prob": 0.99}]
     correzione = [{"i": 0, "a": "C'e", "b": "Che"}]
 
-    c = _correttore([_risposta(correzione)])
+    # Qui si prova la probabilita', non la lista delle parole protette
+    # (che conterrebbe «ce»): la si spegne.
+    c = _correttore([_risposta(correzione)], proteggi_parole=False)
     r = c.correggi_segmento(0, testo, allinea_probabilita(testo, parole))
     require("Che" in r.testo_corretto,
             f"una meta' incerta: la parola si corregge ({r.testo_corretto})")
 
     parole[1]["prob"] = 0.95
-    c = _correttore([_risposta(correzione)])
+    c = _correttore([_risposta(correzione)], proteggi_parole=False)
     r = c.correggi_segmento(0, testo, allinea_probabilita(testo, parole))
     require("C'e" in r.testo_corretto,
             f"tutto certo: la parola non si tocca ({r.testo_corretto})")
@@ -1569,7 +1571,20 @@ def ollama_locale() -> None:
     else:
         raise Failure("un 404 deve sollevare")
 
+
+def parole_protette() -> None:
+    """Intercalari e parole grammaticali non si cambiano (prova del 9/10)."""
+    c = _correttore([_risposta([{"i": 0, "a": "tipo", "b": "circa"},
+                                {"i": 1, "a": "il", "b": "è"},
+                                {"i": 3, "a": "monopolito", "b": "monopolio"}])])
+    r = c.correggi_segmento(0, "tipo il loro monopolito")
+    require(r.testo_corretto == "tipo il loro monopolio",
+            f"solo la parola piena si corregge: {r.testo_corretto}")
+    motivi = {w["raw"]: w["blocked_reason"] for w in r.to_dict()["words"] if w["blocked"]}
+    require(motivi == {"tipo": "parola", "il": "parola"}, f"motivi: {motivi}")
+
 CHECKS = [
+    ("intercalari e parole grammaticali restano", parole_protette),
     ("proposte lontane dall'originale bloccate", proposte_lontane_bloccate),
     ("il motore locale (Ollama) funziona e spiega gli errori", ollama_locale),
     ("Zia Titti resta Zia Titti (glossario)", zia_titti_col_glossario),
