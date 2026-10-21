@@ -92,7 +92,19 @@ jobs:
       # (giorni/AAAA-MM-GG.html), tutte con i dati dentro.
       - name: Costruisci le pagine in chiaro (restano nel runner)
         if: steps.segreti.outputs.pronto == 'si'
-        run: python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html corpus/giorni
+        env:
+          # Le pagine delle conversazioni (testo integrale) escono solo se la
+          # variabile PANNELLO_CONVERSAZIONI vale «si». Spenta finche' le ore
+          # di scuola con studenti minorenni non sono escluse (regola 8,
+          # docs/analisi-corpus.md, sezione 8).
+          CONVERSAZIONI: ${{ vars.PANNELLO_CONVERSAZIONI }}
+        run: |
+          if [ "$CONVERSAZIONI" = "si" ]; then
+            python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html corpus/giorni
+          else
+            python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html
+            mkdir -p chiaro/giorni
+          fi
 
       - name: Cifra
         if: steps.segreti.outputs.pronto == 'si'
@@ -105,7 +117,9 @@ jobs:
           # «Ricordami» la frase si inserisce una volta e le pagine dei
           # giorni si aprono da sole.
           cd chiaro
-          npx --yes staticrypt@3.5.4 index.html giorni -r -d ../sito \
+          pagine="index.html"
+          ls giorni/*.html >/dev/null 2>&1 && pagine="index.html giorni"
+          npx --yes staticrypt@3.5.4 $pagine -r -d ../sito \
             --salt 6c8e0a4f2b7d4e19a3c51f0d8b62e7a4 \
             --config false --short --remember 30 \
             --template-title "Taccuino" \

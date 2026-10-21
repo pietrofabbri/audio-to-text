@@ -108,12 +108,13 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 
 @media (max-width: 600px) {
   main { padding: 10px 12px 80px; }
-  .riga { grid-template-columns: auto 1fr; }
-  .riga .ora { padding-top: 2px; }
-  .riga .chi { padding-top: 1px; }
+  .riga { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+  .riga > div { flex: 1 0 100%; }
+  .riga .ora { padding-top: 0; order: 2; }
+  .riga .chi { padding-top: 0; order: 1; }
   .riga:not(.cambio) .chi { display: none; }
   .riga:not(.cambio) .ora { display: none; }
-  .riga .t { grid-column: 1 / -1; }
+  .riga > div { order: 3; }
   .righe { padding: 4px 12px 10px; }
   .conv > summary .dur { margin-left: 0; }
 }
