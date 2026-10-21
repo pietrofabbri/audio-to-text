@@ -1842,6 +1842,48 @@ kickstart`. Rimedio: `nightly.main()` prende un lucchetto
 (`logs/elaborazione.lock`, lo stesso `Lucchetto` dello scarico); se è
 già preso esce subito. Test `t_una_passata_alla_volta`.
 
+
+### 42. Ore di scuola con studenti minorenni nel corpus — aperto il 21 ottobre
+
+La regola 8 della specifica del pannello (`docs/analisi-corpus.md`) chiede
+di escludere o anonimizzare le ore con studenti minorenni prima di qualsiasi
+analisi. Nel corpus ci sono ore di lezione (almeno il 15 ottobre dalle
+08:02: appello con i nomi degli studenti). Sono già entrate nelle metriche,
+nella correzione con Gemini e nel corpus privato. Le pagine delle
+conversazioni del taccuino (testo integrale) sono state costruite il 21
+ottobre ma restano spente (`PANNELLO_CONVERSAZIONI`) finché non c'è un modo
+di escludere quelle ore. Strade possibili, da decidere con Pietro: non
+registrare in classe; una lista di fasce orarie da escludere (es. l'orario
+scolastico) applicata prima della trascrizione o almeno prima della
+pubblicazione; riconoscere la situazione «lezione» dalle voci (molte voci
+giovani non attribuite, una voce di Pietro dominante).
+
+
+### 43. Gemma contro Gemini, con le parole protette — 21 ottobre
+
+Su richiesta di Pietro («strada 2»): divieto fisso di correggere
+intercalari e parole grammaticali (`PAROLE_PROTETTE` in
+`core/text_correction.py`, motivo «parola», commit `27aebb0`), poi
+confronto sugli stessi 20 segmenti del 2 ottobre (`2026-10-02_19-42-33`).
+
+- **Gemma 3 12B locale** (`--motore ollama --model gemma3:12b`, M1 Pro
+  16 GB): 25 s a segmento (8 s prompt, 13,5 s risposta), ~5 ore per una
+  giornata piena. 17 correzioni accettate, circa 4 buone (`battetta →
+  battuta`, `monopolito → monopolio`, `fassi → fai`); le altre
+  «normalizzano» il parlato (`c'hai → hai`, `ste → queste`, `l'ho → ho`,
+  `capetto → capo`, `arrivano → arriveranno`, `istitutiva →
+  istituzionale`, `stronzana → strana`). Peggio di qwen3:14b.
+- **Gemini 3.5 Flash-Lite** (proposte gia' registrate dalla notte, nessuna
+  chiamata nuova; filtro di somiglianza del 10/10 + parole protette): 12
+  accettate, circa 6 buone (`monopolio`, `Tranquillo`, `straordinarie`,
+  `stronzata`, `battuta`, `fai`), 2 sbagliate (`vincolo → vincono`,
+  `piacere → piacerè`), 4 incerte. Il divieto nuovo ha bloccato anche una
+  correzione buona (`lo → l'ho`): e' il prezzo previsto.
+
+Decisione: **resta Gemini** (motore e correzione notturna come dal 10/10),
+con le parole protette. Gemma rimossa dal Mac. Il modello locale resta
+disponibile nel codice (`--motore ollama`) per prove future.
+
 ---
 
 ## L'ordine in cui li farei

@@ -936,12 +936,25 @@ meglio cinque o sei parole casuali).
 Finché i segreti mancano, il workflow chiude in verde con un avviso e non
 pubblica niente.
 
-**Vedere la pagina in chiaro sul Mac**, senza pubblicare:
+**Le conversazioni.** Con la variabile `PANNELLO_CONVERSAZIONI` = `si`
+(stesso posto di `PANNELLO_REPO`) escono anche le pagine di ogni giorno,
+`giorni/AAAA-MM-GG.html`, con il testo integrale delle conversazioni e lo
+stile che segue la voce (colore = tono, dimensione = volume, spaziatura =
+velocità, sempre rispetto alla voce abituale di chi parla):
+`pannello/conversazioni.py` e `pannello/modello_giorno.html`. **È spenta**:
+prima vanno escluse le ore di scuola con studenti minorenni
+(`docs/analisi-corpus.md`, sezione 8, regola 8).
+
+**Sul telefono** il taccuino si apre dallo stesso link; da Safari,
+Condividi → «Aggiungi alla schermata Home» lo mette fra le app, con icona e
+nome «Taccuino».
+
+**Vedere le pagine in chiaro sul Mac**, senza pubblicare:
 
 ```bash
 python core/metriche.py corpus_repo/giorni /tmp/metriche
-python pannello/costruisci.py /tmp/metriche /tmp/pannello.html
-open /tmp/pannello.html
+python pannello/costruisci.py /tmp/metriche /tmp/taccuino/index.html corpus_repo/giorni
+open /tmp/taccuino/index.html
 ```
 
 ## Struttura output

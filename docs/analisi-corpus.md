@@ -355,11 +355,78 @@ Regole di sicurezza (tutte implementate):
 7. **Testi citati al minimo.** Impegni (13) e storie (14), quando ci
    saranno, mostreranno riassunti brevi, non trascrizioni estese.
 8. Se Pietro registra a scuola, le ore con studenti minorenni vanno escluse o
-   anonimizzate del tutto prima di qualsiasi analisi.
+   anonimizzate del tutto prima di qualsiasi analisi. **Al 21/10 non è
+   ancora così**: ci sono ore di lezione nel corpus (almeno il 15/10), sono
+   già entrate nelle metriche e nella correzione con Gemini. Le pagine delle
+   conversazioni restano spente per questo (sotto). Da decidere con Pietro
+   come escluderle.
 
 Verifica fatta il 9/10 sui dati veri: con una frase sbagliata la pagina non
 si apre; con quella giusta compare il pannello; nel file pubblicato non
-compare nessun nome né numero in chiaro.
+compare nessun nome né numero in chiaro. Dal 21/10 il workflow controlla
+anche da solo che ogni pagina pubblicata sia cifrata (un segno presente solo
+nelle pagine in chiaro non deve comparire) e che non escano altri file oltre
+a pagine, icona, `robots.txt` e `.nojekyll`.
+
+### Le conversazioni (aggiunte il 21/10)
+
+Richiesta di Pietro: dal taccuino leggere tutte le conversazioni — chi
+parla, cosa dice, a che ora — con colori, caratteri e dimensioni che
+facciano capire tono, velocità e volume.
+
+**Una pagina per giorno**, `giorni/AAAA-MM-GG.html`, costruita da
+`pannello/conversazioni.py` con il modello `pannello/modello_giorno.html`
+a partire da `giorni/AAAA-MM-GG/segments.jsonl` (e
+`segments.corrected.jsonl` se c'è) del corpus. Il pannello la collega
+(«Leggi le conversazioni →» accanto al giorno scelto, e i giorni nella
+tabella «Tutti i giorni»).
+
+Contenuto: le frasi del giorno raggruppate in conversazioni (separate da
+almeno 60 s senza parlato, come nelle metriche), ciascuna con ora di
+inizio e fine, persone e durata; per ogni frase ora, chi parla (colore
+della persona sulla barra a sinistra; grigio per le voci non attribuite)
+e testo. Ricerca nel testo con evidenziazione, filtro per persona,
+apri/chiudi tutte, testo originale di Whisper accanto a quello corretto,
+navigazione fra i giorni, tema chiaro/scuro condiviso col pannello.
+
+**Lo stile del testo segue la voce, rispetto alla voce abituale di chi
+parla:**
+
+| Aspetto del testo | Misura | Livelli |
+|---|---|---|
+| Colore | tono: f0 media della frase | viola = più basso del solito, nero = solito, arancio/rosso = più alto |
+| Dimensione | volume: intensità media in dB | più piccolo = più piano, più grande (e grassetto al massimo) = più forte |
+| Spaziatura delle lettere | velocità: sillabe al secondo | larga = più lento, stretta = più veloce |
+
+Per ogni voce e misura si calcolano su **tutte le giornate** la mediana e
+la scala (scarto interquartile / 1,349); ogni frase riceve un livello da −2
+a +2 (z < −1,5; < −0,5; ≤ 0,5; ≤ 1,5; oltre). Si usano solo frasi
+affidabili e lunghe almeno 0,8 s; una voce con meno di 20 frasi
+misurabili, o non attribuita, resta neutra. Il riferimento personale
+evita che una voce acuta di natura sembri sempre «alta». Limite noto: il
+volume risente della distanza dal registratore (la voce di Pietro è
+sempre la più vicina) e della saturazione; per questo il confronto è con
+la voce della stessa persona, mai fra persone.
+
+**Pubblicazione: spenta finché non lo decide Pietro.** Le pagine delle
+conversazioni escono solo se nella repo del corpus la variabile Actions
+`PANNELLO_CONVERSAZIONI` vale `si`. Motivo: nel corpus ci sono ore di
+lezione (es. 15/10 dalle 08:02, appello con i nomi degli studenti) e la
+regola 8 qui sotto chiede di escludere le ore con studenti minorenni prima
+di qualsiasi analisi; il testo integrale è la forma più esposta. Le pagine
+sono cifrate come il pannello, ma il file cifrato è pubblico: la
+protezione dipende tutta dalla robustezza della frase d'accesso.
+
+Tutte le pagine sono cifrate con la stessa frase e lo stesso sale: con
+«Ricordami» la frase si inserisce una volta e le altre pagine si aprono da
+sole (verificato il 21/10).
+
+### Sul telefono
+
+Il pannello e le pagine dei giorni sono responsive (verificati a 390 px,
+chiaro e scuro, senza scorrimento orizzontale). La pagina d'accesso porta
+un'icona neutra (`pannello/icona.png`, un foglio con un'onda di voce) e il
+nome «Taccuino» per «Aggiungi a Home».
 
 ### Configurazione (passi di Pietro, una volta sola)
 

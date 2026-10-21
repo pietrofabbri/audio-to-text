@@ -1,6 +1,6 @@
 # Roadmap — audio-to-text e corpus
 
-Stato al 9 ottobre 2026. Questo documento dice **in che ordine** fare le
+Stato al 21 ottobre 2026. Questo documento dice **in che ordine** fare le
 cose e **perché in quell'ordine**. I dettagli tecnici di ogni problema
 già noto stanno in [`APERTI.md`](APERTI.md); qui si rimanda ai suoi
 numeri (es. «APERTI 10»).
@@ -341,24 +341,24 @@ Passi:
 **Fatto quando:** il caso «Zia Titti» passa, ogni giorno nuovo esce
 anche in versione corretta, e c'è una misura di qualità aggiornata.
 
-**Stato al 9 ottobre: costruita, provata, lasciata spenta di proposito** (commit `7fb48a6`
-e `737dd19`, APERTI 35 e 37, README «I nomi propri: il glossario» e «Nel
-giro notturno: il motore locale»).
+**Stato al 21 ottobre: accesa ogni notte con Gemini** (dal 10/10, commit
+`0d369bc`), con glossario, filtro di somiglianza e parole protette (commit
+`27aebb0`). Storia: spenta il 9/10 dopo la prova con qwen3:14b locale;
+accesa il 10/10 con Gemini; confermata il 21/10 dopo il confronto con Gemma
+3 12B locale. APERTI 35, 37, 38, 43; README «I nomi propri: il glossario».
 
 | Passo | Stato |
 |---|---|
 | 1. Glossario | **Fatto.** `data/glossario.txt` (sul Mac, fuori dalla repo pubblica) + nomi delle voci dal database. Nel codice è bloccata ogni modifica a una parola del glossario o a una parola con maiuscola fuori da inizio frase, e ogni nome nuovo introdotto dal modello; una correzione *verso* un nome del glossario resta permessa. «Zia Titti» è un test di regressione |
 | 2. Contesto | **Fatto.** Due segmenti prima e due dopo, della stessa sessione, solo come contesto |
-| 3. Privacy e motore (D2) | **Decisa il 9/10:** motore locale (Ollama). Niente esce dal Mac |
-| 4. Catena notturna | **Fatta, spenta.** In `core/config.py`: `correzione_notturna` (default `False`), `correzione_motore` (`"ollama"`), `correzione_modello_locale` (`"gemma3:12b"`), `ollama_url`, `correzione_budget_sec` (7200 s per notte; il resto si riprende la notte dopo), `correzione_giorni_esclusi` |
-| 5. Misura | **Prima misura il 9/10** su 20 segmenti con `qwen3:14b`: 11 s a segmento (~2,5 ore per una giornata piena) e circa metà delle correzioni accettate dannose (`tipo → circa`, `vincolo → vincere`, `istitutiva → istituzionale`). Correzione notturna **lasciata spenta**: il testo grezzo è più onesto. Dettagli in APERTI 37 |
+| 3. Privacy e motore (D2) | **Gemini** (vedi D2). Il motore locale (Ollama) resta nel codice per prove |
+| 4. Catena notturna | **Fatta, accesa.** In `core/config.py`: `correzione_notturna = True`, `correzione_motore = "gemini"`, `correzione_modello_locale` (per `--motore ollama`), `ollama_url`, `correzione_budget_sec` (7200 s per notte; il resto si riprende la notte dopo), `correzione_giorni_esclusi` |
+| 5. Misura | 9/10: qwen3:14b locale, circa metà delle correzioni dannose. 10/10: Gemini con filtro di somiglianza, ~80% buone, **correzione notturna accesa con Gemini** (APERTI 38; termini UE: anche l'uso gratuito segue le condizioni sui dati del piano a pagamento). 21/10: parole protette (intercalari e grammaticali) per entrambi i motori; confronto Gemma 3 12B locale contro Gemini sugli stessi 20 segmenti: Gemma ~4 buone su 17 e 25 s a segmento, **resta Gemini** (APERTI 43) |
 
-Per riprovare: `python correct_text.py --consent --dry --solo-proposte
---session <sessione> --limit 20` (stampa proposte e tempi di Ollama).
-Strade aperte: un modello locale più forte in italiano, oppure una
-revisione a mano delle proposte prima di applicarle (APERTI 22).
-Accendere solo con una misura che mostri correzioni in gran parte buone:
-`correzione_notturna = True`. Il glossario si arricchisce da solo
+Per riprovare un motore: `python correct_text.py --consent --dry --riscorri
+--solo-proposte --motore <ollama|gemini> [--model <modello>] --session
+<sessione> --limit 20` (con Ollama stampa anche i tempi). Strada ancora
+aperta: una revisione a mano delle proposte prima di applicarle (APERTI 22). Il glossario si arricchisce da solo
 quando le voci ricevono un nome; intanto i nomi noti si aggiungono a
 mano in `data/glossario.txt`, uno per riga.
 
