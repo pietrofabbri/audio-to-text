@@ -2,7 +2,11 @@
 """
 Costruisce la pagina del pannello dalle metriche del corpus.
 
-    python pannello/costruisci.py <cartella metriche> <file html di uscita>
+    python pannello/costruisci.py <cartella metriche> <file html di uscita> [<cartella giorni>]
+
+Con la cartella `giorni/` del corpus costruisce anche le pagine delle
+conversazioni, una per giorno, in `<cartella dell'uscita>/giorni/`
+(`pannello/conversazioni.py`), e il pannello le collega.
 
 Lo lancia GitHub Actions nella repo privata del corpus (vedi
 `pannello/pannello.yml`), poi StatiCrypt cifra la pagina e la pubblica.
@@ -51,7 +55,8 @@ def _pulisci(g: dict) -> dict:
     return g
 
 
-def costruisci(cartella_metriche: Path, uscita: Path) -> Path:
+def costruisci(cartella_metriche: Path, uscita: Path,
+               cartella_giorni: Path | None = None) -> Path:
     giorni = []
     for p in sorted(Path(cartella_metriche).glob("????-??-??.json")):
         giorni.append(_pulisci(json.loads(p.read_text(encoding="utf-8"))))
@@ -65,7 +70,12 @@ def costruisci(cartella_metriche: Path, uscita: Path) -> Path:
         "soglie": SOGLIE,
         "limiti": limiti,
         "giorni": giorni,
+        "conversazioni": [],
     }
+    if cartella_giorni is not None:
+        from pannello.conversazioni import costruisci as pagine_giorni
+        scritte = pagine_giorni(Path(cartella_giorni), Path(uscita).parent / "giorni")
+        dati["conversazioni"] = sorted(p.stem for p in scritte)
     blob = json.dumps(dati, ensure_ascii=False, separators=(",", ":"))
     # Dentro <script type="application/json"> l'unica sequenza pericolosa
     # e' la chiusura del tag.
@@ -78,6 +88,7 @@ def costruisci(cartella_metriche: Path, uscita: Path) -> Path:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         raise SystemExit(__doc__)
-    print(costruisci(Path(sys.argv[1]), Path(sys.argv[2])))
+    print(costruisci(Path(sys.argv[1]), Path(sys.argv[2]),
+                     Path(sys.argv[3]) if len(sys.argv) == 4 else None))

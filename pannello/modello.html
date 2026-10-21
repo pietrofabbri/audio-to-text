@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<!-- taccuino-in-chiaro: se questa riga compare nel sito pubblicato, la cifratura non e' avvenuta -->
 <title>Taccuino</title>
 <style>
 :root {
@@ -87,6 +88,9 @@ td.n, th.n { text-align: right; }
   opacity: 0; transition: opacity .08s; z-index: 9; max-width: 260px; }
 .hit { fill: transparent; }
 .theme { margin-left: auto; }
+.conv-link { font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; text-decoration: none; }
+td a { color: inherit; }
 </style>
 </head>
 <body>
@@ -106,6 +110,7 @@ td.n, th.n { text-align: right; }
   <div class="controls">
     <div class="seg" role="group" aria-label="Scala" id="scale"></div>
     <select id="giorno" aria-label="Giorno"></select>
+    <a id="vaiConv" class="conv-link" href="#" hidden>Leggi le conversazioni →</a>
   </div>
 
   <div id="contenuto"></div>
@@ -120,6 +125,9 @@ var DATI = JSON.parse(document.getElementById("dati").textContent);
 var GIORNI = DATI.giorni.slice().sort(function (a, b) { return a.giorno < b.giorno ? -1 : 1; });
 var VALIDI = GIORNI.filter(function (g) { return g.valido; });
 var SOGLIE = DATI.soglie;
+var CONV = DATI.conversazioni || [];
+function prendi(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function metti(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 
 // ------------------------------------------------------------ utilità
 function el(tag, attrs, html) {
@@ -539,7 +547,8 @@ function disegna() {
   var tab = sezione("Tutti i giorni");
   var tb = "<table><thead><tr><th>Giorno</th><th class='n'>Registrato</th><th class='n'>Parlato</th><th class='n'>Hai parlato</th><th class='n'>Tua quota</th><th class='n'>Velocità</th><th class='n'>Var. tono</th><th class='n'>Domande</th><th>Valido</th></tr></thead><tbody>";
   GIORNI.slice().reverse().forEach(function (x) {
-    tb += "<tr><td>" + etichettaGiorno(x) + "</td><td class='n'>" + num(x.copertura.registrato_ore, 1) + " h</td><td class='n'>" +
+    var et = CONV.indexOf(x.giorno) >= 0 ? "<a href='giorni/" + x.giorno + ".html'>" + etichettaGiorno(x) + "</a>" : etichettaGiorno(x);
+    tb += "<tr><td>" + et + "</td><td class='n'>" + num(x.copertura.registrato_ore, 1) + " h</td><td class='n'>" +
       pct(x.copertura.parlato_quota) + "</td><td class='n'>" + hm(x.pietro.minuti) + "</td><td class='n'>" +
       pct(x.relazioni.quota_parola_pietro) + "</td><td class='n'>" + num(x.pietro.prosodia.velocita_sill_sec, 2) +
       "</td><td class='n'>" + num(x.pietro.prosodia.f0_variabilita_hz, 0) + "</td><td class='n'>" +
@@ -563,16 +572,31 @@ GIORNI.slice().reverse().forEach(function (g) {
   sel.appendChild(el("option", {value: g.giorno}, etichettaGiorno(g) + (g.valido ? "" : " (copertura bassa)")));
 });
 sel.value = stato.giorno;
-sel.addEventListener("change", function () { stato.giorno = sel.value; disegna(); });
+var vaiConv = document.getElementById("vaiConv");
+function aggiornaLink() {
+  var ok = CONV.indexOf(stato.giorno) >= 0;
+  vaiConv.hidden = !ok;
+  if (ok) vaiConv.href = "giorni/" + stato.giorno + ".html";
+}
+sel.addEventListener("change", function () { stato.giorno = sel.value; aggiornaLink(); disegna(); });
+aggiornaLink();
 
 document.querySelectorAll("[data-theme-set]").forEach(function (b) {
   b.addEventListener("click", function () {
     var v = b.dataset.themeSet;
     if (v === "auto") document.documentElement.removeAttribute("data-theme");
     else document.documentElement.setAttribute("data-theme", v);
+    metti("taccuino-tema", v);
     document.querySelectorAll("[data-theme-set]").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
   });
 });
+(function () {
+  var t = prendi("taccuino-tema");
+  if (t !== "light" && t !== "dark") return;
+  document.documentElement.setAttribute("data-theme", t);
+  document.querySelectorAll("[data-theme-set]").forEach(function (x) {
+    x.setAttribute("aria-pressed", String(x.dataset.themeSet === t)); });
+})();
 document.getElementById("aggiornato").textContent =
   GIORNI.length + " giorni · aggiornato " + DATI.generato;
 disegna();

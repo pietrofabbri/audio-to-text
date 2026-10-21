@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<!-- taccuino-in-chiaro: se questa riga compare nel sito pubblicato, la cifratura non e' avvenuta -->
+<title>Taccuino</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f5f1; --surface: #fcfcfb; --line: #e4e2dc; --grid: #ecebe6;
+  --text: #1b1b19; --text-2: #55534e; --muted: #8a8780; --mark: #fbe7a1;
+  --tono-2: #4b3fb8; --tono-1: #6a62b0; --tono1: #b45a2c; --tono2: #c2361b;
+  --v0: #2a78d6; --v1: #eb6834; --v2: #1baf7a; --v3: #9a5bd1; --v4: #c49a12;
+  --v5: #d1477a; --v6: #3aa0b5; --v7: #7d7a72;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --line: #2e2e2b; --grid: #262624;
+    --text: #f4f3ee; --text-2: #c3c2b7; --muted: #8f8d85; --mark: #5c4a12;
+    --tono-2: #a99cff; --tono-1: #c3bbf2; --tono1: #f2b48f; --tono2: #ff8a65;
+    --v0: #5b9cf0; --v1: #f08452; --v2: #3cc792; --v3: #b989ea; --v4: #e2bb3a;
+    --v5: #ec74a0; --v6: #5cc0d4; --v7: #a6a399;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface: #1a1a19; --line: #2e2e2b; --grid: #262624;
+  --text: #f4f3ee; --text-2: #c3c2b7; --muted: #8f8d85; --mark: #5c4a12;
+  --tono-2: #a99cff; --tono-1: #c3bbf2; --tono1: #f2b48f; --tono2: #ff8a65;
+  --v0: #5b9cf0; --v1: #f08452; --v2: #3cc792; --v3: #b989ea; --v4: #e2bb3a;
+  --v5: #ec74a0; --v6: #5cc0d4; --v7: #a6a399;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 16px 16px 80px; }
+a { color: inherit; }
+header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  justify-content: space-between; }
+.indietro { text-decoration: none; color: var(--text-2); font-size: 14px; }
+h1 { font-size: 21px; margin: 6px 0 2px; letter-spacing: -.01em; }
+.sub { color: var(--text-2); font-size: 13px; }
+.nav { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.nav a, .btn { display: inline-block; border: 1px solid var(--line); background: var(--surface);
+  color: var(--text); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px;
+  text-decoration: none; cursor: pointer; }
+.nav a[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+select, input[type=search] { font: inherit; font-size: 14px; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+input[type=search] { flex: 1 1 180px; min-width: 0; }
+.barra { position: sticky; top: 0; z-index: 5; background: var(--bg);
+  padding: 10px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+details.guida { background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 10px 14px; margin: 12px 0; font-size: 14px; }
+details.guida summary { cursor: pointer; font-weight: 600; }
+.legenda { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 18px; margin-top: 10px; }
+.legenda .k { font-size: 12px; color: var(--text-2); text-transform: uppercase;
+  letter-spacing: .04em; font-weight: 600; margin-bottom: 2px; }
+.scala-es { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.opzioni { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 14px; }
+.opzioni label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.chip { border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  border-radius: 999px; padding: 4px 10px 4px 8px; font: inherit; font-size: 13px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; }
+.chip[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); flex: none; }
+.conv { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  margin-bottom: 14px; overflow: hidden; }
+.conv > summary { list-style: none; cursor: pointer; padding: 10px 14px;
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.conv > summary::-webkit-details-marker { display: none; }
+.conv > summary .quando { font-weight: 650; font-variant-numeric: tabular-nums; }
+.conv > summary .chi-c { color: var(--text-2); font-size: 14px; }
+.conv > summary .dur { color: var(--muted); font-size: 13px; margin-left: auto; }
+.conv[open] > summary { border-bottom: 1px solid var(--grid); }
+.righe { padding: 6px 14px 12px; }
+.riga { display: grid; grid-template-columns: 46px 112px 1fr; gap: 0 10px; padding: 3px 0 3px 9px;
+  border-left: 3px solid var(--c); }
+.riga.cambio { margin-top: 8px; }
+.ora { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 4px; }
+.chi { font-size: 13px; font-weight: 600; color: var(--c); padding-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.riga:not(.cambio) .chi { visibility: hidden; }
+.t { margin: 0; overflow-wrap: anywhere; }
+.orig { display: none; margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.mostra-orig .orig { display: block; }
+.orig::before { content: "Whisper: "; font-style: normal; color: var(--text-2); }
+.incerta .t { opacity: .5; font-style: italic; }
+mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
+.vuoto { text-align: center; color: var(--text-2); padding: 30px 0; }
+.pausa { text-align: center; color: var(--muted); font-size: 12px; margin: 4px 0 14px; }
+
+/* stile della voce: colore = tono, dimensione = volume, spaziatura = velocita' */
+.voce .tn-2 { color: var(--tono-2); } .voce .tn-1 { color: var(--tono-1); }
+.voce .tn1 { color: var(--tono1); }   .voce .tn2 { color: var(--tono2); }
+.voce .vo-2 { font-size: .84em; } .voce .vo-1 { font-size: .92em; }
+.voce .vo1 { font-size: 1.1em; }  .voce .vo2 { font-size: 1.24em; font-weight: 600; }
+.voce .ve-2 { letter-spacing: .1em; word-spacing: .15em; } .voce .ve-1 { letter-spacing: .05em; }
+.voce .ve1 { letter-spacing: -.015em; } .voce .ve2 { letter-spacing: -.035em; word-spacing: -.05em; }
+
+@media (max-width: 600px) {
+  main { padding: 10px 12px 80px; }
+  .riga { grid-template-columns: auto 1fr; }
+  .riga .ora { padding-top: 2px; }
+  .riga .chi { padding-top: 1px; }
+  .riga:not(.cambio) .chi { display: none; }
+  .riga:not(.cambio) .ora { display: none; }
+  .riga .t { grid-column: 1 / -1; }
+  .righe { padding: 4px 12px 10px; }
+  .conv > summary .dur { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <a class="indietro" href="../index.html">← Taccuino</a>
+    <div class="nav">
+      <a id="prec" href="#" aria-label="Giorno precedente">‹</a>
+      <select id="sceltaGiorno" aria-label="Giorno"></select>
+      <a id="succ" href="#" aria-label="Giorno successivo">›</a>
+    </div>
+  </header>
+  <h1 id="titolo">Conversazioni</h1>
+  <div class="sub" id="riassunto"></div>
+
+  <details class="guida" id="guida">
+    <summary>Come leggere il testo</summary>
+    <p class="sub" style="margin:8px 0 0">Lo stile di ogni frase dice com'era la voce di chi parla
+      <b>rispetto al suo modo abituale</b> (calcolato su tutte le giornate). Le voci con poche frasi,
+      o non attribuite, restano neutre.</p>
+    <div class="legenda voce">
+      <div><div class="k">Colore → tono</div><div class="scala-es">
+        <span class="tn-2">molto più basso</span><span class="tn-1">più basso</span><span>solito</span>
+        <span class="tn1">più alto</span><span class="tn2">molto più alto</span></div></div>
+      <div><div class="k">Dimensione → volume</div><div class="scala-es">
+        <span class="vo-2">piano</span><span class="vo-1">un po' piano</span><span>solito</span>
+        <span class="vo1">più forte</span><span class="vo2">forte</span></div></div>
+      <div><div class="k">Spaziatura → velocità</div><div class="scala-es">
+        <span class="ve-2">lento</span><span class="ve-1">un po' lento</span><span>solito</span>
+        <span class="ve1">più veloce</span><span class="ve2">veloce</span></div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0"><i style="opacity:.6">Corsivo sbiadito</i>: frase che la
+      trascrizione considera poco affidabile.</p>
+  </details>
+
+  <div class="barra">
+    <input type="search" id="cerca" placeholder="Cerca nelle conversazioni" aria-label="Cerca">
+    <label class="btn"><input type="checkbox" id="stile" checked> Stile voce</label>
+    <label class="btn" id="lblOrig"><input type="checkbox" id="orig"> Originale</label>
+    <button class="btn" id="tutte" type="button">Chiudi tutte</button>
+  </div>
+  <div class="chips" id="persone" aria-label="Filtra per persona"></div>
+  <div id="lista"></div>
+</main>
+
+<script id="dati" type="application/json">__DATI__</script>
+<script>
+(function () {
+"use strict";
+var D = JSON.parse(document.getElementById("dati").textContent);
+var MESI = ["gen","feb","mar","apr","mag","giu","lug","ago","set","ott","nov","dic"];
+var GG = ["dom","lun","mar","mer","gio","ven","sab"];
+
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) {
+  return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]; }); }
+function hhmm(sec) { var m = Math.floor(sec / 60) % 1440;
+  return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); }
+function etichetta(g) { var d = new Date(g + "T12:00:00");
+  return GG[d.getDay()] + " " + d.getDate() + " " + MESI[d.getMonth()]; }
+function durata(sec) { var m = Math.round(sec / 60);
+  return m < 1 ? "meno di un minuto" : m < 60 ? m + " min" : Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0"); }
+function prendi(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function metti(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+// tema condiviso con il pannello
+var tema = prendi("taccuino-tema");
+if (tema === "light" || tema === "dark") document.documentElement.setAttribute("data-theme", tema);
+
+var nomeVoce = function (i) { return D.voci[i] ? D.voci[i].nome : "?"; };
+var coloreVoce = function (i) {
+  return D.voci[i] && D.voci[i].id === "UNKNOWN" ? "var(--v7)" : "var(--v" + (i % 7) + ")"; };
+
+// --- intestazione e navigazione
+document.getElementById("titolo").textContent = "Conversazioni · " + etichetta(D.giorno);
+var totParole = D.frasi.reduce(function (n, f) { return n + f[2].split(/\s+/).length; }, 0);
+document.getElementById("riassunto").textContent = D.conversazioni.length + " conversazioni · " +
+  D.frasi.length + " frasi · circa " + totParole.toLocaleString("it-IT") + " parole · testo " +
+  (D.corretto ? "corretto" : "non corretto");
+var sel = document.getElementById("sceltaGiorno");
+D.giorni.slice().reverse().forEach(function (g) {
+  var o = document.createElement("option"); o.value = g; o.textContent = etichetta(g);
+  if (g === D.giorno) o.selected = true; sel.appendChild(o);
+});
+sel.addEventListener("change", function () { location.href = sel.value + ".html"; });
+var pos = D.giorni.indexOf(D.giorno);
+var prec = document.getElementById("prec"), succ = document.getElementById("succ");
+if (pos > 0) prec.href = D.giorni[pos - 1] + ".html"; else prec.setAttribute("aria-disabled", "true");
+if (pos < D.giorni.length - 1) succ.href = D.giorni[pos + 1] + ".html"; else succ.setAttribute("aria-disabled", "true");
+if (!D.corretto) document.getElementById("lblOrig").style.display = "none";
+
+// --- chips persone (chi compare in almeno una conversazione)
+var presenti = {};
+D.conversazioni.forEach(function (c) { c.voci.forEach(function (v) { presenti[v] = (presenti[v] || 0) + 1; }); });
+var filtroPersone = {};
+var chips = document.getElementById("persone");
+Object.keys(presenti).map(Number).sort(function (a, b) { return presenti[b] - presenti[a]; }).forEach(function (v) {
+  var b = document.createElement("button");
+  b.className = "chip"; b.type = "button"; b.setAttribute("aria-pressed", "false");
+  b.style.setProperty("--c", coloreVoce(v));
+  b.innerHTML = '<span class="dot"></span>' + esc(nomeVoce(v)) + ' <span class="sub">' + presenti[v] + "</span>";
+  b.addEventListener("click", function () {
+    filtroPersone[v] = !filtroPersone[v];
+    b.setAttribute("aria-pressed", String(!!filtroPersone[v]));
+    disegna();
+  });
+  chips.appendChild(b);
+});
+
+// --- elenco
+var lista = document.getElementById("lista");
+var cerca = document.getElementById("cerca");
+var aperte = {};
+
+function evidenzia(testo, q) {
+  var t = esc(testo);
+  if (!q) return t;
+  var re = new RegExp("(" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi");
+  return t.replace(re, "<mark>$1</mark>");
+}
+
+function disegna() {
+  var q = cerca.value.trim();
+  var ql = q.toLowerCase();
+  var scelte = Object.keys(filtroPersone).filter(function (k) { return filtroPersone[k]; }).map(Number);
+  var html = [], mostrate = 0;
+  D.conversazioni.forEach(function (c, ci) {
+    var fino = ci + 1 < D.conversazioni.length ? D.conversazioni[ci + 1].da : D.frasi.length;
+    if (scelte.length && !scelte.some(function (v) { return c.voci.indexOf(v) >= 0; })) return;
+    var righe = [], prima = -1, trovate = 0;
+    for (var i = c.da; i < fino; i++) {
+      var f = D.frasi[i];
+      var testo = f[2], orig = f[7];
+      if (ql) {
+        var dentro = testo.toLowerCase().indexOf(ql) >= 0 || (orig && orig.toLowerCase().indexOf(ql) >= 0);
+        if (!dentro) continue;
+        trovate++;
+      }
+      var cls = "riga" + (f[1] !== prima || ql ? " cambio" : "") + (f[6] ? " incerta" : "");
+      prima = f[1];
+      var st = "t tn" + f[3] + " vo" + f[4] + " ve" + f[5];
+      righe.push('<div class="' + cls + '" style="--c:' + coloreVoce(f[1]) + '">' +
+        '<span class="ora">' + hhmm(f[0]) + '</span>' +
+        '<span class="chi">' + esc(nomeVoce(f[1])) + '</span>' +
+        '<div><p class="' + st + '"' + (f[6] ? ' title="frase poco affidabile"' : "") + '>' + evidenzia(testo, q) + '</p>' +
+        (orig ? '<p class="orig">' + evidenzia(orig, q) + '</p>' : "") + '</div></div>');
+    }
+    if (ql && !trovate) return;
+    mostrate++;
+    var chiC = c.voci.length ? c.voci.map(nomeVoce).join(", ") : "solo voci non attribuite";
+    var aperta = ql ? true : (aperte[ci] !== false);
+    html.push('<details class="conv" id="c' + ci + '" data-ci="' + ci + '"' + (aperta ? " open" : "") + '>' +
+      '<summary><span class="quando">' + hhmm(c.inizio) + "–" + hhmm(c.fine) + '</span>' +
+      '<span class="chi-c">' + esc(chiC) + '</span>' +
+      '<span class="dur">' + durata(c.fine - c.inizio) + (ql ? " · " + trovate + " risultati" : "") + '</span></summary>' +
+      '<div class="righe">' + righe.join("") + '</div></details>');
+  });
+  lista.innerHTML = mostrate ? html.join("") :
+    '<div class="vuoto">' + (ql || scelte.length ? "Nessuna conversazione corrisponde." : "Nessuna conversazione registrata in questo giorno.") + '</div>';
+  lista.querySelectorAll("details.conv").forEach(function (d) {
+    d.addEventListener("toggle", function () { if (!cerca.value.trim()) aperte[d.dataset.ci] = d.open; });
+  });
+}
+
+var tCerca;
+cerca.addEventListener("input", function () { clearTimeout(tCerca); tCerca = setTimeout(disegna, 180); });
+var stile = document.getElementById("stile");
+function applicaStile() { lista.classList.toggle("voce", stile.checked); metti("taccuino-stile", stile.checked ? "1" : "0"); }
+stile.checked = prendi("taccuino-stile") !== "0";
+stile.addEventListener("change", applicaStile);
+var orig = document.getElementById("orig");
+orig.addEventListener("change", function () { lista.classList.toggle("mostra-orig", orig.checked); });
+document.getElementById("tutte").addEventListener("click", function () {
+  var tutteAperte = Array.prototype.some.call(lista.querySelectorAll("details.conv"), function (d) { return d.open; });
+  lista.querySelectorAll("details.conv").forEach(function (d) { d.open = !tutteAperte; aperte[d.dataset.ci] = !tutteAperte; });
+  this.textContent = tutteAperte ? "Apri tutte" : "Chiudi tutte";
+});
+if (prendi("taccuino-guida-vista")) document.getElementById("guida").open = false;
+else { document.getElementById("guida").open = true; metti("taccuino-guida-vista", "1"); }
+
+applicaStile();
+disegna();
+if (location.hash) { var t = document.querySelector(location.hash); if (t) { t.open = true; t.scrollIntoView(); } }
+})();
+</script>
+</body>
+</html>

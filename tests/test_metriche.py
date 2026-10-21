@@ -129,11 +129,47 @@ def pagina_con_i_dati_dentro(tmp: Path) -> None:
     require(html.count("</script>") == 2, "nessuna chiusura di script nei dati")
 
 
+
+def conversazioni_per_giorno(tmp: Path) -> None:
+    """Pagine dei giorni: testo, voci, livelli rispetto alla voce abituale."""
+    sys.path.insert(0, str(HERE.parent / "pannello"))
+    sys.path.insert(0, str(HERE.parent))
+    from pannello.conversazioni import basi_per_voce, dati_giorno, livello
+    from costruisci import costruisci
+    d = _giornata(tmp)
+    # Venticinque frasi di Pietro a 120 Hz e una a 200 Hz: la base e' 120,
+    # la frase acuta deve risultare «molto più alta» (+2).
+    seg = [_seg(10 + i, SOGGETTO, 50000 + i * 10, 50000 + i * 10 + 5, "frase", f0=118 + (i % 5))
+           for i in range(25)]
+    seg.append(_seg(40, SOGGETTO, 50400, 50405, "acuta", f0=200))
+    with (d / "segments.jsonl").open("a", encoding="utf-8") as f:
+        for s in seg:
+            f.write(json.dumps(s) + "\n")
+    basi = basi_per_voce(tmp / "giorni")
+    require(SOGGETTO in basi and "tono" in basi[SOGGETTO], f"base di Pietro: {basi}")
+    require("GLOBAL_009" not in basi, "poche frasi: nessuna base, stile neutro")
+    require(livello(200, basi[SOGGETTO]["tono"]) == 2, "frase acuta: +2")
+    require(livello(120, basi[SOGGETTO]["tono"]) == 0, "frase abituale: 0")
+    dati = dati_giorno(d, basi)
+    require(dati["voci"][0]["nome"] == "Pietro", "Pietro per primo")
+    require(len(dati["conversazioni"]) == 4, f"quattro conversazioni (la frase acuta e' staccata): {len(dati['conversazioni'])}")
+    acuta = [f for f in dati["frasi"] if f[2] == "acuta"][0]
+    require(acuta[3] == 2, f"tono della frase acuta: {acuta}")
+    scrivi(tmp / "giorni", tmp / "metriche")
+    costruisci(tmp / "metriche", tmp / "sito" / "index.html", tmp / "giorni")
+    pagina = (tmp / "sito" / "giorni" / "2026-10-06.html").read_text(encoding="utf-8")
+    indice = (tmp / "sito" / "index.html").read_text(encoding="utf-8")
+    require("__DATI__" not in pagina and "Noi veniamo." in pagina, "frasi nella pagina")
+    require("<script src" not in pagina and "<link" not in pagina, "nessun file esterno")
+    require(pagina.count("</script>") == 2, "nessuna chiusura di script nei dati")
+    require('"conversazioni":["2026-10-06"]' in indice, "il pannello sa quali giorni hanno pagina")
+
 CHECKS = [
     ("copertura e silenzio sulla maschera dei minuti", copertura_e_silenzio),
     ("relazioni, marcatori e qualita'", relazioni_e_parole),
     ("MATTR", mattr_robusto),
     ("la pagina ha i dati dentro e niente fuori", pagina_con_i_dati_dentro),
+    ("le pagine dei giorni: testo, voci, stile", conversazioni_per_giorno),
 ]
 
 

@@ -28,7 +28,7 @@ name: pannello
 on:
   push:
     branches: [main]
-    paths: ["metriche/**", ".github/workflows/pannello.yml"]
+    paths: ["metriche/**", "giorni/**", ".github/workflows/pannello.yml"]
   workflow_dispatch:
 
 permissions:
@@ -42,10 +42,12 @@ jobs:
   costruisci:
     runs-on: ubuntu-latest
     steps:
-      - name: Metriche (solo la cartella metriche)
+      - name: Metriche e giornate del corpus
         uses: actions/checkout@v5
         with:
-          sparse-checkout: metriche
+          sparse-checkout: |
+            metriche
+            giorni
           path: corpus
 
       - name: Codice del pannello (repo pubblica della pipeline)
@@ -86,9 +88,11 @@ jobs:
           test ${#PASS} -ge 20 || { echo "::error::PANNELLO_PASSWORD troppo corta (almeno 20 caratteri)"; exit 1; }
           echo "pronto=si" >> "$GITHUB_OUTPUT"
 
-      - name: Costruisci la pagina in chiaro (resta nel runner)
+      # Pannello (index.html) e una pagina di conversazioni per giorno
+      # (giorni/AAAA-MM-GG.html), tutte con i dati dentro.
+      - name: Costruisci le pagine in chiaro (restano nel runner)
         if: steps.segreti.outputs.pronto == 'si'
-        run: python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html
+        run: python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html corpus/giorni
 
       - name: Cifra
         if: steps.segreti.outputs.pronto == 'si'
@@ -97,7 +101,11 @@ jobs:
         run: |
           # Il sale e' pubblico (sta nella pagina) e fisso: cosi' «Ricordami»
           # sopravvive alle ricostruzioni notturne.
-          npx --yes staticrypt@3.5.4 chiaro/index.html -d sito \
+          # Tutte le pagine con la stessa frase e lo stesso sale: con
+          # «Ricordami» la frase si inserisce una volta e le pagine dei
+          # giorni si aprono da sole.
+          cd chiaro
+          npx --yes staticrypt@3.5.4 index.html giorni -r -d ../sito \
             --salt 6c8e0a4f2b7d4e19a3c51f0d8b62e7a4 \
             --config false --short --remember 30 \
             --template-title "Taccuino" \
@@ -107,12 +115,32 @@ jobs:
             --template-error "Frase sbagliata" \
             --template-color-primary "#1b1b19" \
             --template-color-secondary "#f6f5f1"
+          cd ..
           printf 'User-agent: *\nDisallow: /\n' > sito/robots.txt
           touch sito/.nojekyll
-          # Nessun file in chiaro esce: solo la pagina cifrata e i due file vuoti.
-          ls -A sito
-          test "$(ls -A sito | sort | tr '\n' ' ')" = ".nojekyll index.html robots.txt "
-          ! grep -q '"giorni"' sito/index.html
+          cp pipeline/pannello/icona.png sito/icona.png
+
+      # Per il telefono: icona e nome quando si aggiunge alla schermata
+      # Home. Va nella pagina d'accesso (fuori dalla cifratura): contiene
+      # solo il nome neutro e l'icona.
+      - name: Icona e meta per il telefono
+        if: steps.segreti.outputs.pronto == 'si'
+        env:
+          REPO: ${{ vars.PANNELLO_REPO }}
+        run: |
+          base="/${REPO#*/}"
+          meta="<meta name=\"theme-color\" content=\"#1b1b19\"><meta name=\"apple-mobile-web-app-title\" content=\"Taccuino\"><meta name=\"apple-mobile-web-app-capable\" content=\"yes\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><link rel=\"apple-touch-icon\" href=\"${base}/icona.png\"><link rel=\"icon\" type=\"image/png\" href=\"${base}/icona.png\">"
+          find sito -name '*.html' -print0 | xargs -0 sed -i "0,/<head>/s|<head>|<head>${meta}|"
+
+      # Nessun file in chiaro esce: solo pagine cifrate, l'icona e due file
+      # di servizio.
+      - name: Controlla che niente sia in chiaro
+        if: steps.segreti.outputs.pronto == 'si'
+        run: |
+          find sito -type f | sort
+          ! find sito -type f ! -name '*.html' ! -name robots.txt ! -name .nojekyll ! -name icona.png | grep .
+          ! grep -rl "taccuino-in-chiaro" sito
+          for f in $(find sito -name '*.html'); do grep -q staticrypt "$f" || { echo "::error::$f non cifrata"; exit 1; }; done
 
       - name: Pubblica (un commit solo, storia riscritta)
         if: steps.segreti.outputs.pronto == 'si'
