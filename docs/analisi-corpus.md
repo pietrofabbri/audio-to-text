@@ -416,9 +416,11 @@ volume risente della distanza dal registratore (la voce di Pietro è
 sempre la più vicina) e della saturazione; per questo il confronto è con
 la voce della stessa persona, mai fra persone.
 
-**Pubblicazione.** Le pagine delle conversazioni escono solo se nella repo
-del corpus la variabile Actions `PANNELLO_CONVERSAZIONI` vale `si`
-(interruttore di Pietro). Dal 21/10 tutti i nomi di persona non in elenco
+**Pubblicazione.** Dal 23/10 le pagine delle conversazioni escono sempre;
+si spengono con la variabile Actions `PANNELLO_CONVERSAZIONI` = `no` nella
+repo del corpus (prima serviva `si`, ma cambiare una variabile non fa
+ripartire il workflow: dopo averla cambiata serve Actions → pannello → Run
+workflow, o la pubblicazione successiva del Mac). Dal 21/10 tutti i nomi di persona non in elenco
 escono a iniziali (regola 8 sopra), anche nel pannello principale: per
 esempio l'appello del 15/10 diventa «G., no. K., no. R., no…». Le pagine
 sono cifrate come il pannello, ma il file cifrato è pubblico: la

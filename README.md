@@ -936,8 +936,9 @@ meglio cinque o sei parole casuali).
 Finché i segreti mancano, il workflow chiude in verde con un avviso e non
 pubblica niente.
 
-**Le conversazioni.** Con la variabile `PANNELLO_CONVERSAZIONI` = `si`
-(stesso posto di `PANNELLO_REPO`) escono anche le pagine di ogni giorno,
+**Le conversazioni.** Escono anche le pagine di ogni giorno (per
+spegnerle: variabile `PANNELLO_CONVERSAZIONI` = `no`, stesso posto di
+`PANNELLO_REPO`, poi Actions → pannello → Run workflow),
 `giorni/AAAA-MM-GG.html`, con il testo integrale delle conversazioni e lo
 stile che segue la voce (colore = tono, dimensione = volume, spaziatura =
 velocità, sempre rispetto alla voce abituale di chi parla):
