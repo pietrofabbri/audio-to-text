@@ -941,9 +941,15 @@ pubblica niente.
 `giorni/AAAA-MM-GG.html`, con il testo integrale delle conversazioni e lo
 stile che segue la voce (colore = tono, dimensione = volume, spaziatura =
 velocità, sempre rispetto alla voce abituale di chi parla):
-`pannello/conversazioni.py` e `pannello/modello_giorno.html`. **È spenta**:
-prima vanno escluse le ore di scuola con studenti minorenni
-(`docs/analisi-corpus.md`, sezione 8, regola 8).
+`pannello/conversazioni.py` e `pannello/modello_giorno.html`.
+
+**Iniziali.** In tutte le pagine pubblicate (pannello e giorni) i nomi di
+persona escono con le iniziali, tranne quelli elencati in
+`pannello/nomi_in_chiaro.txt` della repo **privata** del corpus, uno per
+riga (si modifica anche dal sito di GitHub; vale dal giro successivo).
+Serve a non pubblicare per intero i nomi dei minorenni
+(`pannello/iniziali.py`, `docs/analisi-corpus.md`, sezione 8, regola 8);
+il corpus resta integrale.
 
 **Sul telefono** il taccuino si apre dallo stesso link; da Safari,
 Condividi → «Aggiungi alla schermata Home» lo mette fra le app, con icona e

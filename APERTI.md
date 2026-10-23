@@ -1843,7 +1843,7 @@ kickstart`. Rimedio: `nightly.main()` prende un lucchetto
 già preso esce subito. Test `t_una_passata_alla_volta`.
 
 
-### 42. Ore di scuola con studenti minorenni nel corpus — aperto il 21 ottobre
+### 42. ~~Ore di scuola con studenti minorenni nel corpus~~ — deciso il 21 ottobre
 
 La regola 8 della specifica del pannello (`docs/analisi-corpus.md`) chiede
 di escludere o anonimizzare le ore con studenti minorenni prima di qualsiasi
@@ -1857,6 +1857,23 @@ registrare in classe; una lista di fasce orarie da escludere (es. l'orario
 scolastico) applicata prima della trascrizione o almeno prima della
 pubblicazione; riconoscere la situazione «lezione» dalle voci (molte voci
 giovani non attribuite, una voce di Pietro dominante).
+
+**Decisione di Pietro (21/10): si tiene tutto, i minorenni solo con le
+iniziali.** Implementato il 23/10 (commit `ae3172a`, `pannello/iniziali.py`):
+nelle pagine pubblicate ogni nome di persona esce a iniziali tranne
+l'elenco `pannello/nomi_in_chiaro.txt` del corpus privato (seminato con
+Pietro, Teresa, i colleghi noti, luoghi, marchi e personaggi pubblici).
+Verificato sui dati veri: l'appello del 15/10 esce «G., no. K., no…»,
+nessun nome di studente nelle pagine. Il corpus privato e la correzione
+con Gemini restano integrali.
+
+Incidente del 23/10, risolto: nel pubblicare l'elenco nel corpus, un
+commit (`50b71e4`) ha incluso per errore modifiche vecchie rimaste in
+attesa nella copia di lavoro, riportando il corpus indietro (giornate del
+20 e 21 ottobre tolte). Ripristinato un minuto dopo con `0161079`, che
+rimette esattamente l'albero di `8f221d6` più l'elenco; nessuna perdita
+(la storia conserva tutto). Lezione: in una copia del corpus non allineata
+non si committa senza prima riallinearla da zero.
 
 
 ### 43. Gemma contro Gemini, con le parole protette — 21 ottobre

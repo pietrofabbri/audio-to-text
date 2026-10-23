@@ -354,12 +354,20 @@ Regole di sicurezza (tutte implementate):
    quella repo.
 7. **Testi citati al minimo.** Impegni (13) e storie (14), quando ci
    saranno, mostreranno riassunti brevi, non trascrizioni estese.
-8. Se Pietro registra a scuola, le ore con studenti minorenni vanno escluse o
-   anonimizzate del tutto prima di qualsiasi analisi. **Al 21/10 non è
-   ancora così**: ci sono ore di lezione nel corpus (almeno il 15/10), sono
-   già entrate nelle metriche e nella correzione con Gemini. Le pagine delle
-   conversazioni restano spente per questo (sotto). Da decidere con Pietro
-   come escluderle.
+8. **Minorenni (rivista il 21/10 su decisione di Pietro).** Prima la regola
+   era: escludere o anonimizzare le ore con studenti minorenni. Pietro ha
+   deciso di **tenere tutto**, ore di lezione comprese, con i nomi dei
+   minorenni **solo a iniziali** nelle pagine pubblicate. Poiché il codice
+   non può sapere chi è minorenne, *ogni* nome di persona esce a iniziali
+   (voci e testo, pannello e pagine dei giorni) tranne quelli
+   nell'elenco `pannello/nomi_in_chiaro.txt` della repo privata del
+   corpus, che Pietro mantiene (adulti, luoghi, marchi; nel dubbio non si
+   aggiunge). È un nome una parola maiuscola che nel corpus non compare mai
+   minuscola, o una parte del nome di una voce non in elenco
+   (`pannello/iniziali.py`). Il corpus privato resta integrale. Le
+   iniziali riducono l'identificabilità ma il testo resta quello detto;
+   restano da chiarire, a cura di Pietro, autorizzazioni e informativa
+   per le registrazioni in classe.
 
 Verifica fatta il 9/10 sui dati veri: con una frase sbagliata la pagina non
 si apre; con quella giusta compare il pannello; nel file pubblicato non
@@ -408,12 +416,11 @@ volume risente della distanza dal registratore (la voce di Pietro è
 sempre la più vicina) e della saturazione; per questo il confronto è con
 la voce della stessa persona, mai fra persone.
 
-**Pubblicazione: spenta finché non lo decide Pietro.** Le pagine delle
-conversazioni escono solo se nella repo del corpus la variabile Actions
-`PANNELLO_CONVERSAZIONI` vale `si`. Motivo: nel corpus ci sono ore di
-lezione (es. 15/10 dalle 08:02, appello con i nomi degli studenti) e la
-regola 8 qui sotto chiede di escludere le ore con studenti minorenni prima
-di qualsiasi analisi; il testo integrale è la forma più esposta. Le pagine
+**Pubblicazione.** Le pagine delle conversazioni escono solo se nella repo
+del corpus la variabile Actions `PANNELLO_CONVERSAZIONI` vale `si`
+(interruttore di Pietro). Dal 21/10 tutti i nomi di persona non in elenco
+escono a iniziali (regola 8 sopra), anche nel pannello principale: per
+esempio l'appello del 15/10 diventa «G., no. K., no. R., no…». Le pagine
 sono cifrate come il pannello, ma il file cifrato è pubblico: la
 protezione dipende tutta dalla robustezza della frase d'accesso.
 
