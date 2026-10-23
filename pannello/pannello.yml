@@ -48,6 +48,7 @@ jobs:
           sparse-checkout: |
             metriche
             giorni
+            pannello
           path: corpus
 
       - name: Codice del pannello (repo pubblica della pipeline)
@@ -94,15 +95,17 @@ jobs:
         if: steps.segreti.outputs.pronto == 'si'
         env:
           # Le pagine delle conversazioni (testo integrale) escono solo se la
-          # variabile PANNELLO_CONVERSAZIONI vale «si». Spenta finche' le ore
-          # di scuola con studenti minorenni non sono escluse (regola 8,
-          # docs/analisi-corpus.md, sezione 8).
+          # variabile PANNELLO_CONVERSAZIONI vale «si». In tutte le pagine i
+          # nomi di persona escono con le iniziali, tranne quelli elencati in
+          # pannello/nomi_in_chiaro.txt del corpus (decisione del 21/10:
+          # si tengono anche le ore di lezione, i minorenni solo a iniziali;
+          # pannello/iniziali.py).
           CONVERSAZIONI: ${{ vars.PANNELLO_CONVERSAZIONI }}
         run: |
           if [ "$CONVERSAZIONI" = "si" ]; then
             python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html corpus/giorni
           else
-            python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html
+            python pipeline/pannello/costruisci.py corpus/metriche chiaro/index.html corpus/giorni --senza-conversazioni
             mkdir -p chiaro/giorni
           fi
 

@@ -164,12 +164,58 @@ def conversazioni_per_giorno(tmp: Path) -> None:
     require(pagina.count("</script>") == 2, "nessuna chiusura di script nei dati")
     require('"conversazioni":["2026-10-06"]' in indice, "il pannello sa quali giorni hanno pagina")
 
+
+def iniziali_per_i_nomi(tmp: Path) -> None:
+    """Nomi non in elenco -> iniziali; elenco e parole comuni restano."""
+    sys.path.insert(0, str(HERE.parent))
+    from pannello.iniziali import Iniziali
+    an = Iniziali(["Pietro", "Rita Fantinati", "Ferrara"],
+                  {"allora", "no", "si", "telefono"},
+                  nomi_voci=["Ilyas Zappaterra", "Rita Fantinati"])
+    require(an.nome("Ilyas Zappaterra") == "I. Z.", an.nome("Ilyas Zappaterra"))
+    require(an.nome("Rita Fantinati") == "Rita Fantinati", "adulto in elenco")
+    require(an.nome("GLOBAL_055") == "GLOBAL_055", "pseudonimo invariato")
+    t = an.testo("Allora Gabriele, no. Telefono a Rita, poi dell'Anna e Zappaterra a Ferrara.")
+    require(t == "Allora G., no. Telefono a Rita, poi dell'A. e Z. a Ferrara.", t)
+
+
+def pagine_con_iniziali(tmp: Path) -> None:
+    """Pannello e pagine dei giorni usano le iniziali; l'elenco le evita."""
+    sys.path.insert(0, str(HERE.parent / "pannello"))
+    sys.path.insert(0, str(HERE.parent))
+    from costruisci import costruisci
+    d = _giornata(tmp)
+    m = json.loads((d / "giorno.json").read_text(encoding="utf-8"))
+    m["speaker_names"]["GLOBAL_009"] = "Yousef Bianchi"
+    (d / "giorno.json").write_text(json.dumps(m), encoding="utf-8")
+    with (d / "segments.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_seg(9, SOGGETTO, 60000, 60005, "Yousef c'è, Marta no.")) + "\n")
+    scrivi(tmp / "giorni", tmp / "metriche")
+    costruisci(tmp / "metriche", tmp / "sito" / "index.html", tmp / "giorni")
+    pagina = (tmp / "sito" / "giorni" / "2026-10-06.html").read_text(encoding="utf-8")
+    indice = (tmp / "sito" / "index.html").read_text(encoding="utf-8")
+    for testo in (pagina, indice):
+        require("Yousef" not in testo and "Bianchi" not in testo, "nome del minorenne fuori")
+    require("Y. B." in pagina and "Y. B." in indice, "iniziali presenti")
+    require("Y. c'è, M. no." in pagina, "iniziali nel testo")
+    (tmp / "pannello").mkdir()
+    (tmp / "pannello" / "nomi_in_chiaro.txt").write_text("# adulti\nMarta\n", encoding="utf-8")
+    costruisci(tmp / "metriche", tmp / "sito" / "index.html", tmp / "giorni")
+    pagina = (tmp / "sito" / "giorni" / "2026-10-06.html").read_text(encoding="utf-8")
+    require("Y. c'è, Marta no." in pagina, "un nome in elenco resta intero")
+    costruisci(tmp / "metriche", tmp / "sito2" / "index.html", tmp / "giorni", conversazioni=False)
+    require(not (tmp / "sito2" / "giorni").exists(), "senza conversazioni nessuna pagina dei giorni")
+    require("Yousef" not in (tmp / "sito2" / "index.html").read_text(encoding="utf-8"),
+            "anche senza conversazioni il pannello usa le iniziali")
+
 CHECKS = [
     ("copertura e silenzio sulla maschera dei minuti", copertura_e_silenzio),
     ("relazioni, marcatori e qualita'", relazioni_e_parole),
     ("MATTR", mattr_robusto),
     ("la pagina ha i dati dentro e niente fuori", pagina_con_i_dati_dentro),
     ("le pagine dei giorni: testo, voci, stile", conversazioni_per_giorno),
+    ("iniziali per i nomi non in elenco", iniziali_per_i_nomi),
+    ("pannello e pagine con le iniziali", pagine_con_iniziali),
 ]
 
 

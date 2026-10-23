@@ -2,7 +2,7 @@
 """
 Costruisce la pagina del pannello dalle metriche del corpus.
 
-    python pannello/costruisci.py <cartella metriche> <file html di uscita> [<cartella giorni>]
+    python pannello/costruisci.py <cartella metriche> <file html di uscita> [<cartella giorni>] [--senza-conversazioni]
 
 Con la cartella `giorni/` del corpus costruisce anche le pagine delle
 conversazioni, una per giorno, in `<cartella dell'uscita>/giorni/`
@@ -56,10 +56,26 @@ def _pulisci(g: dict) -> dict:
 
 
 def costruisci(cartella_metriche: Path, uscita: Path,
-               cartella_giorni: Path | None = None) -> Path:
+               cartella_giorni: Path | None = None,
+               conversazioni: bool = True) -> Path:
+    """Il pannello; con `cartella_giorni` anche le pagine dei giorni.
+
+    I nomi delle persone escono con le iniziali, tranne quelli in
+    `pannello/nomi_in_chiaro.txt` del corpus (vedi `pannello/iniziali.py`).
+    Senza `cartella_giorni` l'elenco non si conosce: in chiaro resta solo
+    il nome di Pietro.
+    """
+    from pannello.iniziali import Iniziali, da_corpus, nomi_delle_voci
+    if cartella_giorni is not None:
+        iniziali = da_corpus(Path(cartella_giorni), nomi_delle_voci(Path(cartella_giorni)))
+    else:
+        iniziali = Iniziali(["Pietro"], set())
     giorni = []
     for p in sorted(Path(cartella_metriche).glob("????-??-??.json")):
-        giorni.append(_pulisci(json.loads(p.read_text(encoding="utf-8"))))
+        g = _pulisci(json.loads(p.read_text(encoding="utf-8")))
+        for v in g.get("voci", []):
+            v["nome"] = iniziali.nome(v.get("nome"))
+        giorni.append(g)
     limiti = dict(LIMITI_FISSI)
     if giorni and not all(g["qualita"]["testo_corretto"] for g in giorni):
         limiti["testo"] = ("in parte o del tutto non corretto: lessico e "
@@ -72,9 +88,10 @@ def costruisci(cartella_metriche: Path, uscita: Path,
         "giorni": giorni,
         "conversazioni": [],
     }
-    if cartella_giorni is not None:
+    if cartella_giorni is not None and conversazioni:
         from pannello.conversazioni import costruisci as pagine_giorni
-        scritte = pagine_giorni(Path(cartella_giorni), Path(uscita).parent / "giorni")
+        scritte = pagine_giorni(Path(cartella_giorni), Path(uscita).parent / "giorni",
+                                iniziali)
         dati["conversazioni"] = sorted(p.stem for p in scritte)
     blob = json.dumps(dati, ensure_ascii=False, separators=(",", ":"))
     # Dentro <script type="application/json"> l'unica sequenza pericolosa
@@ -88,7 +105,9 @@ def costruisci(cartella_metriche: Path, uscita: Path,
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (3, 4):
+    argomenti = [a for a in sys.argv[1:] if a != "--senza-conversazioni"]
+    if len(argomenti) not in (2, 3):
         raise SystemExit(__doc__)
-    print(costruisci(Path(sys.argv[1]), Path(sys.argv[2]),
-                     Path(sys.argv[3]) if len(sys.argv) == 4 else None))
+    print(costruisci(Path(argomenti[0]), Path(argomenti[1]),
+                     Path(argomenti[2]) if len(argomenti) == 3 else None,
+                     conversazioni="--senza-conversazioni" not in sys.argv))

@@ -111,8 +111,14 @@ def livello(x, base) -> int:
     return 2
 
 
-def dati_giorno(cartella: Path, basi: dict) -> dict:
-    """Il contenuto di una pagina: voci, conversazioni, frasi."""
+def dati_giorno(cartella: Path, basi: dict, iniziali=None) -> dict:
+    """Il contenuto di una pagina: voci, conversazioni, frasi.
+
+    `iniziali` (`pannello/iniziali.py`): se c'e', i nomi di persona non in
+    chiaro diventano iniziali, nelle voci e nel testo.
+    """
+    an_t = iniziali.testo if iniziali else (lambda t: t)
+    an_n = iniziali.nome if iniziali else (lambda n: n)
     cartella = Path(cartella)
     manifesto = json.loads((cartella / "giorno.json").read_text(encoding="utf-8"))
     nomi = manifesto.get("speaker_names") or {}
@@ -153,14 +159,14 @@ def dati_giorno(cartella: Path, basi: dict) -> dict:
         base = basi.get(voce, {})
         misurabile = _misurabile(s)
         riga = [
-            round(a), vid(voce), testo_c or testo,
+            round(a), vid(voce), an_t(testo_c or testo),
             livello(pro.get(MISURE["tono"]), base.get("tono")) if misurabile else 0,
             livello(pro.get(MISURE["vol"]), base.get("vol")) if misurabile else 0,
             livello(pro.get(MISURE["vel"]), base.get("vel")) if misurabile else 0,
             1 if s.get("quality") == "unreliable" else 0,
         ]
         if testo_c and testo_c != testo:
-            riga.append(testo)  # l'originale di Whisper, solo se diverso
+            riga.append(an_t(testo))  # l'originale di Whisper, solo se diverso
         frasi.append(riga)
 
     for c in conversazioni:
@@ -175,7 +181,7 @@ def dati_giorno(cartella: Path, basi: dict) -> dict:
 
     return {
         "giorno": manifesto["day"],
-        "voci": [{"id": v, "nome": (nomi.get(v) or ("non attribuita" if v == SCONOSCIUTA else v)),
+        "voci": [{"id": v, "nome": (an_n(nomi.get(v)) or ("non attribuita" if v == SCONOSCIUTA else v)),
                   "base": bool(basi.get(v))} for v in voci],
         "conversazioni": conversazioni,
         "frasi": frasi,
@@ -184,8 +190,11 @@ def dati_giorno(cartella: Path, basi: dict) -> dict:
     }
 
 
-def costruisci(cartella_giorni: Path, uscita: Path) -> list[Path]:
+def costruisci(cartella_giorni: Path, uscita: Path, iniziali=None) -> list[Path]:
     cartella_giorni, uscita = Path(cartella_giorni), Path(uscita)
+    if iniziali is None:
+        from pannello.iniziali import da_corpus, nomi_delle_voci
+        iniziali = da_corpus(cartella_giorni, nomi_delle_voci(cartella_giorni))
     basi = basi_per_voce(cartella_giorni)
     giorni = [d for d in sorted(cartella_giorni.iterdir()) if (d / "giorno.json").exists()]
     elenco = [d.name for d in giorni]
@@ -193,7 +202,7 @@ def costruisci(cartella_giorni: Path, uscita: Path) -> list[Path]:
     uscita.mkdir(parents=True, exist_ok=True)
     scritte = []
     for d in giorni:
-        dati = dati_giorno(d, basi)
+        dati = dati_giorno(d, basi, iniziali)
         dati["giorni"] = elenco
         blob = json.dumps(dati, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
         p = uscita / f"{d.name}.html"
