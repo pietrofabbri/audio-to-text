@@ -143,6 +143,24 @@ class Sessione:
         return self.inizio + timedelta(seconds=float(secondi or 0.0))
 
 
+def voce_delle_parole(cartella: Path):
+    """La funzione etichetta locale -> identita' globale di una sessione.
+
+    Usa la mappa di `session.json` e segue le fusioni dei cluster deboli
+    (`speaker_merge.json`). Restituisce None per un'etichetta sconosciuta.
+    """
+    mappa = (_json(cartella / "session.json") or {}).get("speaker_global_map") or {}
+    fusioni = (_json(cartella / "speaker_merge.json") or {}).get("merged") or {}
+
+    def voce(locale: Any) -> str | None:
+        visti = set()
+        while locale in fusioni and locale not in visti:
+            visti.add(locale)
+            locale = fusioni[locale]
+        return mappa.get(locale)
+    return voce
+
+
 def leggi_sessione(d: Path) -> Sessione | None:
     """Una sessione pronta da unire, o None se manca qualcosa che serve."""
     inizio = inizio_sessione(d)
@@ -374,6 +392,28 @@ class Giornata:
                 n += 1
         return out
 
+    def _turni(self, s: Sessione, segs: list[dict]) -> list[dict]:
+        """I segmenti di una sessione divisi nei turni di chi parla.
+
+        Solo per i testi che si leggono (trascrizione, srt, analisi):
+        `segments.jsonl` resta un segmento per riga, perche' e' li' che
+        stanno prosodia, qualita' e correzioni, legate all'`idx`.
+        """
+        from core.turni import dividi
+        voce_parola = voce_delle_parole(s.cartella)
+        parole: dict[Any, list] = {}
+        for x in _jsonl(s.cartella / "tokens.jsonl"):
+            parole.setdefault(x.get("segment_idx"), []).append(
+                (x.get("word", ""), voce_parola(x.get("speaker")), x.get("start")))
+        out = []
+        for g in segs:
+            voce_g = g.get("speaker") or "UNKNOWN"
+            pp = [(w, v or voce_g, a) for w, v, a in parole.get(g.get("idx"), [])]
+            for parte in dividi(g.get("text") or "", pp, voce_g,
+                                g.get("start", 0), g.get("end", 0)):
+                out.append({**g, **parte})
+        return out
+
     def segments_jsonl(self, corretti: bool = False) -> str:
         return "".join(json.dumps(s, ensure_ascii=False) + "\n"
                        for s in self._segmenti_con_ora(corretti))
@@ -392,6 +432,16 @@ class Giornata:
         righe = []
         n_seg = 0
         for s in self.sessioni:
+            # La voce di ogni parola, non del suo segmento. Un segmento e'
+            # un pezzo di audio fino a 29 s e porta una voce sola, ma
+            # dentro ci parlano spesso in due o tre: il 28/10 il 17,6%
+            # delle parole stava in un segmento di un'altra voce. La
+            # diarizzazione la voce di ogni parola la sa gia' (`speaker`,
+            # l'etichetta locale): qui la si traduce nell'identita'
+            # globale con la mappa della sessione, seguendo le fusioni.
+            # `speaker_segment` resta per confronto.
+            voce_parola = voce_delle_parole(s.cartella)
+
             voce: dict[Any, str] = {}
             giorno_idx: dict[Any, int] = {}
             prosodia: dict[Any, set] = {}
@@ -405,10 +455,12 @@ class Giornata:
                 via = prosodia.get(i, {"duration_sec"})
                 t = {k: v for k, v in t.items() if k not in via}
                 a = s.ora(t.get("start", 0))
+                del_segmento = voce.get(i, "UNKNOWN")
                 t.update({
                     "session": s.stem,
                     "day_segment_idx": giorno_idx.get(i),
-                    "speaker_global": voce.get(i, "UNKNOWN"),
+                    "speaker_global": voce_parola(t.get("speaker")) or del_segmento,
+                    "speaker_segment": del_segmento,
                     "clock": _hms(a),
                     "day_sec": _secondi_del_giorno(a, self.giorno),
                 })
@@ -521,7 +573,7 @@ class Giornata:
                 righe.extend((g.get("text") or "").strip() for g in gruppo)
                 righe.append("")
 
-            for g in segs:
+            for g in self._turni(s, segs):
                 if gruppo and g.get("speaker") != gruppo[-1].get("speaker"):
                     chiudi()
                     gruppo = []
@@ -536,7 +588,7 @@ class Giornata:
             segs = s.segmenti
             if corretti:
                 segs = _jsonl(s.cartella / "segments.corrected.jsonl") or segs
-            for g in segs:
+            for g in self._turni(s, segs):
                 a, b = s.ora(g.get("start", 0)), s.ora(g.get("end", 0))
                 blocchi.append(
                     f"{n}\n{_srt_ts(a, self.giorno)} --> {_srt_ts(b, self.giorno)}\n"
@@ -577,7 +629,7 @@ class Giornata:
         righe += ["", "---", "", "## Trascrizione", ""]
         for i, s in enumerate(self.sessioni):
             righe += [f"### {self._riga_sessione(s, i).strip('═ ')}", ""]
-            for g in s.segmenti:
+            for g in self._turni(s, s.segmenti):
                 righe.append(f"**[{_etichetta(g.get('speaker') or 'UNKNOWN', self.nomi)}]** "
                              f"[{_hms(s.ora(g.get('start', 0)))}] {(g.get('text') or '').strip()}")
             righe.append("")

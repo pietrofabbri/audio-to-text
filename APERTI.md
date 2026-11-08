@@ -47,7 +47,8 @@ il flag era dichiarato dal primo giorno e non letto mai — ed e' il comando
 che si usa per non perdere una voce), 31 (nessuno controllava che le voci
 citate dalle sessioni esistessero: ora lo dice `status`).
 
-**Aperti:** 8 (biometria — serve l'hardware), 11 (campione denoise di
+**Chiuso il 7 novembre:** 8 (biometria, dall'export di Zepp).
+**Aperti:** 11 (campione denoise di
 180 s), 12 (modello `medium` — decisione tua), 13 (archivio locale a 7
 giorni), 14 (segmenti da ~18 s), e il termico vero (servono
 `powermetrics` con permessi root e una notte di misura).
@@ -461,25 +462,33 @@ con dentro le tue date.
 
 ---
 
-### 8. Sync biometrico: mai costruito
+### 8. ~~Sync biometrico: mai costruito~~ — chiuso il 7 novembre, con l'export di Zepp
 
-**Stato.** Non esiste. È stato il motivo per cui `session_start_wall`
-esiste, e quel pezzo **ora funziona** (prima scriveva sotto una chiave
-inesistente e crashava).
+**Stato.** Fatto senza API e senza reverse engineering: si usa
+l'**export dei dati personali** di Zepp (GDPR), che Pietro scarica circa una
+volta al mese. `importa_helio.py <cartella>` lo copia in
+`data/helio/export/` (fuori da git); `publish_corpus.py push` scrive
+`helio/AAAA-MM-GG.json` nel corpus (24 ore, tutti i giorni) e il campo
+`corpo` nelle metriche dei giorni registrati; il Taccuino ha la sezione
+«Il corpo». Codice in `core/helio.py`, test in `tests/test_helio.py`.
 
-**Pro.** È ciò che trasforma il corpus da testo in serie di misure nel
-tempo, ed è l'unica cosa che non si può ricostruire dopo: le misure
-biometriche vanno scaricate mentre esistono nel cloud.
+**Primo export (7/11, dati dal 20/10):** 19 giorni, 25.195 minuti di
+battito, 17 notti, fasi del sonno al minuto, 75 attività.
 
-**Contra.** Non ho il dispositivo né il token Zepp. E richiede di sapere
-come Amazon/Zepp espongono i dati — è reverse engineering di un'API non
-ufficiale, quindi fragile.
+**Cosa l'export non ha:** HRV, stress, SpO2, battito a riposo,
+temperatura. L'app li mostra, l'export no: le ipotesi del documento
+`analisi-corpus.md` che li usano restano ferme.
 
-**Perché è in fondo all'elenco.** Il prerequisito (`session_start_wall`)
-è a posto; il resto dipende da hardware che non ho.
+**Tre trappole trovate sui dati veri** (dettagli in `core/helio.py`):
+fusi diversi nello stesso export (battito e passi in ora locale, sonno e
+attività in UTC); `SLEEP_MINUTE` con la data spostata di un giorno in
+avanti (lo spostamento si misura a ogni export, non e' una costante);
+minuti «24:xx» nel giorno del cambio d'ora.
 
-**Io.** Lo scheletro e l'allineamento temporale, quando i dati
-esistono. **Tu.** Il dispositivo e l'accesso all'app.
+**Resta aperto.** La deriva dell'orologio del TileRec: il confronto
+battito/parlato usa l'ora del registratore. Con un minuto di deriva le
+classi si mescolano poco; con dieci, molto. Da misurare (vedi
+`hardware-registrazione.md` nel progetto).
 
 ---
 

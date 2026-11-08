@@ -28,7 +28,7 @@ name: pannello
 on:
   push:
     branches: [main]
-    paths: ["metriche/**", "giorni/**", ".github/workflows/pannello.yml"]
+    paths: ["metriche/**", "giorni/**", "helio/**", ".github/workflows/pannello.yml"]
   workflow_dispatch:
 
 permissions:
@@ -48,6 +48,7 @@ jobs:
           sparse-checkout: |
             metriche
             giorni
+            helio
             pannello
           path: corpus
 

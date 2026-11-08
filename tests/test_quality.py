@@ -301,6 +301,23 @@ def test_quality_survives_json_roundtrip(tmp: Path) -> None:
 
 # -------------------------------------------------------------------
 
+def test_allucinazioni_tipiche(tmp: Path) -> None:
+    from core.quality import score_segment
+    lunga = score_segment(_seg("Grazie a tutti.", dur=21.0))
+    assert lunga["level"] == "unreliable" and "allucinazione_tipica" in lunga["reasons"], lunga
+    visione = score_segment(_seg("Grazie per la visione!", dur=2.0))
+    assert visione["level"] == "unreliable", visione
+    prompt = score_segment(_seg("Frasi brevi, punteggiatura completa, mai unire due frasi in una.", dur=6.0))
+    assert "prompt_nel_testo" in prompt["reasons"], prompt
+    # Un «grazie» vero, breve e sicuro, resta.
+    vero = _seg("Grazie.", dur=1.0)
+    vero["words"] = [{"word": "Grazie.", "start": 0.0, "end": 0.6, "prob": 0.97}]
+    assert "allucinazione_tipica" not in score_segment(vero)["reasons"]
+    # Una frase che contiene «grazie» non e' toccata.
+    frase = score_segment(_seg("Grazie a tutti per essere venuti oggi pomeriggio.", dur=4.0))
+    assert "allucinazione_tipica" not in frase["reasons"], frase
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

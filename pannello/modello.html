@@ -82,6 +82,7 @@ table { width: 100%; border-collapse: collapse; font-size: 13px;
 th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--grid); }
 th { color: var(--text-2); font-weight: 600; }
 td.n, th.n { text-align: right; }
+.nowrap th, .nowrap td { white-space: nowrap; }
 .insuff { padding: 28px 8px; text-align: center; color: var(--text-2); }
 #tip { position: fixed; pointer-events: none; background: var(--text);
   color: var(--surface); font-size: 12px; padding: 5px 8px; border-radius: 6px;
@@ -126,6 +127,8 @@ var GIORNI = DATI.giorni.slice().sort(function (a, b) { return a.giorno < b.gior
 var VALIDI = GIORNI.filter(function (g) { return g.valido; });
 var SOGLIE = DATI.soglie;
 var CONV = DATI.conversazioni || [];
+var CORPO = (DATI.corpo || []).slice().sort(function (a, b) { return a.giorno < b.giorno ? -1 : 1; });
+var CORPO_PER = {}; CORPO.forEach(function (c) { CORPO_PER[c.giorno] = c; });
 function prendi(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function metti(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 
@@ -244,12 +247,15 @@ function aggrega(giorni) {
   return {
     aggregato: true, n: giorni.length,
     copertura: {registrato_ore: tot("copertura.registrato_ore"), parlato_ore: tot("copertura.parlato_ore"),
-      parlato_quota: med("copertura.parlato_quota")},
+      parlato_quota: med("copertura.parlato_quota"),
+      pietro_parlato_quota: med("copertura.pietro_parlato_quota")},
     silenzio: {silenzio_min: tot("silenzio.silenzio_min"), solo_pietro_min: tot("silenzio.solo_pietro_min"),
       con_altri_min: tot("silenzio.con_altri_min")},
     voci: Object.keys(voci).map(function (k) { return voci[k]; }).sort(function (a, b) { return b.minuti - a.minuti; }),
     relazioni: {quota_parola_pietro: med("relazioni.quota_parola_pietro"),
       conversazioni: tot("relazioni.conversazioni"),
+      conversazioni_con_pietro: tot("relazioni.conversazioni_con_pietro"),
+      pietro_turni_per_ora_conversazione: med("relazioni.pietro_turni_per_ora_conversazione"),
       apre_pietro_quota: med("relazioni.apre_pietro_quota"),
       chiude_pietro_quota: med("relazioni.chiude_pietro_quota"),
       cambi_turno_per_ora_parlato: med("relazioni.cambi_turno_per_ora_parlato")},
@@ -266,6 +272,9 @@ function aggrega(giorni) {
         negazioni_per_1000: med("pietro.parole.negazioni_per_1000")}},
     qualita: {ok_quota: med("qualita.ok_quota"), asr_prob_media: med("qualita.asr_prob_media"),
       parole_incerte_quota: med("qualita.parole_incerte_quota"),
+      pietro_ok_quota: med("qualita.pietro_ok_quota"),
+      pietro_asr_prob_media: med("qualita.pietro_asr_prob_media"),
+      pietro_parole_incerte_quota: med("qualita.pietro_parole_incerte_quota"),
       testo_corretto: giorni.every(function (g) { return g.qualita.testo_corretto; })},
     ore: oreArr
   };
@@ -421,6 +430,184 @@ function legenda(voci) {
   return l;
 }
 
+// ------------------------------------------------------------ il corpo (Helio)
+// Le misure del braccialetto sulle 24 ore (`DATI.corpo`, un giorno per
+// elemento, da core/helio.py). Ci sono anche i giorni senza registrazione.
+var FASI_COLORE = {DEEP: "var(--s1)", LIGHT: "var(--s1-soft)", REM: "var(--s3)", WAKE: "var(--sil)"};
+var FASI_NOME = {DEEP: "profondo", LIGHT: "leggero", REM: "REM", WAKE: "sveglio"};
+function corpoCompleti() {
+  return CORPO.filter(function (c) { return (c.battito.copertura_quota || 0) >= 0.95; });
+}
+// Riferimento sui giorni dell'Helio: tutte le notti per il sonno, i soli
+// giorni completi per battito e passi.
+function rifCorpo(path, valore, fmt) {
+  var base = path.indexOf("sonno.") === 0 ? CORPO : corpoCompleti();
+  var vals = base.map(function (c) { return get(c, path); });
+  return {valore: valore, mediana: median(vals), n: vals.filter(function (x) { return x != null; }).length, fmt: fmt};
+}
+function bpm(v) { return v == null ? "—" : num(v, 0) + " bpm"; }
+function oraIso(iso) { return iso ? iso.slice(11, 16) : "—"; }
+function minutiAttivita(c) { return c.allenamenti.reduce(function (a, x) { return a + (x.minuti || 0); }, 0); }
+
+function grafico24(c, g) {
+  var W = larghezza(), H = 250, L = 34, R = 8, T = 6, B = 22;
+  var yS = T, hS = 14, yR = T + 20, hR = 6;          // fasce: sonno, registrato
+  var yP1 = H - B, hP = 34;                           // passi in basso
+  var yH0 = T + 36, yH1 = yP1 - hP - 10;              // battito in mezzo
+  var x = function (min) { return L + (W - L - R) * Math.max(0, Math.min(1440, min)) / 1440; };
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img",
+    "aria-label": "Battito, sonno, passi e ore registrate sulle 24 ore"});
+  // sonno: la notte che finisce oggi, e gli altri tratti
+  s("rect", {x: L, y: yS, width: W - L - R, height: hS, rx: 3, fill: "var(--grid)"}, svg);
+  if (c.sonno) c.sonno.fasi.forEach(function (f) {
+    if (f[1] <= 0) return;
+    var r = s("rect", {x: x(f[0]), y: yS, width: Math.max(1, x(f[1]) - x(f[0])), height: hS, fill: FASI_COLORE[f[2]]}, svg);
+    hover(r, "sonno " + FASI_NOME[f[2]]);
+  });
+  (c.altri_sonni || []).forEach(function (p) {
+    var a = Number(p.inizio.slice(0, 2)) * 60 + Number(p.inizio.slice(3)), b = a + p.minuti;
+    var r = s("rect", {x: x(a), y: yS, width: Math.max(2, x(b) - x(a)), height: hS, fill: "var(--s1-soft)", opacity: 0.7}, svg);
+    hover(r, "altro tratto di sonno " + p.inizio + "–" + p.fine);
+  });
+  // registrato
+  s("rect", {x: L, y: yR, width: W - L - R, height: hR, rx: 2, fill: "var(--grid)"}, svg);
+  if (g) g.copertura.intervalli.forEach(function (iv) {
+    var r = s("rect", {x: x(iv[0] / 60), y: yR, width: Math.max(2, x(iv[1] / 60) - x(iv[0] / 60)), height: hR, rx: 1, fill: "var(--text-2)"}, svg);
+    hover(r, "registrato");
+  });
+  // battito
+  var v = c.battito.per_5min.filter(function (b) { return b != null; });
+  if (v.length > 1) {
+    var lo = Math.min(40, Math.floor(Math.min.apply(null, v) / 10) * 10);
+    var hi = Math.max(100, Math.ceil(Math.max.apply(null, v) / 10) * 10);
+    var y = function (b) { return yH1 - (yH1 - yH0) * (b - lo) / (hi - lo); };
+    [lo, (lo + hi) / 2, hi].forEach(function (b) {
+      s("line", {x1: L, x2: W - R, y1: y(b), y2: y(b), stroke: "var(--grid)"}, svg);
+      s("text", {x: L - 6, y: y(b) + 4, "text-anchor": "end"}, svg).textContent = num(b, 0);
+    });
+    var d = "", prima = false;
+    c.battito.per_5min.forEach(function (b, i) {
+      if (b == null) { prima = false; return; }
+      d += (prima ? "L" : "M") + x(i * 5 + 2.5).toFixed(1) + " " + y(b).toFixed(1) + " ";
+      prima = true;
+    });
+    s("path", {d: d, fill: "none", stroke: "var(--s2)", "stroke-width": 1.6, "stroke-linejoin": "round"}, svg);
+  }
+  // passi per ora
+  var maxP = Math.max.apply(null, c.passi.per_ora.concat([500]));
+  c.passi.per_ora.forEach(function (p, h) {
+    if (!p) return;
+    var hh = hP * p / maxP;
+    s("rect", {x: x(h * 60) + 1, y: yP1 - hh, width: Math.max(1, x(60) - x(0) - 2), height: hh, rx: 1, fill: "var(--muted)", opacity: 0.6}, svg);
+  });
+  // tooltip per ora
+  for (var h = 0; h < 24; h++) (function (h) {
+    var bb = c.battito.per_5min.slice(h * 12, h * 12 + 12).filter(function (b) { return b != null; });
+    var hit = s("rect", {x: x(h * 60), y: T, width: x(60) - x(0), height: yP1 - T, fill: "transparent"}, svg);
+    hover(hit, "<b>" + h + ":00–" + (h + 1) + ":00</b><br>battito medio " +
+      (bb.length ? num(bb.reduce(function (a, b) { return a + b; }, 0) / bb.length, 0) + " bpm" : "—") +
+      "<br>passi " + num(c.passi.per_ora[h], 0));
+  })(h);
+  [0, 6, 12, 18, 24].forEach(function (h) {
+    s("text", {x: x(h * 60), y: H - 5, "text-anchor": "middle"}, svg).textContent = h;
+  });
+  return svg;
+}
+
+// Le notti: barre impilate delle fasi, una per notte (giorno della sveglia).
+function graficoNotti(lista) {
+  var W = larghezza(), H = 170, L = 34, R = 8, T = 8, B = 22;
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Sonno per notte, diviso per fasi"});
+  var maxMin = Math.max(600, Math.max.apply(null, lista.map(function (c) { return c.sonno ? c.sonno.dormito_min : 0; })));
+  var y = function (m) { return H - B - (H - T - B) * m / maxMin; };
+  [0, 240, 480].forEach(function (m) {
+    s("line", {x1: L, x2: W - R, y1: y(m), y2: y(m), stroke: "var(--grid)"}, svg);
+    s("text", {x: L - 6, y: y(m) + 4, "text-anchor": "end"}, svg).textContent = (m / 60) + "h";
+  });
+  var bw = (W - L - R) / Math.max(lista.length, 1);
+  lista.forEach(function (c, i) {
+    var x0 = L + i * bw + bw * 0.15, w = Math.max(2, bw * 0.7);
+    if (i % Math.ceil(lista.length / 8) === 0) {
+      var p = c.giorno.split("-");
+      s("text", {x: x0 + w / 2, y: H - 5, "text-anchor": "middle"}, svg).textContent = Number(p[2]) + "/" + Number(p[1]);
+    }
+    if (!c.sonno) return;
+    var base = 0;
+    [["profondo_min", "DEEP"], ["rem_min", "REM"], ["leggero_min", "LIGHT"]].forEach(function (k) {
+      var m = c.sonno[k[0]] || 0;
+      s("rect", {x: x0, y: y(base + m), width: w, height: y(base) - y(base + m), fill: FASI_COLORE[k[1]]}, svg);
+      base += m;
+    });
+    var hit = s("rect", {x: L + i * bw, y: T, width: bw, height: H - T - B, fill: "transparent"}, svg);
+    hover(hit, "<b>notte su " + etichettaGiorno(c) + "</b><br>" + oraIso(c.sonno.inizio) + "–" + oraIso(c.sonno.fine) +
+      "<br>dormito " + hm(c.sonno.dormito_min) + "<br>profondo " + hm(c.sonno.profondo_min) +
+      " · REM " + hm(c.sonno.rem_min) + " · leggero " + hm(c.sonno.leggero_min) +
+      "<br>battito nel sonno " + bpm(c.sonno.battito_media));
+  });
+  return svg;
+}
+
+function sezioneCorpo(giornaliero, g) {
+  var c = giornaliero ? CORPO_PER[g.giorno] : null;
+  var sotto = !CORPO.length ? "" : giornaliero
+    ? (c ? "le 24 ore del giorno; la notte è quella che finisce la mattina" : "nessuna misura per questo giorno")
+    : CORPO.length + " giorni misurati, dal " + etichettaGiorno(CORPO[0]) + " al " + etichettaGiorno(CORPO[CORPO.length - 1]);
+  var sec = sezione("Il corpo", sotto);
+  if (!CORPO.length) {
+    sec.appendChild(el("div", {class: "insuff"}, "Nessuna misura dell'Helio nel corpus.")); return sec;
+  }
+  if (c) {
+    var t = el("div", {class: "tiles"});
+    var so = c.sonno;
+    t.appendChild(so ? tile("Dormito", hm(so.dormito_min), rifCorpo("sonno.dormito_min", so.dormito_min, hm))
+                     : tile("Dormito", "notte non misurata", null, {off: true}));
+    if (so) {
+      t.appendChild(tile("Profondo + REM", pct(so.profondo_rem_quota), rifCorpo("sonno.profondo_rem_quota", so.profondo_rem_quota, pct)));
+      t.appendChild(tile("Notte", oraIso(so.inizio) + "–" + oraIso(so.fine), null, {testo: true, nota: "sveglio " + hm(so.sveglio_min)}));
+      t.appendChild(tile("Battito nel sonno", bpm(so.battito_media), rifCorpo("sonno.battito_media", so.battito_media, bpm)));
+    }
+    t.appendChild(tile("Battito da sveglio", bpm(c.battito.sveglio_media), rifCorpo("battito.sveglio_media", c.battito.sveglio_media, bpm)));
+    t.appendChild(tile("Passi", num(c.passi.totale, 0), rifCorpo("passi.totale", c.passi.totale, function (v) { return num(v, 0); })));
+    t.appendChild(tile("Attività rilevate", hm(minutiAttivita(c)), null, {nota: c.allenamenti.length + " tratti (dall'app)"}));
+    var co = g.corpo;
+    if (co && co.parli_meno_silenzio_fermo != null) {
+      var dlt = co.parli_meno_silenzio_fermo;
+      t.appendChild(tile("Battito quando parli", (dlt > 0 ? "+" : "") + num(dlt, 0) + " bpm", null,
+        {nota: "da fermo: parli " + num(co.fermo.parli.media, 0) + " · silenzio " + num(co.fermo.silenzio.media, 0)}));
+    } else if (co) {
+      t.appendChild(tile("Battito quando parli", "pochi minuti", null, {off: true, nota: "servono 5 minuti da fermo per classe"}));
+    }
+    sec.appendChild(t);
+    var wrap = el("div", {style: "margin-top:14px"});
+    wrap.appendChild(legenda([["profondo", FASI_COLORE.DEEP], ["leggero", FASI_COLORE.LIGHT], ["REM", FASI_COLORE.REM],
+      ["sveglio", FASI_COLORE.WAKE], ["registrato", "var(--text-2)"], ["battito (5 min)", "var(--s2)"], ["passi per ora", "var(--muted)"]]));
+    wrap.appendChild(grafico24(c, g));
+    sec.appendChild(wrap);
+    var note = [];
+    if ((c.battito.copertura_quota || 0) < 0.95) note.push("Giorno incompleto: battito su " + pct(c.battito.copertura_quota) + " delle 24 ore.");
+    if (c.altri_sonni && c.altri_sonni.length) note.push("Altri tratti di sonno: " + c.altri_sonni.map(function (p) { return p.inizio + "–" + p.fine; }).join(", ") + ".");
+    if (co) note.push("Battito quando parli: media nei minuti registrati in cui parli, meno quella nei minuti di silenzio, " +
+      "solo nei minuti senza passi (il cammino alza il battito). È una differenza di un giorno, non una correlazione.");
+    if (note.length) sec.appendChild(el("div", {class: "note"}, esc(note.join(" "))));
+  }
+  var n = el("div", {style: "margin-top:16px"});
+  n.appendChild(el("h3", null, "Le notti"));
+  n.appendChild(graficoNotti(CORPO.slice(-45)));
+  sec.appendChild(n);
+  var tb = "<table><thead><tr><th>Giorno</th><th class='n'>Dormito</th><th class='n'>Profondo</th><th class='n'>REM</th><th class='n'>Sveglia</th><th class='n'>Battito sonno</th><th class='n'>Battito sveglio</th><th class='n'>Passi</th><th class='n'>Attività</th></tr></thead><tbody>";
+  CORPO.slice().reverse().forEach(function (x) {
+    var so = x.sonno || {};
+    tb += "<tr><td>" + etichettaGiorno(x) + ((x.battito.copertura_quota || 0) < 0.95 ? " *" : "") + "</td><td class='n'>" + hm(so.dormito_min) +
+      "</td><td class='n'>" + hm(so.profondo_min) + "</td><td class='n'>" + hm(so.rem_min) + "</td><td class='n'>" + oraIso(so.fine) +
+      "</td><td class='n'>" + num(so.battito_media, 0) + "</td><td class='n'>" + num(x.battito.sveglio_media, 0) +
+      "</td><td class='n'>" + num(x.passi.totale, 0) + "</td><td class='n'>" + hm(minutiAttivita(x)) + "</td></tr>";
+  });
+  var tw = el("div", {class: "nowrap", style: "overflow-x:auto;margin-top:12px"}, tb + "</tbody></table>");
+  sec.appendChild(tw);
+  sec.appendChild(el("div", {class: "note"}, "* giorno incompleto (sotto il 95% dei minuti con battito). La notte sta nel giorno della sveglia."));
+  return sec;
+}
+
 // ------------------------------------------------------------ pagina
 function disegna() {
   var root = document.getElementById("contenuto");
@@ -456,8 +643,8 @@ function disegna() {
   var pa = g.pietro.parole, pr = g.pietro.prosodia, rel = g.relazioni;
   tiles.appendChild(tile("Ore registrate", num(g.copertura.registrato_ore, 1) + " h",
     R("copertura.registrato_ore", g.copertura.registrato_ore, function (v) { return num(v, 1) + " h"; })));
-  tiles.appendChild(tile("Parlato", pct(g.copertura.parlato_quota),
-    R("copertura.parlato_quota", g.copertura.parlato_quota, pct)));
+  tiles.appendChild(tile("Tuo parlato sul registrato", pct(g.copertura.pietro_parlato_quota),
+    R("copertura.pietro_parlato_quota", g.copertura.pietro_parlato_quota, pct)));
   tiles.appendChild(tile("Hai parlato", hm(g.pietro.minuti),
     R("pietro.minuti", g.pietro.minuti, hm)));
   tiles.appendChild(tile("Tua quota di parola", pct(rel.quota_parola_pietro),
@@ -471,7 +658,13 @@ function disegna() {
     R("pietro.prosodia.f0_variabilita_hz", pr.f0_variabilita_hz, function (v) { return num(v, 0) + " Hz"; })));
   tiles.appendChild(tile("Domande", pct(pa.domande_quota),
     R("pietro.parole.domande_quota", pa.domande_quota, pct)));
-  tiles.appendChild(tile("Sonno", "Helio non collegato", null, {off: true, nota: "direttrice 5"}));
+  var cs = giornaliero ? CORPO_PER[g.giorno] : null;
+  if (cs && cs.sonno) tiles.appendChild(tile("Sonno della notte", hm(cs.sonno.dormito_min),
+    rifCorpo("sonno.dormito_min", cs.sonno.dormito_min, hm)));
+  else if (!giornaliero && CORPO.length) tiles.appendChild(tile("Sonno, mediana",
+    hm(median(CORPO.map(function (c) { return get(c, "sonno.dormito_min"); }))), null,
+    {nota: CORPO.filter(function (c) { return c.sonno; }).length + " notti misurate"}));
+  else tiles.appendChild(tile("Sonno", CORPO.length ? "notte non misurata" : "Helio non collegato", null, {off: true, nota: "direttrice 5"}));
   tiles.appendChild(tile("Voto serale", "da raccogliere", null, {off: true, nota: "direttrice 17"}));
   tiles.appendChild(tile("Temi principali", "in attesa", null, {off: true, nota: "serve il modello linguistico"}));
   tiles.appendChild(tile("Risate", "non misurate", null, {off: true, nota: "serve un classificatore audio"}));
@@ -493,15 +686,18 @@ function disegna() {
     ". «Silenzio» qui vuol dire registrato senza parlato: comprende musica e TV, che non sono ancora riconosciute."));
   root.appendChild(tempo);
 
+  // --- Il corpo (Helio)
+  root.appendChild(sezioneCorpo(giornaliero, g));
+
   // --- Persone
   var pers = sezione("Persone", "minuti di parlato per voce");
   pers.appendChild(barreVoci(g.voci));
   var t = el("div", {class: "tiles", style: "margin-top:12px"});
-  t.appendChild(tile("Conversazioni", num(rel.conversazioni), R("relazioni.conversazioni", rel.conversazioni, num)));
+  t.appendChild(tile("Tue conversazioni", num(rel.conversazioni_con_pietro), R("relazioni.conversazioni_con_pietro", rel.conversazioni_con_pietro, num)));
   t.appendChild(tile("Le apri tu", pct(rel.apre_pietro_quota), R("relazioni.apre_pietro_quota", rel.apre_pietro_quota, pct)));
   t.appendChild(tile("Le chiudi tu", pct(rel.chiude_pietro_quota), R("relazioni.chiude_pietro_quota", rel.chiude_pietro_quota, pct)));
-  t.appendChild(tile("Cambi di turno / ora", num(rel.cambi_turno_per_ora_parlato),
-    R("relazioni.cambi_turno_per_ora_parlato", rel.cambi_turno_per_ora_parlato, num)));
+  t.appendChild(tile("Prendi la parola (per ora di conversazione)", num(rel.pietro_turni_per_ora_conversazione),
+    R("relazioni.pietro_turni_per_ora_conversazione", rel.pietro_turni_per_ora_conversazione, num)));
   pers.appendChild(t);
   pers.appendChild(el("div", {class: "note"}, "Una conversazione finisce dopo un minuto senza parlato. Delle altre persone si misurano solo tempi e turni."));
   root.appendChild(pers);
@@ -531,9 +727,9 @@ function disegna() {
   // --- Qualità e limiti
   var q = sezione("Qualità del dato e limiti");
   var t3 = el("div", {class: "tiles"});
-  t3.appendChild(tile("Segmenti affidabili", pct(g.qualita.ok_quota), R("qualita.ok_quota", g.qualita.ok_quota, pct)));
-  t3.appendChild(tile("Confidenza ASR media", num(g.qualita.asr_prob_media, 2), R("qualita.asr_prob_media", g.qualita.asr_prob_media, function (v) { return num(v, 2); })));
-  t3.appendChild(tile("Parole incerte (p<0,5)", pct(g.qualita.parole_incerte_quota), R("qualita.parole_incerte_quota", g.qualita.parole_incerte_quota, pct)));
+  t3.appendChild(tile("Tuoi segmenti affidabili", pct(g.qualita.pietro_ok_quota), R("qualita.pietro_ok_quota", g.qualita.pietro_ok_quota, pct)));
+  t3.appendChild(tile("Confidenza ASR sulle tue parole", num(g.qualita.pietro_asr_prob_media, 2), R("qualita.pietro_asr_prob_media", g.qualita.pietro_asr_prob_media, function (v) { return num(v, 2); })));
+  t3.appendChild(tile("Tue parole incerte (p<0,5)", pct(g.qualita.pietro_parole_incerte_quota), R("qualita.pietro_parole_incerte_quota", g.qualita.pietro_parole_incerte_quota, pct)));
   t3.appendChild(tile("Testo", g.qualita.testo_corretto ? "corretto" : "grezzo", null, {nota: "correzione con modello locale"}));
   q.appendChild(t3);
   var lim = el("ul", {class: "limits", style: "margin-top:12px"});

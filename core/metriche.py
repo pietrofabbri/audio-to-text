@@ -15,11 +15,27 @@ Regole che il calcolo rispetta (sezione 5 del documento):
 - **Giorno valido** solo con almeno `ORE_MINIME_VALIDO` ore registrate.
 - **Soggetto delle analisi psicologiche: solo Pietro** (`SOGGETTO`).
   Delle altre voci si misurano solo tempi e turni.
+- **Versione 2 (28/10).** Ogni numero che il pannello presenta come
+  «tuo» si calcola solo sulla voce di Pietro: quota di parlato sul
+  registrato, turni presi per ora di conversazione, conversazioni a cui
+  partecipa, confidenza dell'ASR e segmenti affidabili sulle sue parole.
+  I valori su tutte le voci restano nel file, con il loro nome, come
+  contesto dell'ambiente.
+- **Versione 3 (29/10).** Le parole di Pietro sono le parole che la
+  diarizzazione attribuisce a lui una per una (`tokens.jsonl`,
+  `speaker_global` per parola), non tutto il testo dei segmenti con la
+  sua etichetta: un segmento dura fino a 29 s e dentro parlano spesso
+  in due. La prosodia si prende solo dai segmenti dove almeno
+  `QUOTA_PROSODIA` delle parole sono sue. I segmenti `unreliable`
+  (allucinazioni, prompt nel testo, loop) restano fuori dalle parole.
+  Il costo: le parole per parola sono il testo grezzo, non quello
+  corretto, e `limiti.attribuzione` lo dichiara.
 
 Cosa NON c'e' ancora, e il file lo dichiara in `limiti`: risate (serve un
 classificatore audio), saturazione (sta nell'audio, non nel corpus),
-temi, tono, impegni e storie (servono un modello linguistico), Helio,
-voto serale. Le metriche sulle parole sono calcolate sul testo corretto
+temi, tono, impegni e storie (servono un modello linguistico), voto
+serale. L'Helio (`core.helio`) entra solo come `corpo`: il battito nei
+minuti registrati; le sue misure sulle 24 ore stanno in `helio/`. Le metriche sulle parole sono calcolate sul testo corretto
 quando esiste, altrimenti su quello grezzo, e il file dice quale.
 
 Versione del formato: `VERSIONE`. Un cambio di significato di un campo
@@ -36,7 +52,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-VERSIONE = 1
+VERSIONE = 3
 
 # La voce di Pietro. GLOBAL_001 e' presente in 18 sessioni su 19 ed e'
 # stata nominata «Pietro» l'8 ottobre.
@@ -47,6 +63,10 @@ SOGGETTO = "GLOBAL_001"
 SCONOSCIUTA = "UNKNOWN"
 
 ORE_MINIME_VALIDO = 3.0
+
+# Sotto questa quota di parole sue, la prosodia di un segmento e' di
+# qualcun altro almeno quanto di Pietro, e non la si conta come sua.
+QUOTA_PROSODIA = 0.8
 
 # Una conversazione finisce dopo un minuto senza parlato: serve a dire chi
 # apre e chi chiude.
@@ -74,7 +94,10 @@ LIMITI_FISSI = {
     "risate": "non ancora misurate: serve un classificatore di eventi sonori",
     "saturazione": "sta nell'audio, non nel corpus: non calcolata qui",
     "temi_tono_impegni_storie": "servono un modello linguistico locale (non ancora attivo)",
-    "helio": "non ancora collegato",
+    "helio": ("collegato dall'export di Zepp (circa mensile): battito al minuto, "
+              "passi, sonno con le fasi, attivita'; HRV, stress e SpO2 non sono "
+              "nell'export. Il confronto battito/parlato vale solo nei minuti "
+              "registrati e usa l'ora del registratore"),
     "voto_serale": "meccanismo di raccolta da definire",
     "sovrapposizioni": ("i segmenti di Whisper sono in fila e non si "
                         "sovrappongono: servono i tempi della diarizzazione"),
@@ -238,8 +261,56 @@ def _prosodia(segmenti: list[dict]) -> dict[str, Any]:
     }
 
 
-def calcola_giorno(cartella: Path) -> dict[str, Any]:
-    """Le metriche di una giornata del corpus."""
+def _parole_e_prosodia_di_pietro(cartella: Path, segmenti: list[dict],
+                                 di_pietro: list[dict]):
+    """(testi con l'ora, segmenti per la prosodia, se e' parola per parola).
+
+    Con `tokens.jsonl` che porta la voce di ogni parola (`speaker_segment`
+    accanto a `speaker_global`), le parole di Pietro sono le sue corse di
+    parole consecutive; altrimenti, come prima, il testo dei segmenti con
+    la sua etichetta.
+    """
+    def affidabile(s: dict) -> bool:
+        return s.get("quality") != "unreliable"
+
+    tok = _jsonl(cartella / "tokens.jsonl")
+    if not tok or not any("speaker_segment" in x for x in tok[:200]):
+        testi = [(s["day_sec_start"], s.get("text", "")) for s in di_pietro
+                 if affidabile(s)]
+        return testi, di_pietro, False
+
+    per_giorno = {s.get("day_idx"): s for s in segmenti}
+    tot: Counter = Counter()
+    sue: Counter = Counter()
+    corse: list[tuple[float, list[str]]] = []
+    prec = None
+    for x in tok:
+        i = x.get("day_segment_idx")
+        tot[i] += 1
+        mia = x.get("speaker_global") == SOGGETTO
+        seg = per_giorno.get(i)
+        if not mia or seg is None or not affidabile(seg):
+            prec = None
+            continue
+        sue[i] += 1
+        if prec != i:
+            corse.append((x.get("day_sec") or seg["day_sec_start"], []))
+        corse[-1][1].append(x.get("word", ""))
+        prec = i
+    testi = [(sec, " ".join(p)) for sec, p in corse if p]
+    prosodia = [s for i, s in per_giorno.items()
+                if tot[i] and sue[i] / tot[i] >= QUOTA_PROSODIA and affidabile(s)]
+    return testi, prosodia, True
+
+
+def calcola_giorno(cartella: Path, helio: Any = None) -> dict[str, Any]:
+    """Le metriche di una giornata del corpus.
+
+    `helio`: le misure del braccialetto (`core.helio.carica()`), o None.
+    Con le misure, il campo `corpo` confronta il battito nei minuti
+    registrati in cui Pietro parla, parlano altri o c'e' silenzio
+    (`core.helio.battito_e_parlato`). Senza, `corpo` e' None.
+    """
     cartella = Path(cartella)
     manifesto = json.loads((cartella / "giorno.json").read_text(encoding="utf-8"))
     giorno = manifesto["day"]
@@ -266,6 +337,12 @@ def calcola_giorno(cartella: Path) -> dict[str, Any]:
         for m, sec in mm.items():
             if sec >= 1.0:
                 min_parlato[m].add(voce)
+
+    # --- corpo (direttrice 5, scala dei minuti) -------------------------
+    corpo = None
+    if helio is not None:
+        from core.helio import battito_e_parlato
+        corpo = battito_e_parlato(helio, giorno, min_reg, min_parlato, SOGGETTO)
 
     per_ora: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for m, sec in min_reg.items():
@@ -323,15 +400,24 @@ def calcola_giorno(cartella: Path) -> dict[str, Any]:
         })
     n_conv = len(conversazioni)
     con_pietro = [c for c in conversazioni if SOGGETTO in c["voci"]]
+    # Quante volte Pietro prende la parola, per ora di conversazione a cui
+    # partecipa: il ritmo dei suoi interventi, non quello della stanza.
+    finestre = [(c["inizio_sec"], c["inizio_sec"] + c["durata_min"] * 60)
+                for c in con_pietro]
+    turni_pietro = sum(1 for t in turni if t["voce"] == SOGGETTO and any(
+        a <= t["inizio"] < b + 1 for a, b in finestre))
+    ore_conv_pietro = sum(b - a for a, b in finestre) / 3600
 
     # --- Pietro: voce e parole (direttrici 4, 10, 12) ------------------
     di_pietro = [s for s in segmenti if s.get("speaker") == SOGGETTO]
+    testi_pietro, prosodia_pietro, per_parola = _parole_e_prosodia_di_pietro(
+        cartella, segmenti, di_pietro)
     prosodia_per_ora: dict[int, list[dict]] = defaultdict(list)
     testi_per_ora: dict[int, list[str]] = defaultdict(list)
-    for s in di_pietro:
-        ora = int(s["day_sec_start"] // 3600) % 24
-        prosodia_per_ora[ora].append(s)
-        testi_per_ora[ora].append(s.get("text", ""))
+    for s in prosodia_pietro:
+        prosodia_per_ora[int(s["day_sec_start"] // 3600) % 24].append(s)
+    for sec, testo in testi_pietro:
+        testi_per_ora[int(sec // 3600) % 24].append(testo)
 
     ore = []
     for ora in sorted(set(per_ora) | set(prosodia_per_ora)):
@@ -358,15 +444,24 @@ def calcola_giorno(cartella: Path) -> dict[str, Any]:
     # da `tokens.jsonl` riga per riga, senza tenere il file in memoria.
     somma_p = n_p = 0
     bassa = 0
+    # Le stesse due misure sulle sole parole di Pietro: sono quelle che
+    # dicono quanto fidarsi delle sue metriche sulle parole.
+    somma_pp = n_pp = bassa_p = 0
     tok = cartella / "tokens.jsonl"
     if tok.exists():
         with tok.open(encoding="utf-8") as f:
             for riga in f:
-                p = json.loads(riga).get("asr_prob")
+                t = json.loads(riga)
+                p = t.get("asr_prob")
                 if isinstance(p, (int, float)):
                     somma_p += p
                     n_p += 1
                     bassa += p < 0.5
+                    if t.get("speaker_global") == SOGGETTO:
+                        somma_pp += p
+                        n_pp += 1
+                        bassa_p += p < 0.5
+    q_pietro: Counter = Counter(s.get("quality") or "ok" for s in di_pietro)
 
     totali = manifesto.get("totals") or {}
     parlato_sec = totali.get("speech_sec") or 0.0
@@ -380,13 +475,18 @@ def calcola_giorno(cartella: Path) -> dict[str, Any]:
         "giorno_settimana": datetime.fromisoformat(giorno).isoweekday(),
         "valido": reg_sec / 3600 >= ORE_MINIME_VALIDO,
         "limiti": {
-            "testo": "corretto" if corretti else "grezzo (non corretto)",
+            "testo": ("grezzo per le parole di Pietro (attribuite parola per parola)"
+                      if per_parola else
+                      "corretto" if corretti else "grezzo (non corretto)"),
+            "attribuzione": "parola per parola" if per_parola else "per segmento",
             **LIMITI_FISSI,
         },
         "copertura": {
             "registrato_ore": round(reg_sec / 3600, 2),
             "parlato_ore": round(parlato_sec / 3600, 2),
             "parlato_quota": round(parlato_sec / reg_sec, 3) if reg_sec else None,
+            "pietro_parlato_quota": (round(pietro_min * 60 / reg_sec, 3)
+                                     if reg_sec else None),
             "intervalli": [[round(a), round(b)] for a, b in registrati],
             "blocchi": len(manifesto.get("blocks") or []),
             "prima": (totali.get("first_start") or "")[11:16],
@@ -413,12 +513,15 @@ def calcola_giorno(cartella: Path) -> dict[str, Any]:
                                           / len(con_pietro), 3) if con_pietro else None),
             "cambi_turno_per_ora_parlato": (round((len(turni) - 1) * 3600 / parlato_sec, 1)
                                             if parlato_sec and turni else None),
+            "pietro_turni_per_ora_conversazione": (
+                round(turni_pietro / ore_conv_pietro, 1)
+                if ore_conv_pietro >= 1 / 60 else None),
             "elenco": conversazioni,
         },
         "pietro": {
             "minuti": pietro_min,
-            "prosodia": _prosodia(di_pietro),
-            "parole": _marcatori([s.get("text", "") for s in di_pietro]),
+            "prosodia": _prosodia(prosodia_pietro),
+            "parole": _marcatori([testo for _, testo in testi_pietro]),
         },
         "qualita": {
             "segmenti": n_seg,
@@ -428,8 +531,14 @@ def calcola_giorno(cartella: Path) -> dict[str, Any]:
             "asr_prob_media": round(somma_p / n_p, 3) if n_p else None,
             "parole_incerte_quota": round(bassa / n_p, 3) if n_p else None,
             "testo_corretto": corretti,
+            "pietro_ok_quota": (round(q_pietro.get("ok", 0) / len(di_pietro), 3)
+                                if di_pietro else None),
+            "pietro_asr_prob_media": round(somma_pp / n_pp, 3) if n_pp else None,
+            "pietro_parole_incerte_quota": (round(bassa_p / n_pp, 3)
+                                            if n_pp else None),
         },
         "ore": ore,
+        "corpo": corpo,
     }
 
 

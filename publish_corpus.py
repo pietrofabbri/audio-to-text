@@ -452,8 +452,10 @@ def _write_metriche(dry_run: bool = False) -> list[Path]:
     il workflow che costruisce e cifra il pannello (vedi
     `pannello/pannello.yml` e il documento `analisi-corpus.md`).
     """
+    from core.helio import carica as carica_helio
     from core.metriche import calcola_giorno
 
+    helio = carica_helio()
     giorni = LOCAL_CLONE / GIORNI
     dest = LOCAL_CLONE / METRICHE
     cambiati: list[Path] = []
@@ -464,9 +466,47 @@ def _write_metriche(dry_run: bool = False) -> list[Path]:
         if not (d / "giorno.json").exists():
             continue
         presenti.add(f"{d.name}.json")
-        testo = json.dumps(_scrub(calcola_giorno(d)), ensure_ascii=False,
+        testo = json.dumps(_scrub(calcola_giorno(d, helio)), ensure_ascii=False,
                            indent=1) + "\n"
         target = dest / f"{d.name}.json"
+        if _gia_uguale(target, testo):
+            continue
+        if not dry_run:
+            dest.mkdir(parents=True, exist_ok=True)
+            target.write_text(testo, encoding="utf-8")
+        cambiati.append(target)
+    if dest.is_dir():
+        for vecchio in dest.glob("????-??-??.json"):
+            if vecchio.name not in presenti:
+                if not dry_run:
+                    vecchio.unlink()
+                cambiati.append(vecchio)
+    return cambiati
+
+
+HELIO = "helio"
+
+
+def _write_helio(dry_run: bool = False) -> list[Path]:
+    """Le misure del braccialetto Helio, un file per giorno sulle 24 ore.
+
+    Vengono dagli export di Zepp copiati in `data/helio/export/` da
+    `importa_helio.py` (vedi `core/helio.py`). Ci sono anche i giorni
+    senza registrazione: l'Helio misura sempre, e il pannello ha una
+    sezione propria per le 24 ore (documento `analisi-corpus.md`,
+    sezione 5, punto 6). Solo numeri: niente profilo, peso o altezza.
+    """
+    from core.helio import calcola_giorno as helio_giorno, carica, giorni
+
+    h = carica()
+    dest = LOCAL_CLONE / HELIO
+    cambiati: list[Path] = []
+    presenti = set()
+    for g in giorni(h):
+        presenti.add(f"{g}.json")
+        testo = json.dumps(helio_giorno(h, g), ensure_ascii=False,
+                           separators=(",", ":")) + "\n"
+        target = dest / f"{g}.json"
         if _gia_uguale(target, testo):
             continue
         if not dry_run:
@@ -672,6 +712,7 @@ def cmd_push(args) -> int:
     # un cambio del calcolo deve arrivare al pannello senza aspettare un
     # giorno nuovo.
     metriche = _write_metriche(dry_run=args.dry_run)
+    metriche += _write_helio(dry_run=args.dry_run)
     metriche += _write_workflow(dry_run=args.dry_run)
     if metriche:
         logger.info("%s metriche e pannello: %d file", "Aggiornerei" if args.dry_run

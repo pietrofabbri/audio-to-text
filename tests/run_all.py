@@ -47,6 +47,9 @@ FAST = [
     ([sys.executable, str(HERE / "test_giorno.py")], "giornate unificate"),
     ([sys.executable, str(HERE / "test_text_correction.py")], "correzione del testo"),
     ([sys.executable, str(HERE / "test_metriche.py")], "metriche e pannello"),
+    ([sys.executable, str(HERE / "test_helio.py")], "misure Helio (export Zepp)"),
+    ([sys.executable, str(HERE / "test_riferimento.py")], "set di riferimento (WER)"),
+    ([sys.executable, str(HERE / "test_turni.py")], "turni di voce nei testi"),
 ]
 
 

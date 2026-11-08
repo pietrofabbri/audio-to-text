@@ -374,8 +374,9 @@ Queste cose non bloccano le fasi precedenti e non ne sono bloccate.
   attenuatore sui microfoni.
 - **Deriva dell'orologio** del TileRec: serve agli orari assoluti della
   Fase 2 e al sync biometrico.
-- **Sync biometrico con Amazfit Helio** (APERTI 8): quando l'hardware è
-  in uso. Le misure Helio entreranno nel corpus (vedi `analisi-corpus.md`).
+- ~~**Sync biometrico con Amazfit Helio** (APERTI 8)~~ — **fatto il 7/11**
+  dall'export mensile di Zepp: `importa_helio.py`, `core/helio.py`, sezione
+  «Il corpo» del Taccuino. Resta la deriva dell'orologio del TileRec.
 - **Termico** (APERTI 3b): una notte misurata con `powermetrics`.
 - **Analisi del corpus e pannello web cifrato** (APERTI 36, decisione
   D5): codice fatto e pubblicato il 9/10 (commit `501546c`); specifica in

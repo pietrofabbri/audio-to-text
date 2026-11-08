@@ -84,6 +84,50 @@ WORDS_PER_SEC_MIN = 0.3
 WORDS_PER_SEC_MAX = 6.0
 
 
+# Frasi che Whisper inventa sul silenzio o sul rumore, misurate sul
+# corpus il 28/10: 655 segmenti su 8.556 erano solo una di queste, e 88
+# passavano come «ok». Alcune non si dicono mai in una conversazione
+# («Grazie per la visione», «Sottotitoli a cura di…»): sono la coda dei
+# video su cui il modello e' stato addestrato. Le altre si dicono
+# davvero («Grazie.»), quindi contano come inventate solo su un pezzo
+# lungo di audio, dove una parola sola non e' credibile, o quando il
+# modello stesso non ne e' sicuro.
+ALLUCINAZIONI_SEMPRE = re.compile(
+    r"^(grazie per la visione|grazie per l'attenzione|sottotitoli\b.*"
+    r"|sottotitolato\b.*|a cura di qtss.*|amara\.org.*)[.!]*$", re.I)
+ALLUCINAZIONI_SE_LUNGHE = re.compile(
+    r"^(grazie( a tutti| mille| ancora)?|ciao a tutti|buona visione)[.!]*$", re.I)
+ALLUCINAZIONE_DURATA_SEC = 5.0
+ALLUCINAZIONE_PROB = 0.75
+
+# Il prompt di stile passato a Whisper che finisce nel testo come se
+# qualcuno l'avesse detto (43 segmenti al 28/10). Si cercano i suoi pezzi
+# caratteristici, non la frase intera: il modello li ricopia a meta'.
+PROMPT_NEL_TESTO = re.compile(
+    r"frasi brevi, punteggiatura completa|mai unire due frasi in una"
+    r"|trascrizione di una conversazione in italiano parlato"
+    r"|interlocutori diversi e sovrapposizioni di voce", re.I)
+
+
+def allucinazione(segment: dict[str, Any]) -> str | None:
+    """Il motivo per cui il testo e' inventato, o None."""
+    testo = (segment.get("text") or "").strip()
+    if not testo:
+        return None
+    if PROMPT_NEL_TESTO.search(testo):
+        return "prompt_nel_testo"
+    if ALLUCINAZIONI_SEMPRE.match(testo):
+        return "allucinazione_tipica"
+    if ALLUCINAZIONI_SE_LUNGHE.match(testo):
+        dur = float(segment.get("duration_sec") or 0.0)
+        if dur <= 0 and segment.get("start") is not None and segment.get("end") is not None:
+            dur = float(segment["end"]) - float(segment["start"])
+        mp = mean_word_prob(segment)
+        if dur >= ALLUCINAZIONE_DURATA_SEC or (mp is not None and mp < ALLUCINAZIONE_PROB):
+            return "allucinazione_tipica"
+    return None
+
+
 @dataclass(frozen=True)
 class QualityThresholds:
     """Soglie dei flag. Raggruppate perché sono una scelta, non un dettaglio:
@@ -196,6 +240,12 @@ def score_segment(
     elif n_words < thresholds.min_words:
         reasons.append(f"pochi_parole:{n_words}")
         level = worst(level, LOW)
+
+    # 1b. Testo che Whisper inventa sul silenzio, o il suo stesso prompt.
+    motivo = allucinazione(segment)
+    if motivo:
+        reasons.append(motivo)
+        level = worst(level, UNRELIABLE)
 
     # 2. Il modello stesso dice che non c'era parlato.
     nsp = segment.get("no_speech_prob")

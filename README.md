@@ -890,6 +890,50 @@ le analisi future diventano confrontabili nel tempo).
 L'ingestione è idempotente: rielaborare una sessione sostituisce i dati
 invece di duplicarli.
 
+## Le misure del braccialetto Helio (export di Zepp)
+
+Il braccialetto Amazfit Helio Strap misura 24 ore su 24. Zepp non ha un'API
+pubblica: le misure arrivano dall'**export dei dati personali**, circa una
+volta al mese.
+
+**1. Chiedere l'export** (sul telefono). App Zepp → Profilo → Impostazioni →
+«Esercizio dei diritti dell'utente» → **Esporta dati** (attenzione: accanto
+ci sono «Cancella dati» ed «Elimina account»). Tutti i tipi, tutto il
+periodo. Annotare la password che l'app mostra: lo zip arriva con quella.
+In alternativa il portale indicato su https://www.zepp.com/privacy-support.
+
+**2. Estrarre lo zip** con il Finder (chiede la password). Esce una cartella
+`<userId>_<millisecondi>`, per esempio `7086234041_1794054432703`.
+
+**3. Importare:**
+
+```bash
+python importa_helio.py ~/Downloads/7086234041_1794054432703             # copia e riepilogo
+python importa_helio.py ~/Downloads/7086234041_1794054432703 --pubblica  # e pubblica subito
+python importa_helio.py --stato                                          # cosa c'è già
+```
+
+La cartella viene copiata in `data/helio/export/` (fuori da git: sono dati
+di salute). Ogni export contiene tutta la storia; si tengono tutti e vince
+il più recente. Senza `--pubblica` i dati entrano alla pubblicazione
+successiva, anche quella della notte.
+
+**Cosa finisce nel corpus.** `helio/AAAA-MM-GG.json` per ogni giorno con
+misure (anche quelli senza registrazione): battito medio per 5 minuti,
+battito da sveglio, la notte che finisce quel giorno con le fasi, altri
+tratti di sonno, passi per ora, attività rilevate. Nelle metriche dei giorni
+registrati, il campo `corpo`: battito medio nei minuti in cui parli, in cui
+parlano altri e di silenzio, anche solo nei minuti senza passi. Niente
+profilo, peso o altezza.
+
+**Cosa l'export non ha:** HRV, stress, SpO2, battito a riposo, temperatura.
+
+**Le stranezze dell'export** (misurate sul primo export, gestite da
+`core/helio.py`, che ne spiega i dettagli): battito e passi sono in ora
+locale, sonno e attività in UTC; `SLEEP_MINUTE` ha la data spostata di un
+giorno in avanti (il programma misura lo spostamento a ogni export e lo
+stampa come avviso); nel giorno del cambio d'ora compaiono minuti «24:xx».
+
 ## Il pannello cifrato
 
 Un pannello web legge le metriche del corpus: copertura della giornata,
@@ -1614,6 +1658,7 @@ audio-to-text/
 ├── nightly.py              # ciclo notturno: importa, elabora, pubblica
 ├── sync_device.py          # scarico dal registratore, trascrizione della coda, archivio
 ├── publish_corpus.py       # pubblicazione sulla repo privata del corpus
+├── importa_helio.py        # importa un export di Zepp (braccialetto Helio)
 ├── review_speakers.py      # chi è chi: nomi, merge, split, sync, matrice, ascolto
 ├── correct_text.py         # correzione delle parole con un LLM (serve --consent)
 ├── thermal_probe.py        # misura il riscaldamento durante una run
@@ -1622,6 +1667,7 @@ audio-to-text/
 ├── core/
 │   ├── config.py           # tutti i parametri, compresa la pianificazione
 │   ├── cost.py             # modello di costo della pipeline (tarato su misure)
+│   ├── helio.py            # lettura degli export Zepp, misure del giorno, battito e parlato
 │   ├── quality.py          # qualità della trascrizione, per segmento
 │   ├── checkpoint.py       # persistenza stato per ripresa
 │   ├── device.py           # rilevamento registratore e orario nei nomi file

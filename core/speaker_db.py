@@ -335,9 +335,17 @@ class SpeakerDB:
             },
         )
 
+        # Secondi gia' accumulati PRIMA di questa sessione: sono il peso
+        # del centroide esistente. Se la stessa sessione viene rielaborata
+        # il suo vecchio contributo non conta come "storico".
+        key = f"{session_stem}|{local}"
+        prev_seconds = sum(
+            s["seconds"] for k, s in rec["sessions"].items() if k != key
+        )
+
         # Chiave composed: rilanciare la stessa sessione sovrascrive
         # il contributo invece di sommare due volte.
-        rec["sessions"][f"{session_stem}|{local}"] = {
+        rec["sessions"][key] = {
             "stem": session_stem,
             "local_speaker": local,
             "seconds": round(seconds, 2),
@@ -356,10 +364,14 @@ class SpeakerDB:
             rec["centroid"] = [float(x) for x in vector]
             return
 
+        # Media pesata per secondi: il centroide vecchio pesa quanto il
+        # parlato gia' accumulato, la sessione nuova quanto la sua durata.
+        # Prima il vecchio pesava 1 e la sessione `seconds`: il centroide
+        # diventava di fatto l'ultima sessione riconosciuta (13 ottobre).
         old = np.asarray(rec["centroid"], dtype=np.float32)
-        weight = max(seconds, 1.0)  # una sessione brevissima non deve
-        # pesare come venti ore di parlato
-        new = (old + np.asarray(vector, dtype=np.float32) * weight) / (1.0 + weight)
+        w_old = max(prev_seconds, 1.0)
+        w_new = max(seconds, 1.0)
+        new = (old * w_old + np.asarray(vector, dtype=np.float32) * w_new) / (w_old + w_new)
         rec["centroid"] = [float(x) for x in new]
 
     # ------------------------------------------------------------------
@@ -420,6 +432,71 @@ class SpeakerDB:
         if vuoti:
             self.save()
         return [g for g in vuoti if g not in self._data["speakers"]]
+
+    def move_contribution(
+        self,
+        session_stem: str,
+        local: str,
+        new_gid: str,
+        vector=None,
+        dry_run: bool = False,
+    ) -> str | None:
+        """Sposta il contributo di una voce locale su un'altra identita'.
+
+        E' la correzione fine che `merge` non sa fare: `merge` unisce due
+        persone intere, qui invece una sola sessione (anzi, una sola voce
+        locale di una sessione) era stata attribuita alla persona
+        sbagliata. Il resto delle due identita' non si tocca.
+
+        I centroidi si aggiornano togliendo e aggiungendo il contributo
+        con il suo peso in secondi, la stessa media pesata con cui sono
+        stati costruiti. Senza `vector` (embedding non disponibile) si
+        spostano solo i secondi.
+
+        Ritorna l'ID da cui il contributo e' stato tolto, o None se non
+        c'era niente da spostare.
+        """
+        import numpy as np
+
+        key = f"{session_stem}|{local}"
+        speakers = self._data["speakers"]
+        if new_gid not in speakers:
+            raise KeyError(new_gid)
+        old_gid = next((g for g, r in speakers.items()
+                        if key in r.get("sessions", {})), None)
+        if old_gid is None or old_gid == new_gid:
+            return None
+        if dry_run:
+            return old_gid
+
+        old, new = speakers[old_gid], speakers[new_gid]
+        contrib = old["sessions"].pop(key)
+        w = max(float(contrib.get("seconds", 0) or 0), 1.0)
+        w_old = max(sum(s.get("seconds", 0) for s in old["sessions"].values()), 0.0)
+        w_new = max(sum(s.get("seconds", 0) for s in new.get("sessions", {}).values()), 0.0)
+
+        if vector is not None:
+            v = np.asarray(vector, dtype=np.float64)
+            c_old = np.asarray(old.get("centroid") or [], dtype=np.float64)
+            if c_old.shape == v.shape and w_old > 0:
+                old["centroid"] = [float(x) for x in (c_old * (w_old + w) - v * w) / w_old]
+            c_new = np.asarray(new.get("centroid") or [], dtype=np.float64)
+            if c_new.shape == v.shape and w_new > 0:
+                new["centroid"] = [float(x) for x in (c_new * w_new + v * w) / (w_new + w)]
+            elif not new.get("centroid"):
+                new["centroid"] = [float(x) for x in v]
+
+        new.setdefault("sessions", {})[key] = contrib
+        for rec in (old, new):
+            rec["total_seconds"] = round(
+                sum(s.get("seconds", 0) for s in rec["sessions"].values()), 2)
+            rec["sessions_count"] = len({s.get("stem") for s in rec["sessions"].values()})
+        # Una voce rimasta senza contributi e senza nome non e' piu' nessuno:
+        # come in `forget_session`, si toglie. Con un nome resta.
+        if not old["sessions"] and not old.get("name"):
+            del speakers[old_gid]
+        self.save()
+        return old_gid
 
     def merge_ids(self, keep: str, drop: str, dry_run: bool = False) -> bool:
         """Versa tutti i contributi di `drop` dentro `keep`.

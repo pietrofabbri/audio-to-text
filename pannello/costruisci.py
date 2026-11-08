@@ -18,7 +18,8 @@ Regole (documento `analisi-corpus.md`, sezione 8):
   non i file accanto: un JSON separato resterebbe in chiaro. Percio' i
   dati sono incorporati, e la pagina non carica niente da fuori.
 - **Solo metriche aggregate.** Nessun testo delle conversazioni entra
-  nella pagina: le metriche non ne contengono.
+  nella pagina: le metriche non ne contengono. Le misure dell'Helio
+  (`helio/AAAA-MM-GG.json`, accanto a `metriche/`) entrano come `corpo`.
 - Nessun titolo o nome di file che dica cosa c'e' dentro: «Taccuino».
 """
 
@@ -80,12 +81,24 @@ def costruisci(cartella_metriche: Path, uscita: Path,
     if giorni and not all(g["qualita"]["testo_corretto"] for g in giorni):
         limiti["testo"] = ("in parte o del tutto non corretto: lessico e "
                            "intercalari risentono degli errori di trascrizione")
+    # Le misure dell'Helio sulle 24 ore (`helio/` del corpus, accanto a
+    # `metriche/`): ci sono anche i giorni senza registrazione.
+    corpo = []
+    cartella_helio = Path(cartella_metriche).parent / "helio"
+    if cartella_helio.is_dir():
+        for p in sorted(cartella_helio.glob("????-??-??.json")):
+            corpo.append(json.loads(p.read_text(encoding="utf-8")))
+    if corpo:
+        from core.helio import LIMITI as LIMITI_HELIO
+        limiti["helio"] = LIMITI_FISSI["helio"]
+        limiti["helio_assenti"] = LIMITI_HELIO["assenti"]
     dati = {
         "generato": datetime.now(ZoneInfo("Europe/Rome")).strftime("%d/%m/%Y %H:%M"),
         "soggetto": SOGGETTO,
         "soglie": SOGLIE,
         "limiti": limiti,
         "giorni": giorni,
+        "corpo": corpo,
         "conversazioni": [],
     }
     if cartella_giorni is not None and conversazioni:

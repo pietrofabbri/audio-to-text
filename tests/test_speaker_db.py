@@ -292,6 +292,29 @@ def test_info_si_salva_e_segue_il_merge(tmp: Path) -> None:
     assert db2.profiles()["GLOBAL_001"]["info"] is None
 
 
+def test_move_contribution_sposta_una_sola_sessione(tmp: Path) -> None:
+    """Una voce locale attribuita alla persona sbagliata passa a quella
+    giusta; il resto delle due identita' resta com'era."""
+    rng = random.Random(SEED)
+    a, b = make_voice(rng), make_voice(rng)
+    db = SpeakerDB(path=tmp / "db.json")
+    m1 = db.resolve("s1", {"SPEAKER_00": {"embedding": approx(a), "seconds": 300.0},
+                           "SPEAKER_01": {"embedding": approx(b), "seconds": 100.0}})
+    ga, gb = m1["SPEAKER_00"], m1["SPEAKER_01"]
+    sbagliata = degrade(b, rng, 0.05)
+    db._register(ga, "s2", "SPEAKER_03", sbagliata, 200.0)   # attribuita male ad A
+    assert db.move_contribution("s2", "SPEAKER_03", gb, dry_run=True) == ga
+    assert "s2|SPEAKER_03" in db._data["speakers"][ga]["sessions"], "il dry-run non tocca"
+    assert db.move_contribution("s2", "SPEAKER_03", gb, vector=sbagliata) == ga
+    ra, rb = db._data["speakers"][ga], db._data["speakers"][gb]
+    assert "s2|SPEAKER_03" not in ra["sessions"] and "s2|SPEAKER_03" in rb["sessions"]
+    assert ra["total_seconds"] == 300.0 and rb["total_seconds"] == 300.0, (ra["total_seconds"], rb["total_seconds"])
+    assert cosine_similarity(ra["centroid"], a) > 0.999, "A torna al suo centroide"
+    assert cosine_similarity(rb["centroid"], b) > 0.99, "B resta B"
+    assert db.move_contribution("s2", "SPEAKER_03", gb) is None, "gia' spostato: niente"
+    assert json.loads((tmp / "db.json").read_text())["speakers"][gb]["sessions"]["s2|SPEAKER_03"]
+
+
 def pytest_approx(x: float) -> float:
     return round(float(x), 5)
 
@@ -342,3 +365,20 @@ def test_merge_media_pesata_dei_centroidi(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_centroide_media_pesata_sullo_storico(tmp_path):
+    """Una sessione corta non deve cancellare ore di storico.
+
+    Prima il centroide vecchio pesava 1 e la sessione nuova i suoi secondi:
+    dopo ogni riconoscimento il centroide era quasi solo l'ultima sessione.
+    """
+    db = SpeakerDB(tmp_path / "db.json")
+    db._register("G", "a", "S0", [1.0, 0.0], 3000.0)
+    db._register("G", "b", "S0", [0.0, 1.0], 1000.0)
+    c = db._data["speakers"]["G"]["centroid"]
+    assert abs(c[0] - 0.75) < 1e-6 and abs(c[1] - 0.25) < 1e-6, c
+    # rielaborare la stessa sessione non conta il suo vecchio contributo
+    # come storico
+    db._register("G", "b", "S0", [0.0, 1.0], 1000.0)
+    assert db._data["speakers"]["G"]["total_seconds"] == 4000.0

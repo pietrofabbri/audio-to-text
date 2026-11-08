@@ -68,7 +68,8 @@ def _giornata(tmp: Path) -> Path:
     (d / "segments.jsonl").write_text(
         "\n".join(json.dumps(s) for s in segmenti) + "\n", encoding="utf-8")
     (d / "tokens.jsonl").write_text(
-        "\n".join(json.dumps({"asr_prob": p}) for p in (0.9, 0.3, 1.0, 0.8)) + "\n",
+        "\n".join(json.dumps({"asr_prob": p, "speaker_global": v}) for p, v in
+                  ((0.9, SOGGETTO), (0.3, SOGGETTO), (1.0, "GLOBAL_009"), (0.8, SOGGETTO))) + "\n",
         encoding="utf-8")
     return d
 
@@ -107,6 +108,44 @@ def relazioni_e_parole(tmp: Path) -> None:
     q = m["qualita"]
     require(q["asr_prob_media"] == 0.75 and q["parole_incerte_quota"] == 0.25, f"qualita': {q}")
     require(m["limiti"]["testo"].startswith("grezzo"), "testo non corretto dichiarato")
+    # Versione 2: i numeri «tuoi» sono solo di Pietro.
+    require(q["pietro_asr_prob_media"] == round((0.9 + 0.3 + 0.8) / 3, 3)
+            and q["pietro_parole_incerte_quota"] == round(1 / 3, 3),
+            f"qualita' sulle sole parole di Pietro: {q}")
+    require(q["pietro_ok_quota"] == 1.0, f"segmenti di Pietro affidabili: {q}")
+    require(m["copertura"]["pietro_parlato_quota"] == round(900 / 5400, 3),
+            f"15 minuti su 90 registrati: {m['copertura']}")
+    # Conversazione 1: 10:00-10:15, un turno di Pietro in 15 minuti.
+    require(r["pietro_turni_per_ora_conversazione"] == 4.0,
+            f"un turno in un quarto d'ora: {r}")
+
+
+def parole_di_pietro_parola_per_parola(tmp: Path) -> None:
+    """Le parole dell'altra voce dentro un segmento di Pietro non sono sue."""
+    d = _giornata(tmp)
+    segs = [json.loads(x) for x in (d / "segments.jsonl").read_text().splitlines()]
+    for i, s in enumerate(segs):
+        s["day_idx"] = i
+    segs[2]["quality"] = "unreliable"          # «Allora, quindi, niente.» fuori
+    (d / "segments.jsonl").write_text("".join(json.dumps(s) + "\n" for s in segs))
+    righe = []
+    for i, s in enumerate(segs):
+        for k, w in enumerate(s["text"].split()):
+            voce = s["speaker"]
+            if i == 0 and w == "vieni?":
+                voce = "GLOBAL_009"            # la domanda e' dell'altra voce
+            righe.append({"day_segment_idx": i, "word": w, "asr_prob": 0.9,
+                          "speaker_global": voce, "speaker_segment": s["speaker"],
+                          "day_sec": s["day_sec_start"] + k})
+    (d / "tokens.jsonl").write_text("".join(json.dumps(r) + "\n" for r in righe))
+    m = calcola_giorno(d)
+    p = m["pietro"]["parole"]
+    require(m["limiti"]["attribuzione"] == "parola per parola", f"limiti: {m['limiti']}")
+    require(p["domande_quota"] == 0.0, f"la domanda non e' di Pietro: {p}")
+    require("niente" not in p["intercalari"], f"il segmento inaffidabile resta fuori: {p}")
+    require(p["parole"] == 6, f"«Io vado. Tu» + «Cioè non so.»: {p}")
+    # Il segmento 0 ha 6 parole sue su 7: sotto 0,8? 6/7 = 0,86, quindi conta.
+    require(m["pietro"]["prosodia"]["segmenti"] == 1, f"prosodia: {m['pietro']['prosodia']}")
 
 
 def mattr_robusto() -> None:
@@ -211,6 +250,7 @@ def pagine_con_iniziali(tmp: Path) -> None:
 CHECKS = [
     ("copertura e silenzio sulla maschera dei minuti", copertura_e_silenzio),
     ("relazioni, marcatori e qualita'", relazioni_e_parole),
+    ("parole di Pietro parola per parola", parole_di_pietro_parola_per_parola),
     ("MATTR", mattr_robusto),
     ("la pagina ha i dati dentro e niente fuori", pagina_con_i_dati_dentro),
     ("le pagine dei giorni: testo, voci, stile", conversazioni_per_giorno),

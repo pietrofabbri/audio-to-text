@@ -19,6 +19,12 @@ accetta un `output_dir` esplicito invece di leggerlo da una costante.
 
 from __future__ import annotations
 
+import os as _os
+import tempfile as _tempfile
+
+# Le misure Helio vere (data/helio/export) non entrano nei test.
+_os.environ["A2T_HELIO_DIR"] = _tempfile.mkdtemp(prefix="helio_vuoto_")
+
 import argparse
 import json
 import shutil

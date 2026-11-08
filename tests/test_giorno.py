@@ -223,12 +223,59 @@ def nomi_solo_se_dati() -> None:
                 "con i nomi: nome e pseudonimo nel testo, mappa nel manifesto")
 
 
+def voce_della_parola() -> None:
+    """Una parola detta da un'altra voce dentro un segmento non e' sua."""
+    with tempfile.TemporaryDirectory() as tmp:
+        r = Path(tmp)
+        d = _sessione(r, "2026-10-05_09-00-00")
+        sj = json.loads((d / "session.json").read_text())
+        sj["speaker_global_map"] = {"SPEAKER_00": "GLOBAL_001", "SPEAKER_01": "GLOBAL_002"}
+        (d / "session.json").write_text(json.dumps(sj))
+        tok = [json.loads(x) for x in (d / "tokens.jsonl").read_text().splitlines()]
+        tok[1]["speaker"] = "SPEAKER_01"      # «a» detto dalla seconda voce
+        tok[2]["speaker"] = "SPEAKER_04"      # fusa in SPEAKER_00
+        (d / "tokens.jsonl").write_text("".join(json.dumps(x) + "\n" for x in tok))
+        g = giornate([d])[0]
+        out = [json.loads(x) for x in g.tokens_jsonl().splitlines()]
+        require(out[1]["speaker_global"] == "GLOBAL_002"
+                and out[1]["speaker_segment"] == "GLOBAL_001", f"parola: {out[1]}")
+        require(out[2]["speaker_global"] == "GLOBAL_001", f"fusione seguita: {out[2]}")
+        require(out[0]["speaker_global"] == "GLOBAL_001", f"il resto resta: {out[0]}")
+
+
+def turni_nei_testi() -> None:
+    """Nei testi che si leggono un segmento con due voci diventa due turni."""
+    with tempfile.TemporaryDirectory() as tmp:
+        r = Path(tmp)
+        d = _sessione(r, "2026-10-05_09-00-00",
+                      segmenti=[(0.0, 10.0, "GLOBAL_001", "allora ragazzi posso dire una cosa?"),
+                                (12.0, 20.0, "GLOBAL_002", "buongiorno")])
+        sj = json.loads((d / "session.json").read_text())
+        sj["speaker_global_map"] = {"SPEAKER_00": "GLOBAL_001", "SPEAKER_01": "GLOBAL_002"}
+        (d / "session.json").write_text(json.dumps(sj))
+        tok = [json.loads(x) for x in (d / "tokens.jsonl").read_text().splitlines()]
+        for x in tok:
+            if x["segment_idx"] == 0 and x["token_idx"] >= 2:
+                x["speaker"] = "SPEAKER_01"
+        (d / "tokens.jsonl").write_text("".join(json.dumps(x) + "\n" for x in tok))
+        g = giornate([d])[0]
+        md = g.analysis_md()
+        require("**[GLOBAL_001]** [09:00:00] allora ragazzi" in md, md)
+        require("**[GLOBAL_002]** [09:00:02] posso dire una cosa?" in md, md)
+        txt = g.transcript_txt()
+        require("posso dire una cosa?\nbuongiorno" in txt, f"turni della stessa voce uniti: {txt}")
+        segs = [json.loads(x) for x in g.segments_jsonl().splitlines()]
+        require(len(segs) == 2, "segments.jsonl resta un segmento per riga")
+
+
 CHECKS = [
     ("blocchi e giorni", blocchi_e_giorni),
     ("la mezzanotte non spezza una conversazione",
      la_mezzanotte_non_spezza_una_conversazione),
     ("ora vera e campi originali", ora_vera_e_campi_originali),
     ("parole senza prosodia ripetuta", parole_senza_prosodia_ripetuta),
+    ("la voce di ogni parola", voce_della_parola),
+    ("turni nei testi che si leggono", turni_nei_testi),
     ("frequenze sommate sul giorno", frequenze_sommate),
     ("ora di inizio dal nome", sessione_senza_session_json),
     ("file corretti solo se ci sono", corretti_solo_se_ci_sono),

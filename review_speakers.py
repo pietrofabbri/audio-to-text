@@ -11,6 +11,7 @@ Rivedi le identità vocali: vedi chi è chi, metti i nomi, correggi gli errori.
     python review_speakers.py ascolta GLOBAL_035 --play   # sentila prima di nominarla
     python review_speakers.py ignora GLOBAL_051           # vista, resta senza nome
     python review_speakers.py info GLOBAL_018 "la mia ragazza"   # note, solo in locale
+    python review_speakers.py riassegna 2026-10-26_15-39-36 SPEAKER_04 GLOBAL_047  # una sessione sola
 
 Il giro tipico dopo una notte: `nuove` dice chi e' comparso, `ascolta`
 fa sentire tre o quattro frasi di ciascuno, e poi `name`, `merge` o
@@ -455,6 +456,149 @@ def cmd_consolidate(db: SpeakerDB, args) -> int:
     return 0
 
 
+def cmd_riassegna(db: SpeakerDB, args) -> int:
+    """Sposta una voce locale di una sessione su un'altra identita'.
+
+    `merge` unisce due persone intere; questo comando corregge una sola
+    sessione: «in quella registrazione SPEAKER_04 non era Borghi, era
+    Trambaiolli». Si aggiornano il DB delle voci (contributo e
+    centroidi), la mappa del checkpoint, e poi si rifa' solo
+    l'assemblaggio degli output, senza rileggere l'audio: VAD,
+    trascrizione, diarizzazione e prosodia restano quelle salvate.
+    """
+    from core.checkpoint import Checkpoint
+    from core.config import OUTPUT_DIR
+
+    stem, locale, nuovo = args.sessione, args.locale, args.gid
+    d = OUTPUT_DIR / stem
+    ck_file = d / f"{stem}.checkpoint.json"
+    if not ck_file.exists():
+        print(f"Sessione senza checkpoint: {stem}", file=sys.stderr)
+        return 1
+    if nuovo not in db._data["speakers"]:
+        print(f"Voce sconosciuta: {nuovo}", file=sys.stderr)
+        return 1
+    dati = json.loads(ck_file.read_text(encoding="utf-8"))
+    mappa = dict(dati.get("speaker_global_map") or {})
+    vecchio = mappa.get(locale)
+    if vecchio is None:
+        print(f"{locale} non c'e' in {stem}. Voci locali: "
+              + ", ".join(f"{k}={v}" for k, v in sorted(mappa.items())), file=sys.stderr)
+        return 1
+    nome = lambda g: db.get_name(g) or g  # noqa: E731
+    if vecchio == nuovo:
+        print(f"{stem} {locale} e' gia' {nome(nuovo)} ({nuovo}).")
+        return 0
+    print(f"{stem} {locale}: {nome(vecchio)} ({vecchio}) -> {nome(nuovo)} ({nuovo})")
+    if args.dry_run:
+        print("[dry-run] niente scritto.")
+        return 0
+
+    emb = (dati.get("speaker_embeddings") or {}).get(locale)
+    db.move_contribution(stem, locale, nuovo,
+                         vector=to_vector(emb) if emb is not None else None)
+
+    audio = Path(dati.get("file") or (d / f"{stem}.wav"))
+    ck = Checkpoint(audio, OUTPUT_DIR, stem=stem)
+    mappa[locale] = nuovo
+    ck._data["speaker_global_map"] = mappa
+    ck.reset_stage("assembly")
+    ck.save()
+
+    if getattr(args, "senza_output", False):
+        print("Output non riscritti: lancia la pipeline per rifarli.")
+        return 0
+    _riassembla(audio, stem)
+    cmd_sync(db, argparse.Namespace(dry_run=False), quiet=True)
+    print("Fatto. Se hai gia' pubblicato il corpus, rilancia: python publish_corpus.py push")
+    return 0
+
+
+def cmd_ridiarizza(db: SpeakerDB, args) -> int:
+    """Rifa' la separazione delle voci di una sessione, dicendo quante sono.
+
+    Serve quando pyannote ha messo due persone simili nella stessa voce
+    locale (27/10: due sorelle in un cluster solo). Nessun `riassegna`
+    lo ripara, perche' l'errore e' dentro la voce locale. Si rifa' la
+    diarizzazione con un numero minimo (o esatto) di parlanti; il testo
+    resta quello gia' trascritto, la prosodia pure. Serve l'audio
+    originale (archive/ lo tiene 7 giorni).
+
+    I contributi della sessione escono dal DB delle voci prima di
+    rifarla: altrimenti le voci vecchie resterebbero contate due volte.
+    Le identita' nominate restano, anche se quella sessione era l'unica
+    in cui avevano parlato, e le voci nuove si confrontano con loro.
+    """
+    from core.checkpoint import Checkpoint
+    from core.config import OUTPUT_DIR
+    from core.voice_review import trova_audio
+
+    stem = args.sessione
+    ck_file = OUTPUT_DIR / stem / f"{stem}.checkpoint.json"
+    if not ck_file.exists():
+        print(f"Sessione senza checkpoint: {stem}", file=sys.stderr)
+        return 1
+    audio = Path(args.audio) if args.audio else trova_audio(stem)
+    if audio is None or not audio.exists():
+        print(f"Audio originale di {stem} non trovato (archive/ o input/).", file=sys.stderr)
+        return 1
+    dati = json.loads(ck_file.read_text(encoding="utf-8"))
+    prima = dati.get("speaker_global_map") or {}
+    nome = lambda g: db.get_name(g) or g  # noqa: E731
+    print(f"{stem}: prima {len(prima)} voci locali: "
+          + ", ".join(f"{k}={nome(v)}" for k, v in sorted(prima.items())))
+    if args.dry_run:
+        print("[dry-run] niente scritto.")
+        return 0
+
+    ck = Checkpoint(audio, OUTPUT_DIR, stem=stem)
+    wav = Path(ck.get_stage_data("ffmpeg").get("wav_path") or "")
+    if not wav.exists():
+        # Il WAV derivato viene cancellato a fine sessione: rifarlo
+        # vuol dire rifare anche il VAD, che sull'audio stesso da' lo
+        # stesso risultato. La trascrizione non si tocca.
+        ck.reset_stage("ffmpeg")
+        ck.reset_stage("vad")
+    ck.reset_stage("diarization")
+    ck.reset_stage("assembly")
+    ck.save()
+    db.forget_session(stem)
+    db.save()
+
+    import run
+    from core.config import config as cfg
+    if args.n is not None:
+        cfg.diarization.num_speakers = args.n
+    if args.min is not None:
+        cfg.diarization.min_speakers = args.min
+    if args.max is not None:
+        cfg.diarization.max_speakers = args.max
+    # Chi dice quante persone c'erano sa anche che alcune parlano poco:
+    # la fusione dei cluster deboli (sotto 90 s) le riassorbirebbe nella
+    # voce piu' vicina, cioe' esattamente l'errore da correggere. Qui la
+    # soglia scende (default 20 s) e resta la protezione dai frammenti.
+    cfg.speaker_id.merge_min_seconds = args.fusione_min_sec
+    ns = argparse.Namespace(no_prosody=False, no_diarization=False, retranscribe=False)
+    run.process_file(audio, cfg, ns, stem=stem)
+
+    db2 = SpeakerDB()
+    dopo = json.loads(ck_file.read_text(encoding="utf-8")).get("speaker_global_map") or {}
+    print(f"{stem}: dopo {len(dopo)} voci locali: "
+          + ", ".join(f"{k}={db2.get_name(v) or v}" for k, v in sorted(dopo.items())))
+    cmd_sync(db2, argparse.Namespace(dry_run=False), quiet=True)
+    return 0
+
+
+def _riassembla(audio: Path, stem: str) -> None:
+    """Rifa' solo l'assemblaggio di una sessione dal suo checkpoint."""
+    import run
+    from core.config import config as cfg
+
+    ns = argparse.Namespace(no_prosody=False, no_diarization=False,
+                            retranscribe=False)
+    run.process_file(audio, cfg, ns, stem=stem)
+
+
 def _speaking_seconds(segmenti):
     from core.speakers_merge import speaking_seconds
     return speaking_seconds(segmenti)
@@ -667,6 +811,30 @@ def main() -> int:
     ig.add_argument("--annulla", action="store_true",
                     help="rimettila fra le voci da rivedere")
 
+    ra = sub.add_parser(
+        "riassegna",
+        help="sposta una voce locale di una sessione su un'altra identita'",
+    )
+    ra.add_argument("sessione", help="es. 2026-10-26_15-39-36")
+    ra.add_argument("locale", help="es. SPEAKER_04")
+    ra.add_argument("gid", help="la voce giusta, es. GLOBAL_047")
+    ra.add_argument("--dry-run", action="store_true")
+    ra.add_argument("--senza-output", action="store_true",
+                    help="aggiorna DB e checkpoint, senza riscrivere gli output")
+
+    rd = sub.add_parser(
+        "ridiarizza",
+        help="rifa' la separazione delle voci di una sessione (serve l'audio)",
+    )
+    rd.add_argument("sessione")
+    rd.add_argument("--n", type=int, default=None, help="numero esatto di parlanti")
+    rd.add_argument("--min", type=int, default=None, help="numero minimo di parlanti")
+    rd.add_argument("--max", type=int, default=None, help="numero massimo di parlanti")
+    rd.add_argument("--audio", default=None, help="percorso dell'audio, se non e' in archive/")
+    rd.add_argument("--fusione-min-sec", type=float, default=20.0,
+                    help="sotto quanti secondi un cluster si fonde nel piu' simile (default 20)")
+    rd.add_argument("--dry-run", action="store_true")
+
     y = sub.add_parser(
         "sync",
         help="allinea i nomi a corpus.db e alle sessioni già scritte",
@@ -693,7 +861,8 @@ def main() -> int:
         "split": cmd_split, "threshold": cmd_threshold, "sync": cmd_sync,
         "consolidate": cmd_consolidate, "voices": cmd_voices,
         "ascolta": cmd_ascolta, "nuove": cmd_nuove, "ignora": cmd_ignora,
-        "info": cmd_info,
+        "info": cmd_info, "riassegna": cmd_riassegna,
+        "ridiarizza": cmd_ridiarizza,
     }[cmd](db, args)
 
 

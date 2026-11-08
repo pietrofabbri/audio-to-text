@@ -126,6 +126,13 @@ def dati_giorno(cartella: Path, basi: dict, iniziali=None) -> dict:
     corretti = {s.get("day_idx"): s for s in _jsonl(cartella / "segments.corrected.jsonl")}
     segmenti = [s for s in grezzi if s.get("day_sec_start") is not None]
     segmenti.sort(key=lambda s: (s["day_sec_start"], s.get("day_sec_end", 0)))
+    # La voce di ogni parola (core/giorno.py): un segmento con due voci
+    # diventa due frasi, ciascuna con chi l'ha detta (core/turni.py).
+    from core.turni import dividi
+    parole: dict = {}
+    for x in _jsonl(cartella / "tokens.jsonl"):
+        parole.setdefault(x.get("day_segment_idx"), []).append(
+            (x.get("word", ""), x.get("speaker_global"), x.get("day_sec")))
 
     voci: list[str] = []
     indice: dict[str, int] = {}
@@ -141,7 +148,7 @@ def dati_giorno(cartella: Path, basi: dict, iniziali=None) -> dict:
     conversazioni: list[dict] = []
     fine_prec = None
     for s in segmenti:
-        voce = s.get("speaker") or SCONOSCIUTA
+        voce_s = s.get("speaker") or SCONOSCIUTA
         a, b = s["day_sec_start"], s.get("day_sec_end", s["day_sec_start"])
         if fine_prec is None or a - fine_prec >= PAUSA_CONVERSAZIONE_SEC:
             conversazioni.append({"da": len(frasi), "inizio": round(a), "fine": round(b),
@@ -149,25 +156,31 @@ def dati_giorno(cartella: Path, basi: dict, iniziali=None) -> dict:
         fine_prec = b if fine_prec is None else max(fine_prec, b)
         c = conversazioni[-1]
         c["fine"] = max(c["fine"], round(b))
-        if voce != SCONOSCIUTA:
-            c["voci"].add(voce)
 
         testo = (s.get("text") or "").strip()
         corr = corretti.get(s.get("day_idx"))
         testo_c = (corr.get("text") or "").strip() if corr else ""
+        pp = [(w, v or voce_s, t) for w, v, t in parole.get(s.get("day_idx"), [])]
+        parti = dividi(testo_c or testo, pp, voce_s, a, b)
         pro = s.get("prosody") or {}
-        base = basi.get(voce, {})
-        misurabile = _misurabile(s)
-        riga = [
-            round(a), vid(voce), an_t(testo_c or testo),
-            livello(pro.get(MISURE["tono"]), base.get("tono")) if misurabile else 0,
-            livello(pro.get(MISURE["vol"]), base.get("vol")) if misurabile else 0,
-            livello(pro.get(MISURE["vel"]), base.get("vel")) if misurabile else 0,
-            1 if s.get("quality") == "unreliable" else 0,
-        ]
-        if testo_c and testo_c != testo:
-            riga.append(an_t(testo))  # l'originale di Whisper, solo se diverso
-        frasi.append(riga)
+        for parte in parti:
+            voce = parte["speaker"] or SCONOSCIUTA
+            if voce != SCONOSCIUTA:
+                c["voci"].add(voce)
+            base = basi.get(voce, {})
+            # Lo stile segue la prosodia del segmento: vale solo se il
+            # segmento e' di una voce sola, altrimenti e' una media di due.
+            misurabile = _misurabile(s) and len(parti) == 1
+            riga = [
+                round(parte["start"]), vid(voce), an_t(parte["text"]),
+                livello(pro.get(MISURE["tono"]), base.get("tono")) if misurabile else 0,
+                livello(pro.get(MISURE["vol"]), base.get("vol")) if misurabile else 0,
+                livello(pro.get(MISURE["vel"]), base.get("vel")) if misurabile else 0,
+                1 if s.get("quality") == "unreliable" else 0,
+            ]
+            if len(parti) == 1 and testo_c and testo_c != testo:
+                riga.append(an_t(testo))  # l'originale di Whisper, solo se diverso
+            frasi.append(riga)
 
     for c in conversazioni:
         c["voci"] = sorted(vid(v) for v in c["voci"])

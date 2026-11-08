@@ -79,7 +79,11 @@ _PUNTEGGIATURA = frozenset(PUNTEGGIATURA)
 # `503 high demand` a ogni tentativo. Il default deve essere il modello
 # che funziona, non quello che sarebbe migliore: un batch notturno che
 # scarta tutti i segmenti e' peggio di uno che corregge un po' meno.
-MODELLO = "gemini-3.5-flash-lite"
+#
+# Il 27 ottobre `gemini-3.5-flash-lite` ha smesso di rispondere per
+# questo account (429, quota esaurita), e `gemini-3.8-flash` era ancora
+# in 503: si passa a `gemini-3.5-flash`, l'unico dei tre che risponde.
+MODELLO = "gemini-3.5-flash"
 
 # Il motore predefinito e il suo modello. `qwen3:14b` era gia' sul Mac di
 # Pietro (M1 Pro, 16 GB), scrive bene l'italiano e occupa circa 9 GB
@@ -92,7 +96,8 @@ MODELLO_LOCALE = "qwen3:14b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 
 MODELLI_NOTI = {
-    "gemini-3.5-flash-lite": "scelta predefinita: risponde regolarmente",
+    "gemini-3.5-flash": "scelta predefinita dal 27/10: risponde regolarmente",
+    "gemini-3.5-flash-lite": "dal 27/10 in 429 (quota esaurita) per questo account",
     "gemini-3.8-flash": "piu' capace, ma spesso in 503 per domanda alta",
 }
 

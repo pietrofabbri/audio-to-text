@@ -1,6 +1,6 @@
 # Analisi del corpus e pannello web — specifica
 
-Stato all'11 ottobre 2026. Documento di progetto del Project «Psico-fisio
+Stato al 7 novembre 2026. Documento di progetto del Project «Psico-fisio
 app», copiato anche nella repo `pietrofabbri/audio-to-text` in
 `docs/analisi-corpus.md` (le due copie sono identiche).
 Collegati: `ROADMAP.md` (ordine dei lavori della pipeline, decisioni
@@ -42,7 +42,7 @@ pannello cifrato compaiono come sono (decisione D1).
 | Metriche aggregate | Per giorno, `metriche/AAAA-MM-GG.json` (sezione 9) | repo privata del corpus | **calcolate dal 9/10** a ogni pubblicazione, dopo l'aggiornamento del codice sul Mac |
 | Database locale | Voci (`GLOBAL_xxx`, nomi), campioni, audio | solo sul Mac | primi nomi assegnati l'8/10; revisione completa il 14/10 |
 | Testo corretto | `*.corrected.*` prodotti da `correct_text.py` | corpus | **provato e lasciato spento il 9/10**: con il modello locale (Ollama, `qwen3:14b`) circa metà delle correzioni peggiorava il testo (ROADMAP Fase 3, APERTI 37). Le metriche usano il testo grezzo e lo dichiarano |
-| Helio | Misure giornaliere e infragiornaliere (export Zepp). Atteso, da verificare sul primo export: battito, battito a riposo, HRV, stress, sonno (durata, fasi), passi/attività, eventuale indice di recupero | entrerà nel corpus | **non ancora collegato** |
+| Helio | Export dei dati personali di Zepp (circa mensile), importato con `importa_helio.py` e letto da `core/helio.py`. **C'è:** battito al minuto, passi al minuto e per giorno, sonno per notte (profondo, leggero, REM, sveglio) e fasi al minuto, attività rilevate. **Non c'è:** HRV, stress, SpO2, battito a riposo, temperatura | repo privata del corpus, cartella `helio/` (un file per giorno, 24 ore) e campo `corpo` delle metriche | **collegato dal 7/11** (dati dal 20/10) |
 | Voto serale | Valutazione soggettiva della giornata (1–10 + una parola) | da definire | **non esiste ancora**: meccanismo di raccolta da progettare |
 | Variabili esterne | Diario di meditazione, attività fisica, alimentazione | altri progetti di Pietro | da collegare, facoltative |
 
@@ -66,7 +66,7 @@ dice cosa è già calcolato al 9/10.
 | 2 | **Relazioni** | minuti per persona; quota di parola di Pietro per conversazione; durata media dei turni; chi apre e chi chiude; sovrapposizioni e interruzioni | no | **sì**, tranne sovrapposizioni |
 | 3 | **Contenuti e temi** | % di tempo per tema (sezione 7), separata in *esposizione* (tutto il parlato udito) e *parlato proprio*; parole caratteristiche del periodo rispetto allo storico; persone e luoghi nominati | sì (temi); no (parole caratteristiche) | no |
 | 4 | **Come parla Pietro** | prosodia: velocità, altezza media e sua variabilità, energia, pause; marcatori linguistici: io/noi, domande vs affermazioni, negazioni, lessico emotivo, tempi verbali | no (dizionari locali) | **sì**, tranne lessico emotivo e tempi verbali |
-| 5 | **Il corpo (Helio)** | battito, HRV, stress, sonno, passi; correlazioni con le altre direttrici (sezione 6) | no | no |
+| 5 | **Il corpo (Helio)** | battito, sonno e fasi, passi, attività; battito quando parli (scala dei minuti); HRV e stress non esportati da Zepp; correlazioni con le altre direttrici (sezione 6) | no | **sì** (dal 7/11), tranne correlazioni |
 | 6 | **Qualità del dato** | copertura, % campioni a fondo scala (saturazione), SNR, confidenza ASR, % di testo corretto | no | **sì**, tranne saturazione e SNR |
 | 9 | **Silenzio e solitudine** | minuti registrati senza parlato; minuti con sola voce di Pietro; presenza di musica o TV | no (classificatore di eventi sonori locale) | **sì**, tranne musica/TV |
 | 10 | **Stile e lessico** | ricchezza lessicale (MATTR, finestra 50 parole), intercalari ogni 1000 parole, registro, dialetto e altre lingue; differenze per interlocutore | in parte | **in parte** (MATTR, intercalari) |
@@ -302,6 +302,17 @@ testo corretto o no, versione della gerarchia dei temi.
 - *Qualità del dato e limiti*;
 - *Tutti i giorni*: una tabella.
 
+**Il corpo (7/11).** Sezione con le misure dell'Helio (sezione 9b): sul
+giorno scelto riquadri (dormito, profondo + REM, notte, battito nel sonno e
+da sveglio, passi, attività, battito quando parli rispetto al silenzio, da
+fermo) e un grafico delle 24 ore (fasi del sonno, ore registrate, battito
+per 5 minuti, passi per ora); sempre, le notti degli ultimi 45 giorni come
+barre per fase e una tabella di tutti i giorni misurati, anche quelli senza
+registrazione. Il riquadro «Sonno» del polso mostra la notte prima del
+giorno scelto. Il selettore dei giorni elenca ancora solo i giorni
+registrati: i giorni con il solo Helio stanno nel grafico delle notti e
+nella tabella.
+
 ### Pubblicazione — decisione D5: **GitHub Pages cifrato** (presa l'8/10)
 
 Motivo: GitHub Pages pubblica siti privati solo con GitHub Enterprise Cloud;
@@ -490,6 +501,38 @@ Un cambio di significato di un campo alza `versione`.
 
 ---
 
+## 9b. Formato delle misure Helio (`helio/AAAA-MM-GG.json`, versione 1)
+
+Calcolato da `core/helio.py` (`calcola_giorno`) dagli export in
+`data/helio/export/`. Tutte le ore sono locali (Europe/Rome).
+
+- `giorno`, `giorno_settimana`;
+- `battito`: `minuti` con un valore, `copertura_quota` (minuti/1440; sotto
+  0,95 il giorno è incompleto), `media`, `mediana`, `minimo_5min` e
+  `massimo_5min` (sulle medie di 5 minuti), `sveglio_media` (fuori da notti
+  e altri tratti di sonno), `per_5min` (288 medie, `null` dove manca);
+- `passi`: `totale`, `distanza_m`, `calorie` (da ACTIVITY), `per_ora` (24
+  valori, da ACTIVITY_MINUTE: la somma può differire dal totale);
+- `sonno`: la notte più lunga che finisce quel giorno, o `null`: `inizio`,
+  `fine` (ISO al minuto), `a_letto_min`, `dormito_min` (profondo + leggero +
+  REM), `profondo_min`, `leggero_min`, `rem_min`, `sveglio_min`,
+  `profondo_rem_quota`, `battito_media`, `battito_minimo_5min`, `fasi`
+  (tratti `[inizio, fine, fase]` in minuti dalla mezzanotte del giorno,
+  negativi prima di mezzanotte; fasi `DEEP`, `LIGHT`, `REM`, `WAKE`);
+- `altri_sonni`: tratti di sonno al minuto fuori dalle notti (pisolini, o
+  pezzi di notte che Zepp non riassume, come la notte del cambio d'ora);
+- `allenamenti`: attività rilevate dall'app (`inizio`, `minuti`, `kcal`,
+  `tipo` numerico di Zepp, di significato non documentato).
+
+Nelle metriche del giorno (`metriche/AAAA-MM-GG.json`) il campo `corpo`
+(`core.helio.battito_e_parlato`), solo per i giorni con registrazione e
+battito: `minuti_registrati`, `minuti_con_battito`, e per le classi
+`parli` (c'è la voce di Pietro), `altri` (parla qualcuno, non Pietro),
+`silenzio` il numero di minuti e la media del battito, su `tutti` i minuti
+e sui soli minuti `fermo` (nessun passo nel minuto e nei due prima e
+dopo); `parli_meno_silenzio_fermo`. Media data solo con almeno 5 minuti.
+Limite: usa l'ora del registratore, la cui deriva non è misurata.
+
 ## 10. Ordine dei lavori
 
 1. ~~Formato delle metriche~~ — **fatto il 9/10** (sezione 9).
@@ -500,7 +543,8 @@ Un cambio di significato di un campo alza `versione`.
 4. **Correzione del testo con modello locale**: provata il 9/10 con
    `qwen3:14b`, qualità insufficiente, lasciata spenta (ROADMAP, Fase 3).
    Da riprovare con un modello più forte o con revisione a mano.
-5. **Collegamento Helio**: primo export, mappatura dei campi, pannello 24 h,
+5. ~~**Collegamento Helio**~~ — **fatto il 7/11** (sezione 9b): primo export, mappatura dei campi, pannello 24 h;
+   restano le
    prime correlazioni notte → giorno.
 6. **Voto serale**: scegliere il meccanismo di raccolta.
 7. **Risate e musica/TV**: un classificatore di eventi sonori locale
@@ -513,5 +557,5 @@ Un cambio di significato di un campo alza `versione`.
 
 - Meccanismo di raccolta del voto serale (direttrice 17).
 - Qualità del modello locale per correzione e temi: da misurare.
-- Campi effettivamente esportabili dall'Helio e frequenza di campionamento.
+- ~~Campi esportabili dall'Helio~~: risposto il 7/11 (sezione 9b): battito al minuto, niente HRV/stress/SpO2.
 - Soglie di copertura e minimi per scala: valori iniziali, da rivedere.
