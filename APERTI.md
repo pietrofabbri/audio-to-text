@@ -479,6 +479,24 @@ battito, 17 notti, fasi del sonno al minuto, 75 attività.
 temperatura. L'app li mostra, l'export no: le ipotesi del documento
 `analisi-corpus.md` che li usano restano ferme.
 
+**Al loro posto, dall'8 novembre, due stime dal battito al minuto**
+(versione 2 di `helio/AAAA-MM-GG.json`, test in `tests/test_helio.py`):
+il **battito a riposo** (media più bassa su 30 minuti consecutivi nella
+notte, `sonno.battito_riposo_30min`) e l'**attivazione da fermo** (quota
+dei minuti svegli, senza passi nel minuto e nei 5 prima, fuori dagli
+allenamenti, con il battito sopra il 90º percentile personale degli ultimi
+28 giorni; campo `attivazione`). Non sono lo stress di Zepp, che viene
+dall'HRV, e il Taccuino lo scrive accanto al numero. Sui 19 giorni del
+primo export l'attivazione va dall'1% al 22%, mediana intorno al 7%.
+
+**Strade per avere HRV e stress veri, non ancora prese:** (1) su iPhone,
+Zepp sincronizza con Apple Salute battito, SpO2, sonno e, per la Helio
+Strap dal firmware 3.3.10.3, anche l'HRV (poche misure al giorno);
+l'export di Salute si leggerebbe come quello di Zepp. Lo stress non passa.
+(2) Su Android, Gadgetbridge legge dalla Helio Strap anche lo stress
+automatico (issue Codeberg #5986), ma sostituisce l'app Zepp nella
+sincronizzazione. (3) L'API non ufficiale di Zepp: scartata, fragile.
+
 **Tre trappole trovate sui dati veri** (dettagli in `core/helio.py`):
 fusi diversi nello stesso export (battito e passi in ora locale, sonno e
 attività in UTC); `SLEEP_MINUTE` con la data spostata di un giorno in

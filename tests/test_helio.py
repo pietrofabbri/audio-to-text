@@ -167,12 +167,39 @@ def t_pannello(tmp: Path) -> None:
     require("sezioneCorpo" in html, "manca la sezione del corpo")
 
 
+def t_attivazione(tmp: Path) -> None:
+    # Riposo: nella notte del finto export il battito e' 50 fisso.
+    h = H.leggi_export(export_finto(tmp))
+    require(H.calcola_giorno(h, "2026-11-05")["sonno"]["battito_riposo_30min"] == 50.0,
+            "battito a riposo")
+    # Quattro giorni svegli 08-20 a 70 bpm; il quarto un'ora a 100.
+    h = H.Helio()
+    for d in range(1, 5):
+        t = datetime(2026, 11, d, 8)
+        while t < datetime(2026, 11, d, 20):
+            h.battito[t] = 100 if (d == 4 and t.hour == 10) else 70
+            t += timedelta(minutes=1)
+    h.passi_minuto[datetime(2026, 11, 4, 12, 0)] = 30
+    require(H.calcola_giorno(h, "2026-11-02")["attivazione"]["quota"] is None,
+            "con due giorni il riferimento non basta")
+    a3 = H.calcola_giorno(h, "2026-11-03")["attivazione"]
+    require(a3["quota"] == 0.0 and a3["soglia_bpm"] == 70.0, f"giorno tipico: {a3}")
+    a4 = H.calcola_giorno(h, "2026-11-04")["attivazione"]
+    # 12:00-12:05 tolti dai passi (il minuto e i 5 dopo).
+    require(a4["minuti_fermo"] == 720 - 6, f"minuti fermi: {a4['minuti_fermo']}")
+    require(a4["minuti"] == 60 and a4["per_ora"][10] == 1.0 and a4["per_ora"][9] == 0.0,
+            f"attivazione: {a4}")
+    require(a4["per_ora"][3] is None, "ora senza minuti fermi")
+    require(a4["sopra_riposo_bpm"] is None, "senza notte niente scarto dal riposo")
+
+
 def main() -> int:
     tests = [
         ("lettura dell'export e trappole di Zepp", t_lettura_e_trappole),
         ("il giorno: notte, fasi, pisolino, passi", t_giorno),
         ("battito quando si parla, da fermi", t_battito_e_parlato),
         ("piu' export: vince il piu' recente", t_piu_export),
+        ("battito a riposo e attivazione da fermo", t_attivazione),
         ("le misure arrivano nel pannello", t_pannello),
     ]
     ok = 0

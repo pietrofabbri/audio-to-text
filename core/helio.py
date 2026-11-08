@@ -31,7 +31,12 @@ Cosa c'e' e cosa no (export del 7/11/2026, dati dal 20/10)
 | HEALTH_DATA       |                                             |        |
 
 Non ci sono HRV, stress, SpO2, battito a riposo, temperatura: Zepp li mostra
-nell'app ma non li esporta. USER e BODY non si leggono: non servono al
+nell'app ma non li esporta. Al loro posto, due stime dichiarate come tali e
+calcolate qui dal battito al minuto: il battito a riposo (media piu' bassa su
+30 minuti consecutivi nella notte) e l'«attivazione da fermo» (quota dei
+minuti svegli e senza movimento con il battito sopra la soglia personale;
+costanti ATTIV_* e funzione `attivazione`). Non sono lo stress di Zepp, che
+viene dall'HRV. USER e BODY non si leggono: non servono al
 pannello e sono dati anagrafici.
 
 Le trappole dell'export, misurate sui dati veri
@@ -90,7 +95,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
-VERSIONE = 1
+VERSIONE = 2
 
 ROOT = Path(__file__).resolve().parent.parent
 # `A2T_HELIO_DIR` sposta l'archivio (i test lo puntano a una cartella vuota,
@@ -122,10 +127,45 @@ MIN_MINUTI_CLASSE = 5
 
 FASI = ("DEEP", "LIGHT", "REM", "WAKE")
 
+# Battito a riposo stimato: la media piu' bassa su RIPOSO_FINESTRA_MIN
+# minuti consecutivi dentro la notte, con almeno RIPOSO_MIN_VALORI valori.
+# Zepp calcola il suo «battito a riposo» ma non lo esporta: questo e' una
+# stima indipendente, dichiarata come tale.
+RIPOSO_FINESTRA_MIN = 30
+RIPOSO_MIN_VALORI = 20
+
+# «Attivazione da fermo»: una stima dal solo battito al minuto, al posto
+# dello stress di Zepp, che non si esporta (lo stress di Zepp viene
+# dall'HRV, che nell'export non c'e'). Un minuto e' «fermo e sveglio» se:
+# non si dorme (notti e altri tratti di sonno), non e' dentro un
+# allenamento rilevato, non ci sono passi in quel minuto ne' nei
+# ATTIV_FERMO_PRIMA minuti prima (il battito resta alto per qualche minuto
+# dopo il cammino). E' «attivato» se il battito supera la soglia personale:
+# il percentile ATTIV_PERCENTILE dei minuti fermi e svegli negli
+# ATTIV_RIF_GIORNI giorni che finiscono con quello misurato. Per
+# costruzione, in un giorno tipico la quota e' intorno o sotto il 10% (sotto, perche' il battito e' intero e conta
+# solo chi supera la soglia, non chi la eguaglia): conta lo
+# scarto da li', non il valore assoluto. Confonde: caffe', caldo,
+# digestione, stare in piedi, muovere le braccia senza camminare (la fascia
+# e' sul braccio), parlare (vedi `battito_e_parlato`).
+ATTIV_FERMO_PRIMA = 5
+ATTIV_PERCENTILE = 0.90
+ATTIV_RIF_GIORNI = 28
+# Minimi: minuti fermi e svegli per dare la quota di un giorno; giorni con
+# quel minimo per avere una soglia; minuti fermi per la quota di un'ora.
+ATTIV_MIN_FERMI = 60
+ATTIV_MIN_GIORNI_RIF = 3
+ATTIV_MIN_ORA = 10
+
 LIMITI = {
     "fonte": "export dei dati personali di Zepp (GDPR), circa uno al mese",
     "assenti": ("HRV, stress, SpO2, battito a riposo e temperatura non sono "
-                "nell'export di Zepp"),
+                "nell'export di Zepp; battito a riposo e attivazione da fermo "
+                "sono stime calcolate qui dal battito al minuto"),
+    "attivazione": ("quota dei minuti svegli, senza passi e fuori dagli "
+                    "allenamenti, con il battito sopra il 90esimo percentile "
+                    "personale degli ultimi 28 giorni: una stima dal battito, "
+                    "non lo stress di Zepp (che viene dall'HRV)"),
     "battito": "un valore al minuto (HEARTRATE_AUTO), media per 5 minuti nel grafico",
     "notte": "attribuita al giorno della sveglia",
     "orologi": ("battito e registrazioni sono allineati con l'ora del "
@@ -144,6 +184,8 @@ class Helio:
     sport: dict[datetime, dict[str, Any]] = field(default_factory=dict)
     esportazioni: list[str] = field(default_factory=list)
     avvisi: list[str] = field(default_factory=list)
+    _cache_fermi: dict[str, dict[datetime, int]] = field(
+        default_factory=dict, repr=False, compare=False)
 
     def aggiorna(self, altro: "Helio") -> None:
         """Aggiunge un export piu' recente: a parita' di chiave vince lui."""
@@ -160,6 +202,7 @@ class Helio:
         self.fasi.update(altro.fasi)
         self.sport.update(altro.sport)
         self.esportazioni += altro.esportazioni
+        self._cache_fermi.clear()
         self.avvisi += altro.avvisi
 
 
@@ -355,6 +398,99 @@ def _tratti(minuti: list[datetime], gap: int) -> list[tuple[datetime, datetime]]
     return [(a, b) for a, b in out]
 
 
+def _riposo(h: Helio, a: datetime, b: datetime) -> float | None:
+    """Media piu' bassa su RIPOSO_FINESTRA_MIN minuti consecutivi in [a, b)."""
+    migliore = None
+    t = a
+    while t + timedelta(minutes=RIPOSO_FINESTRA_MIN) <= b:
+        v = [h.battito[t + timedelta(minutes=k)] for k in range(RIPOSO_FINESTRA_MIN)
+             if t + timedelta(minutes=k) in h.battito]
+        if len(v) >= RIPOSO_MIN_VALORI:
+            m = statistics.mean(v)
+            if migliore is None or m < migliore:
+                migliore = m
+        t += timedelta(minutes=5)
+    return round(migliore, 1) if migliore is not None else None
+
+
+def _sonni_del_giorno(h: Helio, mezzanotte: datetime) -> list[tuple[datetime, datetime]]:
+    """Notti di SLEEP e altri tratti di sonno (SLEEP_MINUTE) del giorno."""
+    domani = mezzanotte + timedelta(days=1)
+    notti = list(h.notti)
+    fasi_giorno = [t for t in h.fasi if mezzanotte <= t < domani]
+    altri = [(a, b) for a, b in _tratti(
+        [t for t in fasi_giorno if not _dentro(t, notti)], GAP_PISOLINO_MIN)
+        if (b - a) >= timedelta(minutes=PISOLINO_MIN)]
+    return notti + altri
+
+
+def fermi_svegli(h: Helio, giorno: str) -> dict[datetime, int]:
+    """Battito nei minuti svegli, senza passi e fuori dagli allenamenti."""
+    if giorno in h._cache_fermi:
+        return h._cache_fermi[giorno]
+    g = date.fromisoformat(giorno)
+    mezzanotte = datetime.combine(g, datetime.min.time())
+    domani = mezzanotte + timedelta(days=1)
+    escluse = _sonni_del_giorno(h, mezzanotte) + [
+        (a, a + timedelta(seconds=s["secondi"])) for a, s in h.sport.items()
+        if a < domani and a + timedelta(seconds=s["secondi"]) > mezzanotte]
+    fuori = {}
+    for t, v in h.battito.items():
+        if not (mezzanotte <= t < domani) or _dentro(t, escluse):
+            continue
+        if any(h.passi_minuto.get(t - timedelta(minutes=k), 0) > 0
+               for k in range(ATTIV_FERMO_PRIMA + 1)):
+            continue
+        fuori[t] = v
+    h._cache_fermi[giorno] = fuori
+    return fuori
+
+
+def _percentile(v: list[int], q: float) -> float:
+    v = sorted(v)
+    i = q * (len(v) - 1)
+    lo = int(i)
+    hi = min(lo + 1, len(v) - 1)
+    return v[lo] + (v[hi] - v[lo]) * (i - lo)
+
+
+def attivazione(h: Helio, giorno: str, riposo: float | None = None) -> dict[str, Any] | None:
+    """Attivazione da fermo del giorno (vedi ATTIV_* in cima al modulo)."""
+    g = date.fromisoformat(giorno)
+    oggi = fermi_svegli(h, giorno)
+    if len(oggi) < ATTIV_MIN_FERMI:
+        return None
+    rif: list[int] = []
+    n_giorni = 0
+    for k in range(ATTIV_RIF_GIORNI):
+        f = fermi_svegli(h, (g - timedelta(days=k)).isoformat())
+        if len(f) >= ATTIV_MIN_FERMI:
+            rif.extend(f.values())
+            n_giorni += 1
+    base = {
+        "minuti_fermo": len(oggi),
+        "media_fermo": _media(list(oggi.values())),
+        "sopra_riposo_bpm": (round(_media(list(oggi.values())) - riposo, 1)
+                             if riposo is not None else None),
+        "riferimento_giorni": n_giorni,
+    }
+    if n_giorni < ATTIV_MIN_GIORNI_RIF:
+        return {**base, "soglia_bpm": None, "minuti": None, "quota": None,
+                "per_ora": [None] * 24}
+    soglia = _percentile(rif, ATTIV_PERCENTILE)
+    sopra = [t for t, v in oggi.items() if v > soglia]
+    per_ora: list[float | None] = []
+    for ora in range(24):
+        fermi_ora = [t for t in oggi if t.hour == ora]
+        if len(fermi_ora) < ATTIV_MIN_ORA:
+            per_ora.append(None)
+        else:
+            per_ora.append(round(sum(1 for t in fermi_ora if oggi[t] > soglia)
+                                 / len(fermi_ora), 3))
+    return {**base, "soglia_bpm": round(soglia, 1), "minuti": len(sopra),
+            "quota": round(len(sopra) / len(oggi), 3), "per_ora": per_ora}
+
+
 def calcola_giorno(h: Helio, giorno: str) -> dict[str, Any]:
     """Il blocco delle misure di un giorno, sulle 24 ore."""
     g = date.fromisoformat(giorno)
@@ -416,6 +552,8 @@ def calcola_giorno(h: Helio, giorno: str) -> dict[str, Any]:
                                          / dormito, 3) if dormito else None),
             "battito_media": _media(nel_sonno),
             "battito_minimo_5min": round(min(medie5), 1) if medie5 else None,
+            # Stima del battito a riposo (Zepp non lo esporta).
+            "battito_riposo_30min": _riposo(h, a, b),
             "fasi": fasi,
         }
 
@@ -467,6 +605,8 @@ def calcola_giorno(h: Helio, giorno: str) -> dict[str, Any]:
                          "minuti": int((b - a).total_seconds() // 60)}
                         for a, b in altri_sonni],
         "allenamenti": allenamenti,
+        "attivazione": attivazione(
+            h, giorno, sonno["battito_riposo_30min"] if sonno else None),
     }
 
 

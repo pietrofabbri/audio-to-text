@@ -1,6 +1,6 @@
 # Analisi del corpus e pannello web — specifica
 
-Stato al 7 novembre 2026. Documento di progetto del Project «Psico-fisio
+Stato all'8 novembre 2026. Documento di progetto del Project «Psico-fisio
 app», copiato anche nella repo `pietrofabbri/audio-to-text` in
 `docs/analisi-corpus.md` (le due copie sono identiche).
 Collegati: `ROADMAP.md` (ordine dei lavori della pipeline, decisioni
@@ -66,7 +66,7 @@ dice cosa è già calcolato al 9/10.
 | 2 | **Relazioni** | minuti per persona; quota di parola di Pietro per conversazione; durata media dei turni; chi apre e chi chiude; sovrapposizioni e interruzioni | no | **sì**, tranne sovrapposizioni |
 | 3 | **Contenuti e temi** | % di tempo per tema (sezione 7), separata in *esposizione* (tutto il parlato udito) e *parlato proprio*; parole caratteristiche del periodo rispetto allo storico; persone e luoghi nominati | sì (temi); no (parole caratteristiche) | no |
 | 4 | **Come parla Pietro** | prosodia: velocità, altezza media e sua variabilità, energia, pause; marcatori linguistici: io/noi, domande vs affermazioni, negazioni, lessico emotivo, tempi verbali | no (dizionari locali) | **sì**, tranne lessico emotivo e tempi verbali |
-| 5 | **Il corpo (Helio)** | battito, sonno e fasi, passi, attività; battito quando parli (scala dei minuti); HRV e stress non esportati da Zepp; correlazioni con le altre direttrici (sezione 6) | no | **sì** (dal 7/11), tranne correlazioni |
+| 5 | **Il corpo (Helio)** | battito, sonno e fasi, passi, attività; battito quando parli (scala dei minuti); HRV e stress non esportati da Zepp, al loro posto battito a riposo e attivazione da fermo stimati dal battito (dall’8/11); correlazioni con le altre direttrici (sezione 6) | no | **sì** (dal 7/11), tranne correlazioni |
 | 6 | **Qualità del dato** | copertura, % campioni a fondo scala (saturazione), SNR, confidenza ASR, % di testo corretto | no | **sì**, tranne saturazione e SNR |
 | 9 | **Silenzio e solitudine** | minuti registrati senza parlato; minuti con sola voce di Pietro; presenza di musica o TV | no (classificatore di eventi sonori locale) | **sì**, tranne musica/TV |
 | 10 | **Stile e lessico** | ricchezza lessicale (MATTR, finestra 50 parole), intercalari ogni 1000 parole, registro, dialetto e altre lingue; differenze per interlocutore | in parte | **in parte** (MATTR, intercalari) |
@@ -501,7 +501,7 @@ Un cambio di significato di un campo alza `versione`.
 
 ---
 
-## 9b. Formato delle misure Helio (`helio/AAAA-MM-GG.json`, versione 1)
+## 9b. Formato delle misure Helio (`helio/AAAA-MM-GG.json`, versione 2)
 
 Calcolato da `core/helio.py` (`calcola_giorno`) dagli export in
 `data/helio/export/`. Tutte le ore sono locali (Europe/Rome).
@@ -516,13 +516,29 @@ Calcolato da `core/helio.py` (`calcola_giorno`) dagli export in
 - `sonno`: la notte più lunga che finisce quel giorno, o `null`: `inizio`,
   `fine` (ISO al minuto), `a_letto_min`, `dormito_min` (profondo + leggero +
   REM), `profondo_min`, `leggero_min`, `rem_min`, `sveglio_min`,
-  `profondo_rem_quota`, `battito_media`, `battito_minimo_5min`, `fasi`
+  `profondo_rem_quota`, `battito_media`, `battito_minimo_5min`,
+  `battito_riposo_30min` (stima del battito a riposo: media più bassa su 30
+  minuti consecutivi con almeno 20 valori; dalla versione 2), `fasi`
   (tratti `[inizio, fine, fase]` in minuti dalla mezzanotte del giorno,
   negativi prima di mezzanotte; fasi `DEEP`, `LIGHT`, `REM`, `WAKE`);
 - `altri_sonni`: tratti di sonno al minuto fuori dalle notti (pisolini, o
   pezzi di notte che Zepp non riassume, come la notte del cambio d'ora);
 - `allenamenti`: attività rilevate dall'app (`inizio`, `minuti`, `kcal`,
-  `tipo` numerico di Zepp, di significato non documentato).
+  `tipo` numerico di Zepp, di significato non documentato);
+- `attivazione` (dalla versione 2; `null` sotto i 60 minuti fermi): stima
+  dal battito al posto dello stress di Zepp, che viene dall'HRV e non si
+  esporta. Un minuto è *fermo e sveglio* se fuori da notti, altri tratti di
+  sonno e allenamenti, senza passi nel minuto e nei 5 prima. Campi:
+  `minuti_fermo`, `media_fermo`, `sopra_riposo_bpm` (media da fermo meno il
+  battito a riposo della notte), `riferimento_giorni`, `soglia_bpm` (90º
+  percentile dei minuti fermi e svegli dei 28 giorni che finiscono con
+  quello misurato, contando i giorni con almeno 60 minuti fermi; servono
+  almeno 3 giorni, altrimenti `null`), `minuti` e `quota` sopra soglia,
+  `per_ora` (24 quote, `null` sotto i 10 minuti fermi nell'ora). Per
+  costruzione un giorno tipico sta intorno o sotto il 10%: conta lo scarto
+  dalla mediana. Confondono caffè, caldo, digestione, stare in piedi,
+  muovere le braccia (la fascia è sul braccio), parlare. Costanti `ATTIV_*`
+  e `RIPOSO_*` in `core/helio.py`.
 
 Nelle metriche del giorno (`metriche/AAAA-MM-GG.json`) il campo `corpo`
 (`core.helio.battito_e_parlato`), solo per i giorni con registrazione e

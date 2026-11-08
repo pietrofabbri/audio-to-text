@@ -506,7 +506,9 @@ function grafico24(c, g) {
     var hit = s("rect", {x: x(h * 60), y: T, width: x(60) - x(0), height: yP1 - T, fill: "transparent"}, svg);
     hover(hit, "<b>" + h + ":00–" + (h + 1) + ":00</b><br>battito medio " +
       (bb.length ? num(bb.reduce(function (a, b) { return a + b; }, 0) / bb.length, 0) + " bpm" : "—") +
-      "<br>passi " + num(c.passi.per_ora[h], 0));
+      "<br>passi " + num(c.passi.per_ora[h], 0) +
+      (c.attivazione && c.attivazione.per_ora && c.attivazione.per_ora[h] != null
+        ? "<br>attivazione da fermo " + pct(c.attivazione.per_ora[h]) : ""));
   })(h);
   [0, 6, 12, 18, 24].forEach(function (h) {
     s("text", {x: x(h * 60), y: H - 5, "text-anchor": "middle"}, svg).textContent = h;
@@ -547,6 +549,42 @@ function graficoNotti(lista) {
   return svg;
 }
 
+// Attivazione da fermo: una barra per giorno, linea della mediana.
+// E' una stima dal battito al minuto (core/helio.py, `attivazione`), non lo
+// stress di Zepp: l'export non contiene l'HRV da cui Zepp lo calcola.
+function graficoAttivazione(lista) {
+  var W = larghezza(), H = 150, L = 34, R = 8, T = 8, B = 22;
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Attivazione da fermo per giorno"});
+  var q = lista.map(function (c) { return c.attivazione ? c.attivazione.quota : null; });
+  var maxQ = Math.max(0.25, Math.max.apply(null, q.filter(function (v) { return v != null; }).concat([0])));
+  var y = function (v) { return H - B - (H - T - B) * v / maxQ; };
+  [0, 0.1, 0.2].forEach(function (v) {
+    if (v > maxQ) return;
+    s("line", {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--grid)"}, svg);
+    s("text", {x: L - 6, y: y(v) + 4, "text-anchor": "end"}, svg).textContent = Math.round(v * 100) + "%";
+  });
+  var med = median(q);
+  var bw = (W - L - R) / Math.max(lista.length, 1);
+  lista.forEach(function (c, i) {
+    var x0 = L + i * bw + bw * 0.15, w = Math.max(2, bw * 0.7);
+    if (i % Math.ceil(lista.length / 8) === 0) {
+      var p = c.giorno.split("-");
+      s("text", {x: x0 + w / 2, y: H - 5, "text-anchor": "middle"}, svg).textContent = Number(p[2]) + "/" + Number(p[1]);
+    }
+    var a = c.attivazione;
+    if (!a || a.quota == null) return;
+    s("rect", {x: x0, y: y(a.quota), width: w, height: y(0) - y(a.quota), rx: 1,
+      fill: med != null && a.quota > med * 1.5 ? "var(--s2)" : "var(--s1)"}, svg);
+    var hit = s("rect", {x: L + i * bw, y: T, width: bw, height: H - T - B, fill: "transparent"}, svg);
+    hover(hit, "<b>" + etichettaGiorno(c) + "</b><br>attivazione da fermo " + pct(a.quota) +
+      " (" + a.minuti + " min su " + a.minuti_fermo + " fermi)<br>soglia " + bpm(a.soglia_bpm) +
+      "<br>battito da fermo " + bpm(a.media_fermo) +
+      (a.sopra_riposo_bpm != null ? ", " + num(a.sopra_riposo_bpm, 0) + " sopra il riposo" : ""));
+  });
+  if (med != null) s("line", {x1: L, x2: W - R, y1: y(med), y2: y(med), stroke: "var(--text-2)", "stroke-dasharray": "4 3"}, svg);
+  return svg;
+}
+
 function sezioneCorpo(giornaliero, g) {
   var c = giornaliero ? CORPO_PER[g.giorno] : null;
   var sotto = !CORPO.length ? "" : giornaliero
@@ -565,6 +603,17 @@ function sezioneCorpo(giornaliero, g) {
       t.appendChild(tile("Profondo + REM", pct(so.profondo_rem_quota), rifCorpo("sonno.profondo_rem_quota", so.profondo_rem_quota, pct)));
       t.appendChild(tile("Notte", oraIso(so.inizio) + "–" + oraIso(so.fine), null, {testo: true, nota: "sveglio " + hm(so.sveglio_min)}));
       t.appendChild(tile("Battito nel sonno", bpm(so.battito_media), rifCorpo("sonno.battito_media", so.battito_media, bpm)));
+      if (so.battito_riposo_30min != null)
+        t.appendChild(tile("Battito a riposo", bpm(so.battito_riposo_30min),
+          rifCorpo("sonno.battito_riposo_30min", so.battito_riposo_30min, bpm), {nota: "stima: 30 min più bassi della notte"}));
+    }
+    var at = c.attivazione;
+    if (at && at.quota != null) {
+      t.appendChild(tile("Attivazione da fermo", pct(at.quota), rifCorpo("attivazione.quota", at.quota, pct),
+        {nota: "stima dal battito, non lo stress di Zepp"}));
+    } else {
+      t.appendChild(tile("Attivazione da fermo", at ? "riferimento in costruzione" : "pochi minuti fermi", null,
+        {off: true, nota: at ? "servono 3 giorni misurati" : "servono 60 minuti svegli senza passi"}));
     }
     t.appendChild(tile("Battito da sveglio", bpm(c.battito.sveglio_media), rifCorpo("battito.sveglio_media", c.battito.sveglio_media, bpm)));
     t.appendChild(tile("Passi", num(c.passi.totale, 0), rifCorpo("passi.totale", c.passi.totale, function (v) { return num(v, 0); })));
@@ -586,6 +635,9 @@ function sezioneCorpo(giornaliero, g) {
     var note = [];
     if ((c.battito.copertura_quota || 0) < 0.95) note.push("Giorno incompleto: battito su " + pct(c.battito.copertura_quota) + " delle 24 ore.");
     if (c.altri_sonni && c.altri_sonni.length) note.push("Altri tratti di sonno: " + c.altri_sonni.map(function (p) { return p.inizio + "–" + p.fine; }).join(", ") + ".");
+    if (at && at.quota != null) note.push("Attivazione da fermo: quota dei minuti svegli, senza passi e fuori dagli allenamenti, " +
+      "con il battito sopra " + bpm(at.soglia_bpm) + " (il tuo 90° percentile degli ultimi " + at.riferimento_giorni + " giorni). " +
+      "È una stima dal battito: Zepp calcola lo stress dall'HRV, che non esporta. Alzano il battito anche caffè, caldo, digestione, stare in piedi, muovere le braccia.");
     if (co) note.push("Battito quando parli: media nei minuti registrati in cui parli, meno quella nei minuti di silenzio, " +
       "solo nei minuti senza passi (il cammino alza il battito). È una differenza di un giorno, non una correlazione.");
     if (note.length) sec.appendChild(el("div", {class: "note"}, esc(note.join(" "))));
@@ -594,12 +646,21 @@ function sezioneCorpo(giornaliero, g) {
   n.appendChild(el("h3", null, "Le notti"));
   n.appendChild(graficoNotti(CORPO.slice(-45)));
   sec.appendChild(n);
-  var tb = "<table><thead><tr><th>Giorno</th><th class='n'>Dormito</th><th class='n'>Profondo</th><th class='n'>REM</th><th class='n'>Sveglia</th><th class='n'>Battito sonno</th><th class='n'>Battito sveglio</th><th class='n'>Passi</th><th class='n'>Attività</th></tr></thead><tbody>";
+  var na = el("div", {style: "margin-top:16px"});
+  na.appendChild(el("h3", null, "Attivazione da fermo"));
+  na.appendChild(graficoAttivazione(CORPO.slice(-45)));
+  na.appendChild(el("div", {class: "note"}, "Stima dal battito al minuto, non lo stress di Zepp. Quota dei minuti svegli e senza movimento con il battito " +
+    "sopra il tuo 90° percentile degli ultimi 28 giorni; in un giorno tipico sta intorno o sotto il 10%. In arancio i giorni sopra 1,5 volte la mediana " +
+    "(linea tratteggiata)."));
+  sec.appendChild(na);
+  var tb = "<table><thead><tr><th>Giorno</th><th class='n'>Dormito</th><th class='n'>Profondo</th><th class='n'>REM</th><th class='n'>Sveglia</th><th class='n'>Battito sonno</th><th class='n'>Riposo</th><th class='n'>Battito sveglio</th><th class='n'>Attivaz.</th><th class='n'>Passi</th><th class='n'>Attività</th></tr></thead><tbody>";
   CORPO.slice().reverse().forEach(function (x) {
     var so = x.sonno || {};
     tb += "<tr><td>" + etichettaGiorno(x) + ((x.battito.copertura_quota || 0) < 0.95 ? " *" : "") + "</td><td class='n'>" + hm(so.dormito_min) +
       "</td><td class='n'>" + hm(so.profondo_min) + "</td><td class='n'>" + hm(so.rem_min) + "</td><td class='n'>" + oraIso(so.fine) +
-      "</td><td class='n'>" + num(so.battito_media, 0) + "</td><td class='n'>" + num(x.battito.sveglio_media, 0) +
+      "</td><td class='n'>" + num(so.battito_media, 0) + "</td><td class='n'>" + num(so.battito_riposo_30min, 0) +
+      "</td><td class='n'>" + num(x.battito.sveglio_media, 0) +
+      "</td><td class='n'>" + (x.attivazione && x.attivazione.quota != null ? pct(x.attivazione.quota) : "—") +
       "</td><td class='n'>" + num(x.passi.totale, 0) + "</td><td class='n'>" + hm(minutiAttivita(x)) + "</td></tr>";
   });
   var tw = el("div", {class: "nowrap", style: "overflow-x:auto;margin-top:12px"}, tb + "</tbody></table>");
