@@ -2011,3 +2011,24 @@ Nessuna correzione è stata applicata. Vedi il punto 22.
 
 Il resto può aspettare che il sistema abbia girato qualche notte e
 accumulato dati su cui decidere.
+
+---
+
+### 44. Corpo e parola: correlazioni minuto per minuto — fatto il 13 novembre
+
+**Stato.** Nel Taccuino c'è la sezione «Corpo e parola» (specifica in
+`docs/analisi-corpus.md`, sezione 6, «Cosa è già calcolato»; formato in
+9b). Calcolo in `core/helio.py` (`legami`, `riferimento_orario`), test in
+`tests/test_helio.py` («parlato e battito minuto per minuto»).
+
+**Scelte.** Battito residuo sulla mediana personale della stessa ora;
+confronti dentro la giornata (il pannello toglie la media del giorno);
+solo minuti svegli e senza passi; intervalli con n/5 osservazioni
+effettive. Le ipotesi giornaliere compaiono solo da 10 giorni validi.
+
+**Resta aperto.** (1) La deriva dell'orologio del TileRec, che sposta i
+minuti di parlato rispetto al battito. (2) Gesti senza passi (la fascia è
+sul braccio) possono alzare il battito: manca un filtro sul movimento del
+braccio, l'export non ha l'accelerometro. (3) Le risate (direttrice 11) e
+il voto serale non ci sono ancora, e sono due degli assi più attesi.
+

@@ -1,6 +1,6 @@
 # Analisi del corpus e pannello web — specifica
 
-Stato all'8 novembre 2026. Documento di progetto del Project «Psico-fisio
+Stato al 13 novembre 2026. Documento di progetto del Project «Psico-fisio
 app», copiato anche nella repo `pietrofabbri/audio-to-text` in
 `docs/analisi-corpus.md` (le due copie sono identiche).
 Collegati: `ROADMAP.md` (ordine dei lavori della pipeline, decisioni
@@ -66,7 +66,7 @@ dice cosa è già calcolato al 9/10.
 | 2 | **Relazioni** | minuti per persona; quota di parola di Pietro per conversazione; durata media dei turni; chi apre e chi chiude; sovrapposizioni e interruzioni | no | **sì**, tranne sovrapposizioni |
 | 3 | **Contenuti e temi** | % di tempo per tema (sezione 7), separata in *esposizione* (tutto il parlato udito) e *parlato proprio*; parole caratteristiche del periodo rispetto allo storico; persone e luoghi nominati | sì (temi); no (parole caratteristiche) | no |
 | 4 | **Come parla Pietro** | prosodia: velocità, altezza media e sua variabilità, energia, pause; marcatori linguistici: io/noi, domande vs affermazioni, negazioni, lessico emotivo, tempi verbali | no (dizionari locali) | **sì**, tranne lessico emotivo e tempi verbali |
-| 5 | **Il corpo (Helio)** | battito, sonno e fasi, passi, attività; battito quando parli (scala dei minuti); HRV e stress non esportati da Zepp, al loro posto battito a riposo e attivazione da fermo stimati dal battito (dall’8/11); correlazioni con le altre direttrici (sezione 6) | no | **sì** (dal 7/11), tranne correlazioni |
+| 5 | **Il corpo (Helio)** | battito, sonno e fasi, passi, attività; battito quando parli (scala dei minuti); HRV e stress non esportati da Zepp, al loro posto battito a riposo e attivazione da fermo stimati dal battito (dall’8/11); correlazioni con le altre direttrici (sezione 6) | no | **sì** (dal 7/11); correlazioni col parlato dal 13/11 (sezione 6) |
 | 6 | **Qualità del dato** | copertura, % campioni a fondo scala (saturazione), SNR, confidenza ASR, % di testo corretto | no | **sì**, tranne saturazione e SNR |
 | 9 | **Silenzio e solitudine** | minuti registrati senza parlato; minuti con sola voce di Pietro; presenza di musica o TV | no (classificatore di eventi sonori locale) | **sì**, tranne musica/TV |
 | 10 | **Stile e lessico** | ricchezza lessicale (MATTR, finestra 50 parole), intercalari ogni 1000 parole, registro, dialetto e altre lingue; differenze per interlocutore | in parte | **in parte** (MATTR, intercalari) |
@@ -221,6 +221,44 @@ disponibile) o con saturazione vanno esclusi o segnalati.
    muove mai insieme al voto serale probabilmente misura altro; merita meno
    spazio nei pannelli.
 
+### Cosa è già calcolato (13 novembre)
+
+Sezione «Corpo e parola» del Taccuino, dopo «Il corpo». Calcolo sul Mac in
+`core/helio.py` (`legami`, chiamata da `core.metriche.calcola_giorno`),
+somme e correlazioni nel pannello (`pannello/modello.html`,
+`sezioneLegami`). Formato in sezione 9b.
+
+Regole comuni alla scala dei minuti:
+
+- **unità**: il minuto registrato (almeno 30 s), sveglio, fuori dagli
+  allenamenti, senza passi nel minuto e nei 5 prima (`fermi_svegli`);
+- **misura**: il battito **residuo**, cioè meno la mediana personale dei
+  minuti fermi e svegli della stessa ora del giorno negli ultimi 28 giorni
+  (toglie il ritmo circadiano, regola 1);
+- **confronto dentro la giornata**: il pannello toglie anche la media dei
+  minuti registrati fermi dello stesso giorno, così una giornata più
+  agitata di un'altra non si scambia per un effetto del parlare;
+- **intervallo indicativo**: ±1,96 deviazioni standard su √(n/5), perché
+  minuti vicini non sono indipendenti; non è un test statistico.
+
+| Riquadro | Cosa mostra | Ipotesi |
+|---|---|---|
+| Il battito mentre parli | scarto medio per minuti di silenzio, di Pietro da solo, di dialogo, di soli altri | parlare ↔ battito più alto (forte) |
+| Con chi | scarto medio nei minuti in cui parla ciascuna persona (le 10 con più minuti, almeno 15) | conversazione con una data persona ↔ attivazione (esplorativa) |
+| Prima, durante e dopo una conversazione | curva del battito da −10 a +20 minuti intorno a inizio e fine delle conversazioni di Pietro (≥ 3 min, registrazione accesa nei 2 minuti prima); solo su più giorni | anticipazione e recupero (esplorativa) |
+| La tua voce e il battito | ρ di Spearman fra il battito e tono, volume, velocità di ogni frase di Pietro ≥ 3 s detta da fermo, più il battito medio per quinto della voce | voce più acuta e più forte ↔ battito più alto (media) |
+| Giorno per giorno | ρ di Spearman per nove coppie dichiarate (sonno → voce del giorno, attivazione ↔ parola, socialità → notte dopo); mostrato solo con almeno 10 giorni validi | tabella «Scala del giorno» sopra |
+
+**Prime letture (13/11, 6 giorni con registrazione e battito, 946 minuti
+fermi, 522 frasi, 30 conversazioni) — da confermare, non conclusioni:**
+nessuna differenza chiara fra parlare e silenzio dentro la giornata (gli
+intervalli si sovrappongono); il tono ha un legame debole col battito
+(ρ ≈ +0,16), volume e velocità nessuno; nelle curve il battito sale di
+circa 4–5 bpm nei 3–6 minuti **prima** dell'inizio di una conversazione,
+che può essere anticipazione ma anche alzarsi o avvicinarsi a qualcuno
+senza passi rilevati. Le correlazioni giornaliere aspettano 10 giorni
+validi con l'Helio (al 13/11 ce ne sono 3–5).
+
 ---
 
 ## 7. Gerarchia dei temi (direttrice 3) — versione 1
@@ -312,6 +350,11 @@ registrazione. Il riquadro «Sonno» del polso mostra la notte prima del
 giorno scelto. Il selettore dei giorni elenca ancora solo i giorni
 registrati: i giorni con il solo Helio stanno nel grafico delle notti e
 nella tabella.
+
+**Corpo e parola (13/11).** Battito e parlato minuto per minuto (sezione 6,
+«Cosa è già calcolato»): scarti per tipo di minuto e per persona, curve
+intorno alle conversazioni (solo su più giorni), voce e battito, tabella
+delle ipotesi giornaliere.
 
 ### Pubblicazione — decisione D5: **GitHub Pages cifrato** (presa l'8/10)
 
@@ -548,6 +591,17 @@ battito: `minuti_registrati`, `minuti_con_battito`, e per le classi
 e sui soli minuti `fermo` (nessun passo nel minuto e nei due prima e
 dopo); `parli_meno_silenzio_fermo`. Media data solo con almeno 5 minuti.
 Limite: usa l'ora del registratore, la cui deriva non è misurata.
+
+Dal 13/11 `corpo` contiene anche `legami` (`core.helio.legami`), in forma
+sommabile fra giorni: `classi` (`silenzio`, `solo_tu`, `dialogo`, `altri`)
+e `persone` (per voce, tranne Pietro e `UNKNOWN`) con `n` minuti fermi
+registrati, `s` somma e `q` somma dei quadrati del battito residuo, `att`
+minuti sopra la soglia di attivazione; `eventi` (conversazioni usate),
+`finestra` (`[-10, 20]`), `inizio` e `fine` (per ogni scarto in minuti
+`[n, somma del residuo]`); `prosodia` (una riga per frase di Pietro:
+`[residuo medio, f0 media Hz, intensità dB, sillabe/s]`, senza testo);
+`soglia_bpm`; `riferimento` (mediana oraria usata, per ora 0–23). Costanti
+`RESIDUO_MIN_ORA`, `EVENTO_*`, `PROSODIA_MIN_SEC` in `core/helio.py`.
 
 ## 10. Ordine dei lavori
 

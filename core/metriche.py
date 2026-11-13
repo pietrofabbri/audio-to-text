@@ -412,6 +412,12 @@ def calcola_giorno(cartella: Path, helio: Any = None) -> dict[str, Any]:
     di_pietro = [s for s in segmenti if s.get("speaker") == SOGGETTO]
     testi_pietro, prosodia_pietro, per_parola = _parole_e_prosodia_di_pietro(
         cartella, segmenti, di_pietro)
+
+    # --- legami fra parlato e corpo (direttrice 5 con 2 e 4) -----------
+    if corpo is not None:
+        from core.helio import legami
+        corpo["legami"] = legami(helio, giorno, min_reg, min_parlato, SOGGETTO,
+                                 conversazioni, prosodia_pietro, SCONOSCIUTA)
     prosodia_per_ora: dict[int, list[dict]] = defaultdict(list)
     testi_per_ora: dict[int, list[str]] = defaultdict(list)
     for s in prosodia_pietro:

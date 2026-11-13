@@ -193,6 +193,41 @@ def t_attivazione(tmp: Path) -> None:
     require(a4["sopra_riposo_bpm"] is None, "senza notte niente scarto dal riposo")
 
 
+def t_legami(tmp: Path) -> None:
+    # Quattro giorni svegli 08-20 a 70 bpm; il quarto, 10:00-10:29, Pietro
+    # parla e il battito e' 80. Registrato 09:50-11:00.
+    h = H.Helio()
+    for d in range(1, 5):
+        t = datetime(2026, 11, d, 8)
+        while t < datetime(2026, 11, d, 20):
+            h.battito[t] = 80 if (d == 4 and t.hour == 10 and t.minute < 30) else 70
+            t += timedelta(minutes=1)
+    h.passi_minuto[datetime(2026, 11, 4, 10, 45)] = 30
+    reg = {m: 60.0 for m in range(590, 660)}
+    parlato = {m: {"GLOBAL_001"} for m in range(600, 615)}
+    parlato.update({m: {"GLOBAL_001", "GLOBAL_009"} for m in range(615, 630)})
+    conv = [{"inizio_sec": 600 * 60, "durata_min": 30.0, "voci": ["GLOBAL_001", "GLOBAL_009"]}]
+    segm = [{"day_sec_start": 600 * 60 + 5, "day_sec_end": 600 * 60 + 50,
+             "prosody": {"f0_mean_hz": 120.0, "intensity_mean_db": 65.0,
+                         "speech_rate_syl_per_sec": 4.5}}]
+    L = H.legami(h, "2026-11-04", reg, parlato, "GLOBAL_001", conv, segm)
+    c = L["classi"]
+    require(c["solo_tu"]["n"] == 15 and c["dialogo"]["n"] == 15, f"classi: {c}")
+    # 10:45 ha passi: tolti 10:45-10:50 (6 minuti) dai 40 di silenzio.
+    require(c["silenzio"]["n"] == 40 - 6, f"silenzio: {c['silenzio']}")
+    require(c["silenzio"]["s"] == 0.0 and c["solo_tu"]["s"] == 150.0, f"residui: {c}")
+    require(L["persone"]["GLOBAL_009"]["n"] == 15, f"persone: {L['persone']}")
+    require(L["eventi"] == 1 and L["inizio"][10] == [1, 10.0] and L["inizio"][0] == [1, 0.0],
+            f"curva: {L['inizio'][:12]}")
+    require(L["prosodia"] == [[10.0, 120.0, 65.0, 4.5]], f"prosodia: {L['prosodia']}")
+    require(H.legami(None, "2026-11-04", reg, parlato, "GLOBAL_001", conv, segm) is None,
+            "senza Helio niente legami")
+    # Una conversazione senza registrazione prima non entra nelle curve.
+    reg2 = {m: 60.0 for m in range(600, 660)}
+    require(H.legami(h, "2026-11-04", reg2, parlato, "GLOBAL_001", conv, segm)["eventi"] == 0,
+            "inizio della registrazione scambiato per inizio conversazione")
+
+
 def main() -> int:
     tests = [
         ("lettura dell'export e trappole di Zepp", t_lettura_e_trappole),
@@ -200,6 +235,7 @@ def main() -> int:
         ("battito quando si parla, da fermi", t_battito_e_parlato),
         ("piu' export: vince il piu' recente", t_piu_export),
         ("battito a riposo e attivazione da fermo", t_attivazione),
+        ("parlato e battito minuto per minuto", t_legami),
         ("le misure arrivano nel pannello", t_pannello),
     ]
     ok = 0

@@ -186,6 +186,8 @@ class Helio:
     avvisi: list[str] = field(default_factory=list)
     _cache_fermi: dict[str, dict[datetime, int]] = field(
         default_factory=dict, repr=False, compare=False)
+    _cache_orario: dict[str, dict[int, float]] = field(
+        default_factory=dict, repr=False, compare=False)
 
     def aggiorna(self, altro: "Helio") -> None:
         """Aggiunge un export piu' recente: a parita' di chiave vince lui."""
@@ -203,6 +205,7 @@ class Helio:
         self.sport.update(altro.sport)
         self.esportazioni += altro.esportazioni
         self._cache_fermi.clear()
+        self._cache_orario.clear()
         self.avvisi += altro.avvisi
 
 
@@ -670,6 +673,192 @@ def battito_e_parlato(h: Helio | None, giorno: str,
     p, s = out["fermo"]["parli"]["media"], out["fermo"]["silenzio"]["media"]
     out["parli_meno_silenzio_fermo"] = round(p - s, 1) if p is not None and s is not None else None
     return out
+
+
+# ----------------------------------------------------------------------
+# Legami fra parlato e corpo (scala dei minuti, direttrice 5 x 2 e 4)
+# ----------------------------------------------------------------------
+#
+# Tutto si misura sui minuti «fermi e svegli» (`fermi_svegli`: niente sonno,
+# niente allenamenti, nessun passo nel minuto e nei 5 prima) e sul battito
+# **residuo**: battito del minuto meno la mediana personale dei minuti fermi
+# e svegli della stessa ora del giorno, negli ATTIV_RIF_GIORNI giorni che
+# finiscono con quello misurato. Il residuo toglie il ritmo circadiano (alle
+# 15 il battito e' piu' alto che alle 7 per conto suo), che altrimenti
+# farebbe sembrare legate cose che seguono solo l'orologio (regola 1 della
+# sezione 6 di `analisi-corpus.md`).
+#
+# Il blocco del giorno contiene solo somme (minuti, somma e somma dei
+# quadrati del residuo), cosi' il pannello puo' sommare piu' giorni senza
+# ricalcolare nulla. Le sole righe minute per minute sono quelle della
+# prosodia: un segmento di Pietro per riga, senza testo.
+
+# Minimo di valori in un'ora per usare la sua mediana; sotto, la mediana
+# di tutte le ore.
+RESIDUO_MIN_ORA = 30
+# Finestra intorno all'inizio e alla fine di una conversazione (minuti).
+EVENTO_PRIMA = 10
+EVENTO_DOPO = 20
+# Una conversazione entra nelle curve se Pietro parla, dura almeno
+# EVENTO_MIN_DURATA minuti e i EVENTO_REGISTRATO_PRIMA minuti prima
+# dell'inizio sono registrati (altrimenti l'«inizio» puo' essere solo
+# l'inizio della registrazione).
+EVENTO_MIN_DURATA = 3
+EVENTO_REGISTRATO_PRIMA = 2
+# Un segmento di Pietro entra nelle righe della prosodia se dura almeno
+# questo e tutti i suoi minuti sono fermi e con battito.
+PROSODIA_MIN_SEC = 3.0
+
+
+def riferimento_orario(h: Helio, giorno: str) -> dict[int, float]:
+    """Mediana del battito fermo e sveglio per ora del giorno (0-23)."""
+    if giorno in h._cache_orario:
+        return h._cache_orario[giorno]
+    g = date.fromisoformat(giorno)
+    per_ora: dict[int, list[int]] = defaultdict(list)
+    for k in range(ATTIV_RIF_GIORNI):
+        for t, v in fermi_svegli(h, (g - timedelta(days=k)).isoformat()).items():
+            per_ora[t.hour].append(v)
+    tutti = [v for vv in per_ora.values() for v in vv]
+    if not tutti:
+        h._cache_orario[giorno] = {}
+        return {}
+    generale = statistics.median(tutti)
+    rif = {ora: (statistics.median(per_ora[ora]) if len(per_ora[ora]) >= RESIDUO_MIN_ORA
+                 else generale) for ora in range(24)}
+    h._cache_orario[giorno] = rif
+    return rif
+
+
+class _Somma:
+    """Minuti, somma e somma dei quadrati del residuo, minuti sopra soglia."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.s = 0.0
+        self.q = 0.0
+        self.att = 0
+
+    def aggiungi(self, r: float, attivato: bool = False) -> None:
+        self.n += 1
+        self.s += r
+        self.q += r * r
+        self.att += int(attivato)
+
+    def json(self) -> dict[str, Any]:
+        return {"n": self.n, "s": round(self.s, 1), "q": round(self.q, 1), "att": self.att}
+
+
+def legami(h: Helio | None, giorno: str,
+           registrato: dict[int, float],
+           parlato: dict[int, set[str]],
+           soggetto: str,
+           conversazioni: list[dict[str, Any]],
+           segmenti_soggetto: list[dict[str, Any]],
+           sconosciuta: str = "UNKNOWN") -> dict[str, Any] | None:
+    """Battito e parlato minuto per minuto, in forma sommabile fra giorni.
+
+    `registrato` e `parlato` come in `battito_e_parlato` (minuti dalla
+    mezzanotte del giorno; possono superare 1440 per i blocchi che passano
+    la mezzanotte). `conversazioni`: dicts con `inizio_sec`, `durata_min`,
+    `voci` (come in `core.metriche`). `segmenti_soggetto`: segmenti di
+    Pietro affidabili, con `day_sec_start`, `day_sec_end` e `prosody`.
+
+    Restituisce:
+    - `classi`: per «silenzio», «solo_tu» (parla solo Pietro), «dialogo»
+      (Pietro e altri nello stesso minuto), «altri» (parlano altri, non
+      Pietro) una `_Somma` dei minuti registrati fermi;
+    - `persone`: per voce (tranne Pietro e la voce sconosciuta) la somma dei
+      minuti fermi in cui quella voce parla;
+    - `inizio` e `fine`: curve intorno alle conversazioni di Pietro, per
+      ogni scarto da -EVENTO_PRIMA a +EVENTO_DOPO minuti `[n, somma]` del
+      residuo, e `eventi` (quante conversazioni);
+    - `prosodia`: righe `[residuo, f0 media Hz, intensita' dB, sillabe/s]`;
+    - `soglia_bpm`, `riferimento` (mediane orarie usate).
+    """
+    if h is None:
+        return None
+    mezzanotte = datetime.fromisoformat(giorno)
+    rif = riferimento_orario(h, giorno)
+    if not rif:
+        return None
+    att = attivazione(h, giorno)
+    soglia = att["soglia_bpm"] if att else None
+
+    def residuo(t: datetime) -> float | None:
+        v = h.battito.get(t)
+        if v is None or t not in fermi_svegli(h, t.date().isoformat()):
+            return None
+        r = riferimento_orario(h, t.date().isoformat()) or rif
+        return v - r[t.hour]
+
+    classi = {c: _Somma() for c in ("silenzio", "solo_tu", "dialogo", "altri")}
+    persone: dict[str, _Somma] = defaultdict(_Somma)
+    for m, sec in registrato.items():
+        if sec < MIN_REGISTRATO_SEC:
+            continue
+        t = mezzanotte + timedelta(minutes=m)
+        r = residuo(t)
+        if r is None:
+            continue
+        sopra = soglia is not None and h.battito[t] > soglia
+        voci = parlato.get(m) or set()
+        if not voci:
+            c = "silenzio"
+        elif soggetto in voci:
+            c = "solo_tu" if voci == {soggetto} else "dialogo"
+        else:
+            c = "altri"
+        classi[c].aggiungi(r, sopra)
+        for v in voci - {soggetto, sconosciuta}:
+            persone[v].aggiungi(r, sopra)
+
+    larghezza = EVENTO_PRIMA + EVENTO_DOPO + 1
+    curve = {k: [[0, 0.0] for _ in range(larghezza)] for k in ("inizio", "fine")}
+    eventi = 0
+    for c in conversazioni:
+        if soggetto not in c["voci"] or c["durata_min"] < EVENTO_MIN_DURATA:
+            continue
+        m0 = int(c["inizio_sec"] // 60)
+        if any(registrato.get(m0 - k, 0) < MIN_REGISTRATO_SEC
+               for k in range(1, EVENTO_REGISTRATO_PRIMA + 1)):
+            continue
+        eventi += 1
+        m1 = int((c["inizio_sec"] + c["durata_min"] * 60) // 60)
+        for chiave, centro in (("inizio", m0), ("fine", m1)):
+            for i in range(larghezza):
+                r = residuo(mezzanotte + timedelta(minutes=centro - EVENTO_PRIMA + i))
+                if r is not None:
+                    curve[chiave][i][0] += 1
+                    curve[chiave][i][1] += r
+    for k in curve:
+        curve[k] = [[n, round(sm, 1)] for n, sm in curve[k]]
+
+    righe = []
+    for sg in segmenti_soggetto:
+        a, b = sg["day_sec_start"], sg["day_sec_end"]
+        pr = sg.get("prosody") or {}
+        if b - a < PROSODIA_MIN_SEC or pr.get("f0_mean_hz") is None:
+            continue
+        rr = [residuo(mezzanotte + timedelta(minutes=m))
+              for m in range(int(a // 60), int(b // 60) + 1)]
+        if not rr or any(x is None for x in rr):
+            continue
+        righe.append([round(statistics.mean(rr), 1), round(pr["f0_mean_hz"], 1),
+                      round(pr.get("intensity_mean_db") or 0, 1) or None,
+                      round(pr.get("speech_rate_syl_per_sec") or 0, 2) or None])
+
+    return {
+        "soglia_bpm": soglia,
+        "riferimento": {str(k): round(v, 1) for k, v in sorted(rif.items())},
+        "classi": {k: v.json() for k, v in classi.items()},
+        "persone": {k: v.json() for k, v in sorted(persone.items()) if v.n},
+        "eventi": eventi,
+        "finestra": [-EVENTO_PRIMA, EVENTO_DOPO],
+        "inizio": curve["inizio"],
+        "fine": curve["fine"],
+        "prosodia": righe,
+    }
 
 
 def scrivi(h: Helio | None, cartella: Path) -> list[Path]:

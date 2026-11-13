@@ -669,6 +669,256 @@ function sezioneCorpo(giornaliero, g) {
   return sec;
 }
 
+// ------------------------------------------------------------ corpo e parola
+// I legami fra parlato e battito, dal campo `corpo.legami` delle metriche
+// (core/helio.py, `legami`). Unità: il minuto registrato, sveglio e senza
+// passi; misura: il battito «residuo», cioè meno la mediana personale della
+// stessa ora (toglie il ritmo del giorno). Il pannello somma i giorni e
+// toglie anche la media di ogni giorno, così restano le differenze DENTRO
+// la giornata e non quelle fra giornate diverse.
+// I minuti vicini non sono indipendenti: l'intervallo usa n/5 come numero
+// effettivo di osservazioni (stima prudente, non un test statistico).
+var CLASSI_LEGAMI = [["silenzio", "Silenzio"], ["solo_tu", "Parli solo tu"], ["dialogo", "Dialogo (tu e altri)"], ["altri", "Parlano altri"]];
+var N_EFF = 5;
+
+function sommaLegami(lista) {
+  var z = function () { return {n: 0, s: 0, q: 0, att: 0, d: 0}; };
+  var out = {giorni: 0, classi: {}, persone: {}, inizio: [], fine: [], eventi: 0, prosodia: [], finestra: [-10, 20]};
+  CLASSI_LEGAMI.forEach(function (c) { out.classi[c[0]] = z(); });
+  lista.forEach(function (g) {
+    var L = g.corpo && g.corpo.legami;
+    if (!L) return;
+    var N = 0, S = 0;
+    Object.keys(L.classi).forEach(function (k) { N += L.classi[k].n; S += L.classi[k].s; });
+    if (!N) return;
+    out.giorni++;
+    var mg = S / N;
+    var somma = function (dest, x) { dest.n += x.n; dest.s += x.s; dest.q += x.q; dest.att += x.att; dest.d += x.s - x.n * mg; };
+    Object.keys(L.classi).forEach(function (k) { if (out.classi[k]) somma(out.classi[k], L.classi[k]); });
+    Object.keys(L.persone).forEach(function (k) { somma(out.persone[k] || (out.persone[k] = z()), L.persone[k]); });
+    out.finestra = L.finestra; out.eventi += L.eventi;
+    ["inizio", "fine"].forEach(function (k) {
+      L[k].forEach(function (p, i) {
+        var a = out[k][i] || (out[k][i] = [0, 0]); a[0] += p[0]; a[1] += p[1] - p[0] * mg;
+      });
+    });
+    L.prosodia.forEach(function (r) { out.prosodia.push(r.concat([mg])); });
+  });
+  return out;
+}
+// Media dello scarto dalla media del giorno, con intervallo indicativo.
+function statLegame(x) {
+  if (!x || x.n < 1) return null;
+  var m = x.s / x.n, v = Math.max(0, x.q / x.n - m * m);
+  var neff = Math.max(1, x.n / N_EFF);
+  return {n: x.n, scarto: x.d / x.n, ic: 1.96 * Math.sqrt(v / neff), att: x.att / x.n};
+}
+function ranghi(a) {
+  var idx = a.map(function (v, i) { return [v, i]; }).sort(function (x, y) { return x[0] - y[0]; });
+  var r = new Array(a.length), i = 0;
+  while (i < idx.length) {
+    var j = i; while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+    for (var k = i; k <= j; k++) r[idx[k][1]] = (i + j) / 2 + 1;
+    i = j + 1;
+  }
+  return r;
+}
+function spearman(xs, ys) {
+  var p = [];
+  xs.forEach(function (x, i) { if (x != null && ys[i] != null && !isNaN(x) && !isNaN(ys[i])) p.push([x, ys[i]]); });
+  if (p.length < 3) return {rho: null, n: p.length};
+  var rx = ranghi(p.map(function (q) { return q[0]; })), ry = ranghi(p.map(function (q) { return q[1]; }));
+  var mx = rx.reduce(function (a, b) { return a + b; }, 0) / rx.length, my = mx;
+  var sxy = 0, sxx = 0, syy = 0;
+  rx.forEach(function (v, i) { sxy += (v - mx) * (ry[i] - my); sxx += (v - mx) * (v - mx); syy += (ry[i] - my) * (ry[i] - my); });
+  return {rho: sxx && syy ? sxy / Math.sqrt(sxx * syy) : null, n: p.length};
+}
+function forza(rho) {
+  if (rho == null) return "—";
+  var a = Math.abs(rho);
+  return a < 0.1 ? "nessun legame" : a < 0.3 ? "debole" : a < 0.5 ? "medio" : "forte";
+}
+function segno(v, d) {
+  if (v == null || isNaN(v)) return "—";
+  var f = Math.pow(10, d == null ? 1 : d), r = Math.round(v * f) / f;
+  return (r > 0 ? "+" : r < 0 ? "−" : "") + num(Math.abs(r), d == null ? 1 : d);
+}
+
+// Barre orizzontali divergenti intorno a zero, con intervallo.
+function graficoScarti(righe) {
+  var W = larghezza(), riga = 30, T = 8, B = 20, L = Math.min(170, W * 0.38), R = 12;
+  var H = T + B + riga * righe.length;
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Battito rispetto alla media del giorno"});
+  var lim = Math.max(3, Math.ceil(Math.max.apply(null, righe.map(function (r) { return Math.abs(r.st.scarto) + r.st.ic; }))));
+  var x = function (v) { return L + (W - L - R) * (v + lim) / (2 * lim); };
+  [-lim, 0, lim].forEach(function (v) {
+    s("line", {x1: x(v), x2: x(v), y1: T, y2: H - B, stroke: v === 0 ? "var(--text-2)" : "var(--grid)"}, svg);
+    s("text", {x: x(v), y: H - 5, "text-anchor": "middle"}, svg).textContent = segno(v, 0) + " bpm";
+  });
+  righe.forEach(function (r, i) {
+    var y0 = T + i * riga, yc = y0 + riga / 2, st = r.st;
+    s("text", {x: L - 8, y: yc + 4, "text-anchor": "end"}, svg).textContent = r.nome;
+    var a = x(Math.min(0, st.scarto)), b = x(Math.max(0, st.scarto));
+    s("rect", {x: a, y: yc - 7, width: Math.max(1, b - a), height: 14, rx: 2, fill: st.scarto > 0 ? "var(--s2)" : "var(--s1)", opacity: 0.85}, svg);
+    s("line", {x1: x(st.scarto - st.ic), x2: x(st.scarto + st.ic), y1: yc, y2: yc, stroke: "var(--text)", "stroke-width": 1.2}, svg);
+    var hit = s("rect", {x: 0, y: y0, width: W, height: riga, fill: "transparent"}, svg);
+    hover(hit, "<b>" + esc(r.nome) + "</b><br>" + segno(st.scarto) + " bpm rispetto alla media del giorno<br>intervallo ±" +
+      num(st.ic, 1) + "<br>" + st.n + " minuti fermi · " + pct(st.att) + " sopra la soglia di attivazione");
+  });
+  return svg;
+}
+// Curve intorno a inizio e fine delle conversazioni.
+function graficoEventi(som) {
+  var W = larghezza(), H = 180, L = 40, R = 10, T = 10, B = 24;
+  var a0 = som.finestra[0], a1 = som.finestra[1];
+  var svg = s("svg", {viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Battito intorno all'inizio e alla fine delle conversazioni"});
+  var serie = ["inizio", "fine"].map(function (k) {
+    return som[k].map(function (p, i) { return p[0] >= 5 ? {t: a0 + i, v: p[1] / p[0], n: p[0]} : null; });
+  });
+  var vals = [].concat.apply([], serie).filter(Boolean).map(function (p) { return p.v; });
+  if (!vals.length) return null;
+  var lo = Math.floor(Math.min.apply(null, vals.concat([-2]))), hi = Math.ceil(Math.max.apply(null, vals.concat([2])));
+  var x = function (t) { return L + (W - L - R) * (t - a0) / (a1 - a0); };
+  var y = function (v) { return T + (H - T - B) * (hi - v) / (hi - lo); };
+  [lo, 0, hi].forEach(function (v) {
+    s("line", {x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: v === 0 ? "var(--text-2)" : "var(--grid)"}, svg);
+    s("text", {x: L - 6, y: y(v) + 4, "text-anchor": "end"}, svg).textContent = segno(v, 0);
+  });
+  s("line", {x1: x(0), x2: x(0), y1: T, y2: H - B, stroke: "var(--text-2)", "stroke-dasharray": "3 3"}, svg);
+  [a0, 0, 10, a1].forEach(function (t) {
+    s("text", {x: x(t), y: H - 6, "text-anchor": "middle"}, svg).textContent = (t > 0 ? "+" : "") + t + "′";
+  });
+  var colori = ["var(--s2)", "var(--s1)"], nomi = ["inizio", "fine"];
+  serie.forEach(function (ss, k) {
+    var d = "", prima = false;
+    ss.forEach(function (p) {
+      if (!p) { prima = false; return; }
+      d += (prima ? "L" : "M") + x(p.t).toFixed(1) + " " + y(p.v).toFixed(1) + " "; prima = true;
+    });
+    s("path", {d: d, fill: "none", stroke: colori[k], "stroke-width": 2}, svg);
+    ss.forEach(function (p) {
+      if (!p) return;
+      var c = s("circle", {cx: x(p.t), cy: y(p.v), r: 6, fill: "transparent"}, svg);
+      hover(c, (p.t > 0 ? "+" : "") + p.t + " min dall'" + nomi[k] + "<br>" + segno(p.v) + " bpm sulla media del giorno<br>" + p.n + " minuti misurati");
+    });
+  });
+  return svg;
+}
+// Le ipotesi della scala del giorno (analisi-corpus.md, sezione 6), dichiarate
+// prima di guardare i dati. `sfas`: 0 = stesso giorno, 1 = la misura del corpo
+// del giorno dopo (es. la notte successiva).
+var IPOTESI_GIORNO = [
+  {a: "sonno.dormito_min", an: "Ore dormite (notte prima)", b: "pietro.prosodia.velocita_sill_sec", bn: "velocità dell'eloquio", sfas: 0},
+  {a: "sonno.dormito_min", an: "Ore dormite (notte prima)", b: "pietro.prosodia.f0_variabilita_hz", bn: "variabilità del tono", sfas: 0},
+  {a: "sonno.dormito_min", an: "Ore dormite (notte prima)", b: "pietro.parole.intercalari_per_1000", bn: "intercalari", sfas: 0},
+  {a: "sonno.dormito_min", an: "Ore dormite (notte prima)", b: "pietro.parole.mattr", bn: "ricchezza lessicale", sfas: 0},
+  {a: "sonno.profondo_rem_quota", an: "Profondo + REM (notte prima)", b: "pietro.prosodia.f0_variabilita_hz", bn: "variabilità del tono", sfas: 0},
+  {a: "attivazione.quota", an: "Attivazione da fermo", b: "relazioni.quota_parola_pietro", bn: "tua quota di parola", sfas: 0},
+  {a: "attivazione.quota", an: "Attivazione da fermo", b: "pietro.prosodia.velocita_sill_sec", bn: "velocità dell'eloquio", sfas: 0},
+  {a: "sonno.dormito_min", an: "Ore dormite (notte dopo)", b: "silenzio.con_altri_min", bn: "minuti con altri", sfas: 1},
+  {a: "sonno.battito_media", an: "Battito nel sonno (notte dopo)", b: "silenzio.con_altri_min", bn: "minuti con altri", sfas: 1}
+];
+var MIN_GIORNI_CORR = 10;
+function giornoDopo(iso) { var d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); }
+
+function sezioneLegami(giornaliero, g) {
+  var lista = giornaliero ? [g] : GIORNI;
+  var som = sommaLegami(lista);
+  var sec = sezione("Corpo e parola", giornaliero
+    ? "minuto per minuto, in questo giorno"
+    : "minuto per minuto, " + som.giorni + " giorni con registrazione e battito");
+  if (!som.giorni) {
+    sec.appendChild(el("div", {class: "insuff"}, giornaliero ? "Per questo giorno non ci sono minuti registrati con il battito." : "Nessun giorno con registrazione e battito insieme."));
+    return sec;
+  }
+  // 1. classi
+  sec.appendChild(el("h3", null, "Il battito mentre parli"));
+  var righe = CLASSI_LEGAMI.map(function (c) { return {nome: c[1], st: statLegame(som.classi[c[0]])}; })
+    .filter(function (r) { return r.st && r.st.n >= 5; });
+  if (righe.length >= 2) sec.appendChild(graficoScarti(righe));
+  else sec.appendChild(el("div", {class: "insuff"}, "Troppo pochi minuti fermi registrati."));
+  sec.appendChild(el("div", {class: "note"}, "Ogni barra: di quanto il battito sta sopra o sotto la media dei minuti registrati dello stesso giorno, " +
+    "solo nei minuti svegli e senza passi, già tolto l'effetto dell'ora del giorno. La riga sottile è un intervallo indicativo: " +
+    "se attraversa lo zero la differenza può essere caso. Ipotesi dichiarata: parlare ↔ battito più alto."));
+
+  // 2. persone
+  var nomi = {};
+  GIORNI.forEach(function (x) { x.voci.forEach(function (v) { if (v.nome) nomi[v.id] = v.nome; }); });
+  var pers = Object.keys(som.persone).map(function (k) { return {nome: nomi[k] || k, st: statLegame(som.persone[k])}; })
+    .filter(function (r) { return r.st && r.st.n >= 15; })
+    .sort(function (a, b) { return b.st.n - a.st.n; }).slice(0, 10)
+    .sort(function (a, b) { return b.st.scarto - a.st.scarto; });
+  sec.appendChild(el("h3", {style: "margin-top:16px"}, "Con chi"));
+  if (pers.length) {
+    sec.appendChild(graficoScarti(pers));
+    sec.appendChild(el("div", {class: "note"}, "Minuti fermi in cui parla quella persona (le dieci con più minuti, almeno 15). " +
+      "Ipotesi esplorativa: una persona sopra lo zero in molte giornate diverse dice qualcosa; in una sola giornata no. " +
+      "Delle altre persone si misura solo il tuo battito, non il loro stato."));
+  } else sec.appendChild(el("div", {class: "insuff"}, "Nessuna persona con almeno 15 minuti fermi."));
+
+  // 3. intorno alle conversazioni
+  sec.appendChild(el("h3", {style: "margin-top:16px"}, "Prima, durante e dopo una conversazione"));
+  var ge = !giornaliero && som.eventi >= 3 ? graficoEventi(som) : null;
+  if (giornaliero) {
+    sec.appendChild(el("div", {class: "insuff"}, som.eventi + " conversazioni misurabili in questo giorno: la curva si legge sommando più giorni, nella scala «Totale»."));
+  } else if (ge) {
+    sec.appendChild(legenda([["intorno all'inizio", "var(--s2)"], ["intorno alla fine", "var(--s1)"]]));
+    sec.appendChild(ge);
+    sec.appendChild(el("div", {class: "note"}, som.eventi + " conversazioni in cui parli, lunghe almeno 3 minuti, con la registrazione già accesa prima. " +
+      "Battito sulla media dei minuti registrati dello stesso giorno (già tolto l'effetto dell'ora), nei soli minuti fermi; un punto compare con almeno 5 misure. " +
+      "Si legge la forma: se il battito sale prima dell'inizio (anticipazione), durante, o scende dopo la fine (recupero)."));
+  } else sec.appendChild(el("div", {class: "insuff"}, "Servono almeno 3 conversazioni con la registrazione accesa prima (ce ne sono " + som.eventi + ")."));
+
+  // 4. voce e battito
+  sec.appendChild(el("h3", {style: "margin-top:16px"}, "La tua voce e il battito"));
+  var P = som.prosodia;
+  if (P.length >= 30) {
+    var rr = P.map(function (r) { return r[0] - r[4]; });
+    var vv = [["Tono (f0 media)", 1, " Hz", 0], ["Volume (intensità)", 2, " dB", 0], ["Velocità", 3, " sill/s", 1]];
+    var tb = "<table><thead><tr><th>Voce</th><th class='n'>ρ</th><th>Legame</th><th class='n'>Frasi</th><th>Battito per quinto della voce, dal più basso al più alto</th></tr></thead><tbody>";
+    vv.forEach(function (v) {
+      var xs = P.map(function (r) { return r[v[1]]; });
+      var sp = spearman(xs, rr);
+      var coppie = xs.map(function (x, i) { return [x, rr[i]]; }).filter(function (c) { return c[0] != null; }).sort(function (a, b) { return a[0] - b[0]; });
+      var q = [];
+      for (var k = 0; k < 5; k++) {
+        var pezzo = coppie.slice(Math.floor(k * coppie.length / 5), Math.floor((k + 1) * coppie.length / 5));
+        q.push(pezzo.length ? segno(pezzo.reduce(function (a, c) { return a + c[1]; }, 0) / pezzo.length, 0) : "—");
+      }
+      tb += "<tr><td>" + v[0] + "</td><td class='n'>" + (sp.rho == null ? "—" : segno(sp.rho, 2)) + "</td><td>" + forza(sp.rho) +
+        "</td><td class='n'>" + sp.n + "</td><td>" + q.join(" · ") + " bpm</td></tr>";
+    });
+    sec.appendChild(el("div", {class: "nowrap", style: "overflow-x:auto"}, tb + "</tbody></table>"));
+    sec.appendChild(el("div", {class: "note"}, "Ogni frase tua lunga almeno 3 secondi, detta da fermo, con il battito di quei minuti (sulla media del giorno). " +
+      "ρ di Spearman: da −1 a +1, il segno dice la direzione. Ipotesi dichiarata (media): voce più acuta e più forte ↔ battito più alto. " +
+      "Il volume dipende anche dalla distanza dal registratore e dalla saturazione."));
+  } else sec.appendChild(el("div", {class: "insuff"}, "Servono almeno 30 frasi tue misurate da fermo (ce ne sono " + P.length + ")."));
+
+  // 5. giorno per giorno (solo sulle scale lunghe)
+  if (!giornaliero) {
+    sec.appendChild(el("h3", {style: "margin-top:16px"}, "Giorno per giorno: le ipotesi dichiarate"));
+    var tb2 = "<table><thead><tr><th>Corpo</th><th>Parola</th><th class='n'>Giorni</th><th class='n'>ρ</th><th>Lettura</th></tr></thead><tbody>";
+    IPOTESI_GIORNO.forEach(function (ip) {
+      var xs = [], ys = [];
+      VALIDI.forEach(function (gg) {
+        var c = CORPO_PER[ip.sfas ? giornoDopo(gg.giorno) : gg.giorno];
+        if (!c) return;
+        xs.push(get(c, ip.a)); ys.push(get(gg, ip.b));
+      });
+      var sp = spearman(xs, ys);
+      var lettura = sp.n < MIN_GIORNI_CORR ? "servono " + MIN_GIORNI_CORR + " giorni" : forza(sp.rho) + " · da confermare";
+      tb2 += "<tr><td>" + ip.an + "</td><td>" + ip.bn + "</td><td class='n'>" + sp.n + "</td><td class='n'>" +
+        (sp.n < MIN_GIORNI_CORR || sp.rho == null ? "—" : segno(sp.rho, 2)) + "</td><td>" + lettura + "</td></tr>";
+    });
+    sec.appendChild(el("div", {class: "nowrap", style: "overflow-x:auto"}, tb2 + "</tbody></table>"));
+    sec.appendChild(el("div", {class: "note"}, "Un punto per giorno valido (almeno " + SOGLIE.ore_valido + " h registrate) con le misure dell'Helio. " +
+      "Un legame medio richiede 30–60 giorni: fino ad allora ogni numero resta «da confermare» e serve a vedere la direzione, non a concludere."));
+  }
+  sec.appendChild(el("div", {class: "note"}, "Limiti: l'ora del registratore non è ancora confrontata con quella del braccialetto; " +
+    "fascia e registratore stanno sullo stesso braccio, e i minuti con passi sono esclusi, ma un gesto senza passi può alzare insieme battito e rumore."));
+  return sec;
+}
+
 // ------------------------------------------------------------ pagina
 function disegna() {
   var root = document.getElementById("contenuto");
@@ -749,6 +999,7 @@ function disegna() {
 
   // --- Il corpo (Helio)
   root.appendChild(sezioneCorpo(giornaliero, g));
+  root.appendChild(sezioneLegami(giornaliero, g));
 
   // --- Persone
   var pers = sezione("Persone", "minuti di parlato per voce");
